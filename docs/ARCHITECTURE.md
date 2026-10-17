@@ -1,0 +1,167 @@
+# Recall — Architecture
+
+## 1. Goals and constraints
+
+- **Effortless capture.** One message in Telegram is enough. Capture must never
+  depend on the AI provider being reachable.
+- **Durable.** The original words are stored before anything is inferred from them.
+- **Single owner.** One person, one SQLite file, one process. No microservices, no
+  Kubernetes, no vector database, no agent framework.
+- **Replaceable boundaries.** AI, speech-to-text and notification delivery are
+  interfaces with real implementations plus explicit "unavailable" states.
+- **Works offline of any cloud.** With no API keys, capture, classification,
+  storage, search and reminders all still function.
+
+## 2. Components
+
+```
+                    ┌──────────────────────────┐
+   Telegram  ──────▶│  telegram adapter        │──┐
+   (polling/webhook)│  (auth, idempotency,     │  │
+                    │   command routing)       │  │
+                    └──────────────────────────┘  │
+                                                  ▼
+   Browser  ──────▶ ┌──────────────────────────┐  ┌──────────────────────────┐
+   (dashboard)      │  http api (Fastify)      │─▶│  application services    │
+                    │  session auth, cors,     │  │  capture, task, library, │
+                    │  rate limits, dto mapping│  │  reminder, search,       │
+                    └──────────────────────────┘  │  recall, briefing        │
+                                                  └───────┬──────────┬───────┘
+                                                          │          │
+                       ┌──────────────────────────────────┘          │
+                       ▼                                             ▼
+            ┌──────────────────────┐                    ┌────────────────────────┐
+            │  providers (ports)   │                    │  data access (Prisma)  │
+            │  ai | stt | notifier │                    │  SQLite, transactions  │
+            └──────────┬───────────┘                    └───────────┬────────────┘
+                       │                                            │
+              ┌────────┴─────────┐                        ┌─────────┴─────────┐
+              │ external         │                        │ recall.db (WAL)   │
+              │ providers        │                        └───────────────────┘
+              │ (optional)       │
+              └──────────────────┘
+
+            ┌──────────────────────────────────────────────────────────────┐
+            │  scheduler: DB-backed tick loop -> reminder service ->        │
+            │  notifier, with ReminderDelivery rows for every attempt       │
+            └──────────────────────────────────────────────────────────────┘
+```
+
+### Layers
+
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| Contracts | `packages/shared` | Zod schemas + DTO types. Single source of truth for vocabulary, validated on both sides. |
+| Adapters | `src/telegram`, `src/http`, `src/ai`, `src/stt` | Translate an external protocol into a service call. No business rules. |
+| Services | `src/services` | Business rules, transactions, state transitions. |
+| Data access | `src/db`, `src/mappers.ts` | Prisma client, pragmas, transactions, row→DTO mapping. No business rules. |
+| Infrastructure | `src/lib` | Time/zone maths, NLP date extraction, retry, text helpers, errors, logging. |
+| Composition | `src/context.ts`, `src/index.ts` | Build the dependency bag, boot in a fixed order, shut down cleanly. |
+
+The dependency rule is one-directional: adapters → services → data access →
+infrastructure. Services never import Fastify or Telegram types.
+
+## 3. Request and data flows
+
+### Capture (Milestone 2 target)
+
+1. Telegram delivers an update (poll or webhook, `secret_token` verified).
+2. Adapter checks the sender id against `TELEGRAM_OWNER_IDS`. Not the owner → a
+   neutral refusal, nothing written, no information about stored data.
+3. The adapter builds a **stable external id** `telegram:<chatId>:<messageId>`.
+4. `captureService.ingest` runs in a single transaction:
+   - insert `Capture` (raw text verbatim, `source`, `externalId`, `capturedAt`);
+   - the `(source, externalId)` unique constraint makes a replay fail cleanly and
+     return the *existing* capture instead of duplicating it.
+5. Classification runs **after** the capture is committed, via the rules
+   classifier or the configured AI provider (validated against
+   `classifyCaptureSchema`).
+6. The structured record (task/note/idea/event) is written in a second
+   transaction together with the capture's `kind`, `confidence`, tags and
+   `status`. If this step fails, the capture stays with `status = RECEIVED` and is
+   retried — the user's words are never lost.
+7. The adapter replies with a confirmation that states what Recall understood.
+
+**Invariant:** the capture row is never rewritten by classification. Editing a
+task changes the task; it never changes what the user originally sent.
+
+### Reminder delivery (Milestone 4 target)
+
+1. `Reminder` rows are the schedule. The scheduler polls them; nothing lives only
+   in memory.
+2. Each tick claims due reminders by creating a `ReminderDelivery` row whose
+   `idempotencyKey` is unique (`<reminderId>:<scheduledForIso>:<attempt>`), which
+   makes a double send impossible even with two processes.
+3. Delivery attempts record the outcome. Failures retry with bounded exponential
+   backoff up to `REMINDER_MAX_ATTEMPTS`.
+4. Quiet hours defer to the end of the window; the daily cap defers to the next day.
+5. On startup, missed reminders inside `REMINDER_OVERDUE_GRACE_HOURS` fire once;
+   older ones are marked `MISSED` so a returning user is not flooded.
+
+## 4. Data model
+
+All timestamps are UTC `DateTime` columns. Enum-like columns are `String` because
+SQLite has no native enums; the allowed values live in `packages/shared/src/enums.ts`
+and are enforced by Zod on every write path.
+
+| Entity | Purpose | Key relationships |
+| --- | --- | --- |
+| `UserSettings` | Singleton owner preferences (zone, quiet hours, briefing, caps). | `id = "singleton"` |
+| `Capture` | The literal record of what was sent. Never rewritten. | `1—N` Task/Note/Idea/Event/Reminder, `N—N` Tag via `CaptureTag` |
+| `Task` | Something to do. | `N—1` Project, `N—1` Capture, `1—N` Reminder |
+| `Note` | Information or a saved reference (optional `url`). | `N—1` Project, `N—1` Capture |
+| `Idea` | A thought to keep. Explicitly not an obligation. | `N—1` Project, `N—1` Capture |
+| `Event` | A scheduled happening (`startsAt`, optional `endsAt`). | `N—1` Project, `N—1` Capture |
+| `Project` | Groups tasks, ideas, notes and events. | `1—N` the four above |
+| `Tag` + `CaptureTag`/`TaskTag`/`NoteTag`/`IdeaTag` | Free-form labels. | `N—N` |
+| `CaptureRelation` | Links captures to each other (`DUPLICATE_OF`, `RELATED_TO`, `FOLLOW_UP_OF`). | self-referencing |
+| `Reminder` | One scheduled occurrence, with optional recurrence and series parent. | `N—1` Task/Capture, `1—N` ReminderDelivery |
+| `ReminderDelivery` | One delivery attempt, uniquely keyed to prevent duplicates. | `N—1` Reminder |
+
+**Deletion rules.** Deleting a `Capture` sets the `captureId` of derived records to
+`NULL` (`SetNull`), so history survives. Deleting a `Project` nulls the `projectId`
+on its members rather than destroying them. Tag joins and delivery attempts cascade,
+because a join row or an attempt record has no meaning without its parent.
+
+**Indexes** exist for the access patterns that matter: due reminders
+(`status, remindAt`), open tasks by due date (`status, dueAt`), the capture inbox
+(`status, createdAt`), search by kind, dedupe by `dedupeHash`, and tag lookups.
+
+**Transactions.** Saving a capture and its derived records happens in a
+transaction (`withTransaction`, bounded timeouts). A partial write would mean
+"the user's note exists but its task does not", which is worse than retrying.
+
+## 5. Decisions
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| D1 | npm workspaces, not a single package | The dashboard and API genuinely share contracts; a `packages/shared` boundary keeps Zod schemas authoritative on both sides without a build tool. |
+| D2 | SQLite + Prisma | Single owner, no ops burden, real migrations, a clear path to Postgres later (the schema is already normalised and uses no SQLite-only features except the absence of enums). |
+| D3 | Enum columns as validated strings | SQLite has no enums. Zod at the boundary plus TypeScript unions at compile time gives the same safety without a Postgres dependency. |
+| D4 | UTC storage, zone only for interpretation/display | An unambiguous instant on disk; the owner's zone is applied exactly where it matters — parsing "tomorrow" and formatting a reminder. |
+| D5 | Date-only deadlines resolve to the **end** of the named local day | "Finish the docs tomorrow" must not become overdue at 00:01. Recorded here so display code can render it as date-only. |
+| D6 | A reminder is created only when the user asked for one | Tasks already carry `dueAt`. Auto-creating reminders for every task with a date would produce notification spam, which the brief explicitly forbids. |
+| D7 | Rules classifier is the baseline, AI is an upgrade | Satisfies "must work without an AI provider" and provides the fallback when a provider fails or returns junk. |
+| D8 | Classification runs after the capture is committed | A provider outage can never lose the user's words. |
+| D9 | Temporal-anchor allow-list before trusting chrono | `chrono-node` will happily read "may" and "march" as months and "sat"/"wed" as weekdays. False deadlines are worse than a missed parse, so ambiguous words are excluded and the omission is documented. |
+| D10 | Vague times use configured defaults and are reported back | "tomorrow morning" has no defined hour; the owner's `DEFAULT_MORNING_TIME` is applied *and* stated in the confirmation, so a wrong assumption is visible rather than silent. |
+| D11 | Session cookie signed with HMAC-SHA256, not JWT | No dependency, no algorithm confusion, constant-time verification, and an opaque token that does not carry data the client could tamper with. |
+| D12 | Provider factories return `null` when unconfigured | Callers must explicitly take the degraded path. There is no object pretending to work. |
+| D13 | Injectable `Clock` everywhere | Reminder and briefing timing is the riskiest logic in the product; it must be testable without sleeping. |
+| D14 | `ReminderDelivery.idempotencyKey` is unique | The only reliable way to guarantee exactly-once delivery across restarts and concurrent ticks. |
+| D15 | Structured JSON logs with a redaction allow-list | Debuggable in production without ever writing a private thought or a token to disk. |
+| D16 | Tests copy a migrated template database | Exercises the real migrations while keeping each test file fast and isolated. |
+| D17 | No FTS5 or vector search yet | SQLite `LIKE`-based search over a personal dataset is fast and predictable. Full-text or semantic search is deferred until a real retrieval need is demonstrated (backlog item). |
+
+## 6. Extension points
+
+- **New AI provider:** implement `AiProvider` in `src/ai`, add it to the factory.
+  Nothing else changes.
+- **New capture channel** (CLI, email, web form): build a `CaptureInput` and call
+  `captureService`. The Telegram adapter is not special.
+- **New notification channel:** implement `Notifier` (`src/ports.ts`).
+- **New structured type:** add the Prisma model, a Zod schema in
+  `packages/shared`, a DTO and a mapper. Capture-to-record linking is generic.
+- **Database migration:** `npm run db:migrate` creates versioned SQL; production
+  applies it with `npm run db:deploy`. The production database is never recreated
+  to apply a schema change.

@@ -1,0 +1,36 @@
+{
+  "name": "recall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Recall - a personal memory and task assistant (capture, organize, retrieve, remind).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @recall/shared && npm run build --workspace @recall/server",
+    "build:all": "npm run build --workspace @recall/shared && npm run build --workspace @recall/server && npm run build --workspace @recall/web",
+    "typecheck": "npm run typecheck --workspace @recall/shared && npm run typecheck --workspace @recall/server",
+    "test": "npm run test --workspace @recall/server",
+    "test:watch": "npm run test:watch --workspace @recall/server",
+    "verify": "npm run typecheck && npm run test",
+    "dev:server": "npm run dev --workspace @recall/server",
+    "dev:web": "npm run dev --workspace @recall/web",
+    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "db:migrate": "npm run db:migrate --workspace @recall/server",
+    "db:deploy": "npm run db:deploy --workspace @recall/server",
+    "db:studio": "npm run db:studio --workspace @recall/server",
+    "db:seed": "npm run db:seed --workspace @recall/server",
+    "db:reset:dev": "npm run db:reset:dev --workspace @recall/server",
+    "recall": "npm run recall --workspace @recall/server --"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

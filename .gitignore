@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets  (NEVER commit real credentials)
+.env
+.env.*
+!.env.example
+
+# Databases (personal data - never commit)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+apps/server/prisma/*.db
+apps/server/prisma/*.db-journal
+prisma/data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Local configuration
+apps/server/config/local.json
+apps/web/.env.local
+
+# Backups / exports of personal data
+backups/
+exports/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

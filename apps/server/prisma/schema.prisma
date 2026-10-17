@@ -1,0 +1,334 @@
+// Recall - Prisma schema (SQLite, single-user MVP).
+//
+// Conventions
+//  - All timestamps are stored in UTC (`DateTime`). Local time zone conversion
+//    happens in the application layer only.
+//  - Enum-like columns are `String` because SQLite has no native enums; the
+//    allowed values live in `@recall/shared` and are validated with Zod on
+//    every write path.
+//  - Deleting a Capture never deletes the structured records derived from it
+//    silently: relations use `SetNull` so history survives.
+//  - `onDelete: Cascade` is used only where the child cannot outlive the parent
+//    (tags joins, reminder delivery attempts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Singleton row holding the owner's preferences. Exactly one row exists.
+model UserSettings {
+  id                     String   @id @default("singleton")
+  displayName            String?
+  timeZone               String   @default("Africa/Lagos")
+  morningDefaultTime     String   @default("09:00")
+  eveningDefaultTime     String   @default("19:00")
+  quietHoursStart        String?
+  quietHoursEnd          String?
+  maxNotificationsPerDay Int      @default(0)
+  briefingEnabled        Boolean  @default(false)
+  briefingTime           String   @default("07:30")
+  /// JSON array of section keys, e.g. ["today","overdue"].
+  briefingSections       String   @default("[\"today\",\"overdue\",\"upcoming\"]")
+  reminderOverdueGraceHours Int   @default(12)
+  aiEnabled              Boolean  @default(true)
+  locale                 String   @default("en")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("user_settings")
+}
+
+/// The immutable record of what the user actually said or sent.
+/// Structured records are derived from a Capture; the Capture is never rewritten.
+model Capture {
+  id          String    @id @default(cuid())
+  source      String // CAPTURE_SOURCES
+  /// Stable id from the source adapter (e.g. Telegram "chatId:messageId").
+  /// Unique per source so retried deliveries are idempotent.
+  externalId  String?
+  /// SHA-256 of normalised text + source + occurredAt, used for soft dedupe.
+  dedupeHash  String?
+  rawText     String
+  kind        String    @default("UNKNOWN") // CAPTURE_KINDS
+  status      String    @default("RECEIVED") // CAPTURE_STATUSES
+  confidence  Float     @default(0)
+  needsReview Boolean   @default(false)
+  classificationRationale String?
+  /// Free-form JSON blob of adapter-specific metadata (never rendered raw).
+  metadata    String?
+  /// Speech-to-text output, kept separate from `rawText` for provenance.
+  transcript       String?
+  transcriptSource String? // TRANSCRIPT_SOURCES
+  /// Path to the retained audio file, only when STT_RETAIN_AUDIO=true.
+  mediaRef    String?
+  sourceRef   String?
+  /// When the user actually sent it (source timestamp), defaults to createdAt.
+  capturedAt  DateTime  @default(now())
+  processedAt DateTime?
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tasks     Task[]
+  notes     Note[]
+  ideas     Idea[]
+  events    Event[]
+  reminders Reminder[]
+  tags      CaptureTag[]
+  outgoingRelations CaptureRelation[] @relation("CaptureRelationFrom")
+  incomingRelations CaptureRelation[] @relation("CaptureRelationTo")
+
+  @@unique([source, externalId])
+  @@index([status, createdAt])
+  @@index([kind, createdAt])
+  @@index([capturedAt])
+  @@index([dedupeHash])
+  @@map("captures")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  status      String   @default("ACTIVE") // PROJECT_STATUSES
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  archivedAt  DateTime?
+
+  tasks  Task[]
+  notes  Note[]
+  ideas  Idea[]
+  events Event[]
+
+  @@index([status])
+  @@map("projects")
+}
+
+model Task {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  status      String    @default("PENDING") // TASK_STATUSES
+  priority    String? // PRIORITIES
+  category    String?
+  dueAt       DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  projectId   String?
+  captureId   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  capture   Capture?   @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  reminders Reminder[]
+  tags      TaskTag[]
+
+  @@index([status, dueAt])
+  @@index([dueAt])
+  @@index([projectId])
+  @@index([captureId])
+  @@map("tasks")
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  title     String?
+  body      String
+  /// Set when the note is a saved reference to an external resource.
+  url       String?
+  projectId String?
+  captureId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project?    @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  capture Capture?    @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  tags    NoteTag[]
+
+  @@index([projectId])
+  @@index([captureId])
+  @@index([createdAt])
+  @@map("notes")
+}
+
+/// An idea is deliberately *not* a task and never becomes an obligation
+/// automatically.
+model Idea {
+  id        String   @id @default(cuid())
+  title     String
+  body      String?
+  projectId String?
+  captureId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  capture Capture?   @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  tags    IdeaTag[]
+
+  @@index([projectId])
+  @@index([captureId])
+  @@index([createdAt])
+  @@map("ideas")
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime?
+  projectId   String?
+  captureId   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  capture Capture? @relation(fields: [captureId], references: [id], onDelete: SetNull)
+
+  @@index([startsAt])
+  @@index([projectId])
+  @@map("events")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  captures CaptureTag[]
+  tasks    TaskTag[]
+  notes    NoteTag[]
+  ideas    IdeaTag[]
+
+  @@map("tags")
+}
+
+model CaptureTag {
+  captureId String
+  tagId     String
+
+  capture Capture @relation(fields: [captureId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([captureId, tagId])
+  @@index([tagId])
+  @@map("capture_tags")
+}
+
+model TaskTag {
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
+  @@index([tagId])
+  @@map("task_tags")
+}
+
+model NoteTag {
+  noteId String
+  tagId  String
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, tagId])
+  @@index([tagId])
+  @@map("note_tags")
+}
+
+model IdeaTag {
+  ideaId String
+  tagId  String
+
+  idea Idea @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([ideaId, tagId])
+  @@index([tagId])
+  @@map("idea_tags")
+}
+
+/// Link between two captures (duplicate detection, follow-ups, related notes).
+model CaptureRelation {
+  id           String   @id @default(cuid())
+  fromCaptureId String
+  toCaptureId   String
+  relationType String // CAPTURE_RELATION_TYPES
+  note         String?
+  createdAt    DateTime @default(now())
+
+  fromCapture Capture @relation("CaptureRelationFrom", fields: [fromCaptureId], references: [id], onDelete: Cascade)
+  toCapture   Capture @relation("CaptureRelationTo", fields: [toCaptureId], references: [id], onDelete: Cascade)
+
+  @@unique([fromCaptureId, toCaptureId, relationType])
+  @@index([toCaptureId])
+  @@map("capture_relations")
+}
+
+/// A pending or historical reminder occurrence. Persisted, never in-memory only.
+model Reminder {
+  id         String    @id @default(cuid())
+  title      String
+  body       String?
+  /// Fire time, UTC.
+  remindAt   DateTime
+  status     String    @default("SCHEDULED") // REMINDER_STATUSES
+  attempts   Int       @default(0)
+  lastError  String?
+  deliveredAt DateTime?
+  taskId     String?
+  captureId  String?
+  /// JSON-encoded ReminderRecurrence for the series head.
+  recurrence String?
+  /// Set on generated occurrences; points at the series head.
+  parentId   String?
+  /// Guards duplicate generation of the same occurrence.
+  occurrenceKey String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  task     Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  capture  Capture?  @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  parent   Reminder? @relation("ReminderSeries", fields: [parentId], references: [id], onDelete: SetNull)
+  children Reminder[] @relation("ReminderSeries")
+  deliveries ReminderDelivery[]
+
+  @@unique([occurrenceKey])
+  @@index([status, remindAt])
+  @@index([remindAt])
+  @@index([taskId])
+  @@map("reminders")
+}
+
+/// One delivery attempt. `idempotencyKey` prevents double sends.
+model ReminderDelivery {
+  id            String    @id @default(cuid())
+  reminderId    String
+  attempt       Int       @default(1)
+  status        String    @default("PENDING") // DELIVERY_STATUSES
+  channel       String    @default("telegram")
+  scheduledFor  DateTime
+  attemptedAt   DateTime?
+  deliveredAt   DateTime?
+  nextRetryAt   DateTime?
+  error         String?
+  idempotencyKey String   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  reminder Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextRetryAt])
+  @@index([reminderId])
+  @@map("reminder_deliveries")
+}
