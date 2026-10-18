@@ -2,7 +2,7 @@
 
 Legend: **Done** · **In progress** · **Not started**
 
-Last updated: 2026-10-17 (session 1)
+Last updated: 2026-10-17 (session 1, Milestone 2 complete)
 
 ---
 
@@ -56,43 +56,59 @@ checks, before any feature work.
 
 ---
 
-## Milestone 2 — Capture  ·  Not started
+## Milestone 2 — Capture  ·  **Done**
 
 **Goal:** the owner can send a message to Telegram and know it was saved.
 
-**Scope**
+**Delivered**
 
-- Telegram adapter: `getUpdates` long polling for local development and a
-  webhook route with `secret_token` verification for production.
-- Owner-only authorization enforced before the update is processed, with a
-  neutral refusal for anyone else (no information disclosure).
-- Idempotent processing keyed on `(source, externalId)` = `telegram:<chatId>:<messageId>`,
-  so Telegram's at-least-once delivery cannot duplicate a capture.
-- Raw text preserved verbatim in `Capture.rawText`; a transaction writes the
-  capture *and* any derived record, or neither.
-- Confirmation reply with the interpreted kind and the extracted date, phrased so
-  an incorrect guess is obvious.
-- Correction: inline buttons to change the kind, reassign to another type, or
-  mark for review.
-- `/undo` removes the most recent capture and its derived records, with a
-  confirmation step.
-- `/help`, `/start`, and a `/settings` summary command.
-- Every message path wraps classification in a guard: **a failed AI call stores
-  the capture anyway** and replies that it will be classified later.
-- Unsupported input (stickers, documents, unsupported media) is acknowledged
-  politely and ignored, not silently dropped.
-- Voice messages are accepted and stored in Milestone 2 with a clear "not
-  transcribed yet" marker; real transcription lands in Milestone 6.
+- Hand-written Bot API client on `fetch` (`telegram/client.ts`) with an injected
+  transport for tests, timeouts, typed errors and `retry_after` handling.
+- **Polling** mode with offset tracking and bounded exponential backoff
+  (`telegram/polling.ts`); **webhook** mode with `secret_token` verification
+  compared in constant time (`telegram/handler.ts`, `POST /api/telegram/webhook`).
+- Owner-only authorization checked before anything is written, for both messages
+  and callback queries; one neutral refusal that discloses nothing.
+- Idempotency on `(source, externalId)` = `telegram:<chatId>:<messageId>`. A replay
+  returns the existing capture and says "Already saved"; no second row is created.
+- Verbatim `rawText`, classified after the capture is committed, with derived
+  records written alongside it. `edited_message` updates are ignored so stored text
+  is immutable.
+- Confirmation reply stating the kind, the local time, tags, priority, any reminder,
+  any assumed default time, and any AI/processing degradation.
+- Inline correction buttons (`k:`), undo prompt (`u:`), confirmed undo (`U:`) and
+  "keep it" (`K:`). Conversion keeps the original capture; undo is soft and removes
+  derived records.
+- `/start`, `/help`, `/inbox`, `/settings`, `/undo`. Commands from later milestones
+  answer honestly with the milestone that will bring them.
+- Voice messages are stored with an explicit `[voice message — not transcribed yet]`
+  marker, `UNKNOWN`/`NEEDS_REVIEW`, provenance metadata, and never classified into a
+  fabricated task. Real transcription is Milestone 6.
+- Unsupported media (stickers, documents, photos, audio, video) is acknowledged and
+  ignored, never silently dropped.
+- Capture HTTP API: ingest (idempotent, `captureOnly`), list with pagination and
+  filters, inbox, get, convert, reprocess, undo, and a guard on permanent delete.
+- `npm run recall -- doctor|capture|inbox|serve` for local use without Telegram.
 
-**Acceptance criteria**
+**Acceptance criteria — verified**
 
-- [ ] A text message creates exactly one capture, with the original text intact.
-- [ ] Replaying the same Telegram update creates no second capture.
-- [ ] A message from a non-owner gets a refusal and writes nothing.
-- [ ] With the AI provider unreachable, the capture is still stored.
-- [ ] Editing the kind updates the structured record and keeps the original capture.
-- [ ] `/undo` removes the capture and its derived records after confirmation.
-- [ ] Integration tests cover duplicate updates and unauthorized users.
+- [x] A text message creates exactly one capture, with the original text intact.
+- [x] Replaying the same Telegram update creates no second capture.
+- [x] A message from a non-owner gets a refusal and writes nothing.
+- [x] With the AI provider unreachable, the capture is still stored.
+- [x] Editing the kind updates the structured record and keeps the original capture.
+- [x] `/undo` removes the capture and its derived records after confirmation.
+- [x] Integration tests cover duplicate updates and unauthorized users.
+
+**Verification:** 196 tests pass across 13 files (`npx vitest run`,
+`Test Files 13 passed`, `Tests 196 passed`, 14.14s); `npm run typecheck` and
+`npm run build` pass. The derivation transaction is proven by an injected
+database-level write failure (`tests/integration/capture-atomicity.test.ts`).
+Telegram was tested against a fake Bot API only — no live bot token exists in this
+environment, so no live Telegram call is claimed.
+
+**Known limitation:** a restart re-fetches the last few updates because the polling
+offset is in memory; idempotency makes that harmless.
 
 ---
 

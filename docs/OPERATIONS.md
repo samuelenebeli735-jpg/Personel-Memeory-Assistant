@@ -79,6 +79,41 @@ working directory.
 A local development configuration therefore **cannot** be mistaken for a secure
 production deployment: the process refuses to start.
 
+### Telegram bot runtime
+
+Capture over Telegram is off unless `TELEGRAM_ENABLED=true`, and it needs both a
+bot token and at least one owner id. `TELEGRAM_OWNER_IDS` is a list of numeric
+Telegram **user** ids — not usernames, not the bot's own id.
+
+| Mode | When to use it | How it runs |
+| --- | --- | --- |
+| `TELEGRAM_MODE=polling` (default) | Local development, or any host without a public HTTPS URL | `getUpdates` long-polling, started after the HTTP server is listening |
+| `TELEGRAM_MODE=webhook` | Production behind HTTPS | `setWebhook` on boot; updates arrive at `POST /api/telegram/webhook` |
+
+Polling and webhook mode are mutually exclusive; there is no fallback from one to
+the other, so a misconfigured deployment fails loudly instead of silently dropping
+messages.
+
+Operational notes:
+
+- **Polling offset lives in memory.** A restart re-fetches the last few updates.
+  The `(source, externalId)` idempotency key means each one is recognised and no
+  second capture is stored — the bot simply replies "Already saved". Persistent
+  offsets may be added later; the current behaviour is intentional and safe.
+- **The poll loop backs off.** Transient failures retry with exponential backoff
+  and honour Telegram's `retry_after`. An invalid token aborts polling with
+  `telegram getMe failed` but never stops the HTTP API — captures via the web or
+  CLI keep working, so a bot outage cannot lose data.
+- **Shutdown.** `SIGINT`/`SIGTERM` stops polling (with a 2-second cap on the
+  in-flight long poll) before the HTTP server closes.
+- **Webhook registration is done for you.** On boot in webhook mode the process
+  calls `setWebhook` with the configured URL and secret. If you change the secret,
+  restart the server to re-register.
+- **A failed reply is not a failed capture.** The confirmation is best-effort; the
+  capture is committed first and a send failure is logged, not retried into a
+  duplicate.
+- **Nothing is stored from group chats.** The owner is asked to message privately.
+
 ## 3. Commands
 
 | Command | Purpose |
@@ -90,6 +125,10 @@ production deployment: the process refuses to start.
 | `npm run build` | compile `packages/shared` then `apps/server` |
 | `npm run build:all` | also build the dashboard (Milestone 5) |
 | `npm start --workspace @recall/server` | run the compiled server (`dist/index.js`) |
+| `npm run recall -- doctor` | configuration + database check |
+| `npm run recall -- capture "text"` | store a capture from the terminal |
+| `npm run recall -- inbox` | captures waiting for review |
+| `npm run recall -- serve` | start the API and any adapters |
 | `npm run db:migrate` | create + apply a migration (development) |
 | `npm run db:deploy` | apply existing migrations (production) |
 | `npm run db:status` | show migration state |
@@ -186,6 +225,15 @@ will be updated with the actual executed commands and results.
 | 401 on every API call | The session cookie expired (`SESSION_TTL_HOURS`) or the secret changed. Sign in again. |
 | 429 responses | Per-IP rate limit (240/min, and 10/min on login). Expected under load, not a bug. |
 | Port already in use | Change `PORT`, or stop the other process. |
+| Bot ignores your messages | `TELEGRAM_OWNER_IDS` does not contain your Telegram user id (not your username). Check with `npm run recall -- doctor` and the startup log line. |
+| Bot replies "This bot is private" | You are messaging from an id that is not in `TELEGRAM_OWNER_IDS`. |
+| `telegram getMe failed - polling not started` | The bot token is wrong or revoked. Nothing else is affected; capture via the API/CLI still works. |
+| `telegram polling failed - retrying` | A transient network or Telegram error. Recall backs off (and honours `retry_after`) and recovers on its own. |
+| Duplicate-looking behaviour after a restart | A restart re-fetches the last few updates because the polling offset is in memory. Idempotency means no second capture is stored; the reply is simply "Already saved". |
+| Webhook returns 401 | `TELEGRAM_WEBHOOK_SECRET` on the server does not match the `secret_token` Telegram sends. Re-register by restarting the server. |
+| Webhook returns 503 | `TELEGRAM_WEBHOOK_SECRET` is not set. Webhook mode will not accept unsigned updates. |
+| `A reminder is set.` never appears | A reminder is only created when you asked for one ("remind me …") *and* a time was recognised. Tasks with a deadline get a `dueAt`, not a reminder. |
+| Voice replies "cannot transcribe it yet" | Expected until Milestone 6. The message is stored with a marker. |
 
 ## 10. Deployment
 

@@ -7,13 +7,17 @@
  * listener is up (e.g. Telegram) degrade the service instead of killing it.
  */
 import { resolveAiProvider } from './ai/index.js';
-import { type AppConfig, loadConfig } from './config/env.js';
+import { type AppConfig, capabilitiesOf, loadConfig } from './config/env.js';
 import { createAppContext, type AppContext } from './context.js';
 import { applySqlitePragmas, createDb, pingDatabase } from './db/client.js';
 import { ConfigError } from './config/env.js';
 import { buildServer, type RuntimeStatus } from './http/server.js';
 import { loggerFromConfig, type Logger } from './lib/logger.js';
 import { resolveTranscriber } from './stt/index.js';
+import { TelegramClient } from './telegram/client.js';
+import { createTelegramAdapter, type TelegramAdapter } from './telegram/handler.js';
+import { createTelegramNotifier } from './telegram/notifier.js';
+import { startTelegramPolling, type PollingController } from './telegram/polling.js';
 
 export interface StartedApp {
   ctx: AppContext;
@@ -55,7 +59,41 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
   if (!ai) logger.info('ai provider disabled - deterministic classification only');
   if (!stt) logger.info('speech-to-text disabled - voice capture will be stored untranscribed');
 
-  const ctx = createAppContext({ config, logger, db, ai, stt });
+  const capabilities = capabilitiesOf(config);
+  const telegramClient =
+    config.telegram.enabled && capabilities.telegramConfigured
+      ? new TelegramClient({
+          token: config.telegram.botToken ?? '',
+          onEvent: (event) => logger[event.level](event.msg, event.context),
+        })
+      : null;
+  if (config.telegram.enabled && !telegramClient) {
+    logger.warn('telegram is enabled but no usable bot token is configured - the adapter stays off');
+  }
+
+  // The notifier must exist before the context because the scheduler (Milestone 4)
+  // reaches Telegram only through it.
+  const notifier =
+    telegramClient && config.telegram.ownerIds.length > 0
+      ? createTelegramNotifier({
+          client: telegramClient,
+          ownerIds: config.telegram.ownerIds,
+          logger,
+        })
+      : null;
+
+  const ctx = createAppContext({
+    config,
+    logger,
+    db,
+    ai,
+    stt,
+    ...(notifier ? { notifier, deliveryChannel: notifier.channel } : {}),
+  });
+
+  const adapter: TelegramAdapter | null = telegramClient
+    ? createTelegramAdapter(ctx, { client: telegramClient })
+    : null;
 
   const runtime: RuntimeStatus = {
     version: config.version,
@@ -69,9 +107,43 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
     }),
   };
 
-  const app = await buildServer(ctx, { runtime });
+  const app = await buildServer(ctx, {
+    runtime,
+    ...(adapter && config.telegram.mode === 'webhook'
+      ? { telegramWebhook: (input) => adapter.handleWebhook(input) }
+      : {}),
+  });
   await app.listen({ host: config.host, port: config.port });
   logger.info('http listening', { url: `http://${config.host}:${config.port}` });
+
+  let polling: PollingController | null = null;
+  if (adapter) {
+    if (config.telegram.mode === 'webhook') {
+      const url = config.telegram.webhookUrl;
+      if (url) {
+        try {
+          await adapter.client.setWebhook({
+            url,
+            ...(config.telegram.webhookSecret ? { secretToken: config.telegram.webhookSecret } : {}),
+          });
+          logger.info('telegram webhook registered', { url });
+        } catch (error) {
+          logger.error('could not register the telegram webhook', {
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        logger.warn('TELEGRAM_MODE=webhook but TELEGRAM_WEBHOOK_URL is empty - not registered');
+      }
+    } else {
+      polling = startTelegramPolling(ctx, adapter.client, adapter);
+      logger.info('telegram polling started', {
+        pollTimeoutSeconds: config.telegram.pollTimeoutSeconds,
+      });
+    }
+  } else {
+    logger.info('telegram adapter disabled');
+  }
 
   let closed = false;
   return {
@@ -79,6 +151,14 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
     async close() {
       if (closed) return;
       closed = true;
+      if (polling) {
+        polling.stop();
+        // A long poll can hold the request open; do not let shutdown hang on it.
+        await Promise.race([
+          polling.done,
+          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        ]);
+      }
       await app.close();
       await db.$disconnect();
     },

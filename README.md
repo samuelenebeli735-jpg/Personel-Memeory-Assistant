@@ -16,7 +16,7 @@ screenshots of your activity.
 | Milestone | Scope | State |
 | --- | --- | --- |
 | 1. Foundation | workspaces, config validation, database + migrations, health checks, logging, baseline tests | **Done** |
-| 2. Capture | Telegram bot, text capture, classification, confirmation, edit/undo, idempotency | Not started |
+| 2. Capture | Telegram bot (polling + webhook), text + voice capture, classification, confirmation, correction, undo, idempotency, capture API | **Done** |
 | 3. Tasks | tasks, ideas, notes, events, projects, search/filter | Not started |
 | 4. Reminders | natural-language dates, persistent scheduling, retries, restart recovery | Not started |
 | 5. Dashboard | React/Vite web interface on the authenticated API | Not started |
@@ -89,6 +89,77 @@ Recorded results are in [`docs/TESTING.md`](docs/TESTING.md).
 
 ---
 
+## Using it
+
+### Telegram bot
+
+Text capture works with no AI provider and no cloud account.
+
+```bash
+# .env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=123456:your-real-token        # from @BotFather
+TELEGRAM_OWNER_IDS=123456789                     # your id, from @userinfobot
+TELEGRAM_MODE=polling                            # local development
+```
+
+Then `npm run dev:server`. Send the bot any message and it replies with what it
+understood:
+
+```
+Saved as a task:
+• call Ada
+Due: Sun 18 Oct 2026, 16:00 (tomorrow at 4:00 PM)
+```
+
+Every confirmation carries buttons: **Task / Idea / Note / Appointment** to correct
+the classification, and **Undo** (which asks for confirmation before removing
+anything). `/help`, `/inbox`, `/settings`, `/undo` and `/start` are available; other
+commands answer honestly with the milestone that will bring them.
+
+Anything other than text, voice, or a known command — stickers, documents, photos —
+is acknowledged and ignored rather than silently dropped. Voice messages are stored
+with a "not transcribed yet" marker until Milestone 6.
+
+**Production uses webhooks instead of polling:**
+
+```bash
+TELEGRAM_MODE=webhook
+TELEGRAM_WEBHOOK_URL=https://recall.example.com    # public HTTPS, no trailing slash
+TELEGRAM_WEBHOOK_SECRET=<random string>            # verified in constant time
+```
+
+On boot Recall calls `setWebhook` for you. The update arrives at
+`POST /api/telegram/webhook`; the secret is compared with `timingSafeEqual` and a
+missing or wrong secret is rejected before anything is read.
+
+### Local command line
+
+```bash
+npm run recall -- doctor                    # configuration + database check
+npm run recall -- capture "call Ada at 4pm" # store without Telegram
+npm run recall -- inbox                     # what still needs review
+npm run recall -- serve                     # start the API and any adapters
+```
+
+### Capture API
+
+The dashboard and scripts use the same service layer as the bot. All routes need an
+owner session (the server enforces this, not the UI).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/captures` | Store a capture (`externalId` makes it idempotent) |
+| `GET` | `/api/captures` | List with filters, sorting and pagination |
+| `GET` | `/api/captures/inbox` | Captures waiting for review |
+| `GET` | `/api/captures/:id` | One capture |
+| `POST` | `/api/captures/:id/reprocess` | Classify a capture that failed earlier |
+| `POST` | `/api/captures/:id/convert` | Change the kind (guarded) |
+| `POST` | `/api/captures/:id/undo` | Reversible removal |
+| `DELETE` | `/api/captures/:id` | Permanent; requires `{"force": true}` |
+
+---
+
 ## Configuration
 
 All configuration comes from environment variables, validated at startup with
@@ -135,9 +206,11 @@ silently do nothing: `/api/health` reports exactly which providers are configure
 │   │   │   ├── config/   environment schema and validation
 │   │   │   ├── db/       Prisma client, pragmas, transactions
 │   │   │   ├── http/     Fastify server, auth, routes
-│   │   │   ├── lib/      time, text, nlp, retry, errors, logger
+│   │   │   ├── lib/      time, text, nlp, retry, errors, logging, crypto helpers
 │   │   │   ├── services/ application services
 │   │   │   ├── stt/      speech-to-text provider interfaces
+│   │   │   ├── telegram/ bot API client, polling, webhook, commands, formatting
+│   │   │   ├── cli.ts      local `doctor` / `capture` / `inbox` / `serve`
 │   │   │   ├── context.ts  dependency container
 │   │   │   ├── mappers.ts  database rows -> API DTOs
 │   │   │   └── ports.ts    clock + notifier ports
@@ -155,6 +228,9 @@ silently do nothing: `/api/health` reports exactly which providers are configure
 ```bash
 npm run dev:server              # API with hot reload
 npm run dev:web                 # dashboard dev server (Milestone 5)
+npm run recall -- doctor         # check configuration and the database
+npm run recall -- capture "…"    # store a capture from the terminal
+npm run recall -- inbox          # captures waiting for review
 npm run db:migrate              # create/apply a migration in development
 npm run db:deploy               # apply migrations (production)
 npm run db:status               # show migration state

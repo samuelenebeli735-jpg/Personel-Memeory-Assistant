@@ -39,16 +39,23 @@ apps/server/tests/
 ├── helpers/
 │   ├── global-setup.ts   builds a migrated template SQLite database once
 │   ├── db.ts             copies the template into an isolated database per file
-│   └── app.ts            test configuration, context, logger, notifier, HTTP app
+│   ├── app.ts            test configuration, context, logger, notifier, HTTP app
+│   └── telegram.ts       fake Bot API, update builders, adapter factory
 ├── unit/
-│   ├── config.test.ts            environment schema, hardening, failure messages
-│   ├── time.test.ts              zone conversion, DST, local days, quiet hours
-│   ├── nlp.test.ts                natural-language dates, ambiguity guards, recurrence
-│   ├── rules-classifier.test.ts   deterministic classification and extraction
-│   ├── retry.test.ts              backoff, caps, jitter, retry policy
-│   └── auth.test.ts               session signing, tampering, expiry, log redaction
+│   ├── config.test.ts              environment schema, hardening, failure messages
+│   ├── time.test.ts                zone conversion, DST, local days, quiet hours
+│   ├── nlp.test.ts                 natural-language dates, ambiguity guards, recurrence
+│   ├── rules-classifier.test.ts    deterministic classification and extraction
+│   ├── retry.test.ts               backoff, caps, jitter, retry policy
+│   ├── auth.test.ts                session signing, tampering, expiry, log redaction
+│   ├── telegram-format.test.ts     commands, confirmations, keyboards, callback data
+│   ├── telegram-notifier.test.ts   proactive delivery, failure classification
+│   └── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update
 └── integration/
-    └── health-and-auth.test.ts    HTTP authorization, health, settings persistence
+    ├── health-and-auth.test.ts     HTTP authorization, health, settings persistence
+    ├── telegram-capture.test.ts    owner gate, idempotency, correction, undo, webhook
+    ├── capture-api.test.ts         ingest, pagination, filters, convert, undo, purge
+    └── capture-atomicity.test.ts   injected write failure rolls the derivation back
 ```
 
 ### How the database tests work
@@ -64,9 +71,9 @@ silently ignored.
 Executed 2026-10-17 on Node v24.17.0, npm 11.13.0, Windows (win32):
 
 ```
- Test Files  7 passed (7)
-      Tests  117 passed (117)
-   Duration  11.03s
+ Test Files  13 passed (13)
+      Tests  196 passed (196)
+   Duration  14.14s
 ```
 
 | Suite | Tests | Result |
@@ -77,11 +84,21 @@ Executed 2026-10-17 on Node v24.17.0, npm 11.13.0, Windows (win32):
 | `unit/rules-classifier.test.ts` | 20 | passed |
 | `unit/retry.test.ts` | 8 | passed |
 | `unit/auth.test.ts` | 14 | passed |
+| `unit/telegram-format.test.ts` | 21 | passed |
+| `unit/telegram-notifier.test.ts` | 8 | passed |
+| `unit/telegram-polling.test.ts` | 6 | passed |
 | `integration/health-and-auth.test.ts` | 17 | passed |
-| **Total** | **117** | **all passed** |
+| `integration/telegram-capture.test.ts` | 27 | passed |
+| `integration/capture-api.test.ts` | 14 | passed |
+| `integration/capture-atomicity.test.ts` | 3 | passed |
+| **Total** | **196** | **all passed** |
 
 `npm run typecheck` (shared + server, `--strict`, `noUncheckedIndexedAccess`)
-passes with no errors.
+passes with no errors. `npm run build` (shared + server) also passes.
+
+The CLI was exercised against a throwaway migrated database (not the owner's):
+`doctor` reported the real configuration, `capture` stored a task with the correct
+local time, and `inbox` read it back.
 
 ## What is covered
 
@@ -156,6 +173,54 @@ created from configuration on first read; settings update and persist; an invali
 time zone produces a field-level `400`; a half-configured quiet-hours window is
 rejected; an unknown field never reaches the response.
 
+### Atomicity of derivation
+
+A database-level write failure is injected in the middle of a capture's derivation
+(after the task row exists, when the reminder write fails). The test asserts that
+**no** task, reminder, tag or tag link survives, that the capture ends `RECEIVED`
+with `kind = UNKNOWN`, and that the original text is still stored. This is the only
+test that proves rollback rather than a code path that merely avoids writing; the
+injected failure is a real Prisma client extension, so the rollback is SQLite's.
+
+### Telegram capture (real adapter, real database, fake Bot API)
+
+An owner message creates exactly one capture with the text byte-for-byte intact and
+a confirmation that names the interpreted kind and the local time; the reply carries
+one callback per kind plus undo. Replaying the same update stores nothing and says
+"Already saved"; a new message id is a new capture. A non-owner gets a neutral
+refusal, no capture, no callback edits, and no owner id in the reply. An owner
+messaging from a group is told to use a private chat. An edited Telegram message is
+ignored so stored text cannot be rewritten.
+
+With an AI provider that throws, the capture is still stored, classified by the
+deterministic rules, and the reply is explicit that the provider was unavailable.
+Stickers/documents/photos are acknowledged and ignored. A voice message is stored
+with the `[voice message — not transcribed yet]` marker, `UNKNOWN` +
+`NEEDS_REVIEW`, provenance metadata, and no fabricated task; a caption is used as
+its text. A message with no text asks for words. `/help`, `/inbox`, `/undo`,
+`/settings` and unknown commands all answer without creating a capture; a planned
+command says which milestone will bring it.
+
+Correction buttons convert a capture's kind, keep `rawText`, and replace the derived
+record. `/undo` shows a confirmation and deletes nothing until `U:` is pressed; `K:`
+keeps everything; a confirmed undo soft-deletes the capture and removes its records.
+Webhook mode rejects a wrong secret (401) and a malformed body (400), accepts a
+correctly signed update, refuses to run with no secret (503), and still returns 200
+for a non-owner so Telegram does not retry forever.
+
+Reminders are created only when the user asked; a plain deadline produces none.
+
+### Capture API
+
+Every route is `401` without a session. Ingest is verbatim, idempotent on
+`externalId` (second call returns `duplicate: true` and one row), rejects blank text,
+and `captureOnly` skips classification. Listing paginates with a real `total`,
+filters by kind and free text, rejects an unknown status, and `GET /:id` returns
+`404` for an unknown id. The inbox returns only review-flagged captures. Conversion
+keeps the raw text and creates the new record; `reprocess` classifies a
+`RECEIVED` capture. Undo is reversible and the permanent delete requires
+`{"force": true}`, otherwise it answers `400` with `requiresConfirmation`.
+
 ## Failure tests
 
 Deliberately included as first-class cases, not afterthoughts:
@@ -165,26 +230,34 @@ Deliberately included as first-class cases, not afterthoughts:
 | Missing environment variables | `config.test.ts` — every required value, per environment |
 | Placeholder credentials | `config.test.ts` — placeholder tokens rejected per feature |
 | Database unavailable | `health-and-auth.test.ts` — degraded report, no crash |
-| AI provider timeout / network error | `retry.test.ts` (policy) + provider unit tests in Milestone 6 |
+| AI provider timeout / network error | `retry.test.ts` (policy); live provider in Milestone 6 |
 | Malformed AI output | `parseClassification` unit tests in Milestone 6 |
-| Provider unreachable during capture | Milestone 2 acceptance criterion |
-| Telegram delivery failure | Milestone 4 |
-| Duplicate Telegram updates | Milestone 2 |
+| Provider unreachable during capture | `telegram-capture.test.ts` — capture stored, rules used, user told |
+| Telegram delivery failure | `telegram-notifier.test.ts` — 429 retryable, 4xx permanent, network error never throws |
+| Duplicate Telegram updates | `telegram-capture.test.ts` — replay stores one capture |
+| Telegram API failure while polling | `telegram-polling.test.ts` — backoff, `retry_after`, bad token stops |
+| One bad update in a batch | `telegram-polling.test.ts` — loop continues, offset advances |
 | Restart with pending reminders | Milestone 4 |
 | Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts` |
-| Unauthorized user access | `health-and-auth.test.ts`; Telegram case in Milestone 2 |
-| Secret leakage into logs | `auth.test.ts` |
+| Unauthorized user access | `health-and-auth.test.ts`; `telegram-capture.test.ts` (message and callback) |
+| Secret leakage into logs | `auth.test.ts`; webhook secret compared in constant time |
+| Destructive delete by mistake | `capture-api.test.ts` — purge refuses without `force` |
+| Converting an edited record | service guard, covered with Milestone 3 service tests |
 
 ## Distinguishing mocked from real
 
 - **Real:** every integration test above runs a real Fastify server, real Prisma
   against a real SQLite file, and the real migrations.
+- **Real:** the Telegram adapter, its owner gate, idempotency, correction and undo
+  paths all run as production code. Only the HTTP transport is faked.
 - **Real:** time-zone behaviour uses the platform's IANA database.
 - **Injected fakes, no external calls:** the clock (`advanceableClock`), the
-  notifier (`recordingNotifier`) and `sleep` (`withRetry`).
+  notifier (`recordingNotifier`), `sleep` (`withRetry` and polling), the Telegram
+  Bot API (`createFakeTelegram`), and the AI provider in the outage test.
 - **Not yet exercised against a live service:** Telegram, any AI provider, any
-  speech-to-text provider. These are implemented behind interfaces with injected
-  `fetch` for testing; **no live call has been made and none is claimed.**
+  speech-to-text provider. No live call has been made and none is claimed. The
+  adapter has been verified against the Bot API contract with a fake transport, not
+  against api.telegram.org.
 
 ## Decisions forced by tests
 
@@ -204,11 +277,34 @@ Deliberately included as first-class cases, not afterthoughts:
    out tomorrow morning" has no explicit task marker but is plainly a task, so
    imperative sentence-opening verbs now contribute to the task score. Plain
    "I should <verb>" was added as a cue as well.
+6. **The test-database reset helper used Prisma model names as raw SQL table
+   names.** `DELETE FROM "reminderDeliveries"` failed with "no such table" because
+   the migration maps to snake_case (`reminder_deliveries`). The helper had never
+   been exercised because the first integration file did not reset between tests.
+   Fixed by deleting through the typed Prisma delegates in foreign-key order.
+7. **A polling stop is immediate, not "after the current batch".** One test expected
+   an update in the same batch as a `stop()` to still be handled. The loop's
+   behaviour (stop before processing the next item) is the safer reading, so the
+   test expectation was corrected, not the loop.
+8. **`Saved as a idea` was wrong.** Confirmation wording is user-facing, so the
+   article is now chosen from the kind, and `UNKNOWN` says "Saved this:" instead of
+   inventing a label.
+9. **Classification was not actually atomic.** The documentation claimed one
+   transaction; the code wrote the derived records and the capture's classification
+   state with separate awaits. Found by review rather than by a failing test, which
+   was itself the problem — nothing asserted it. `ingest`, `convert`, `reprocess`,
+   `undo` and `purge` now wrap their writes in `withTransaction`, and
+   `capture-atomicity.test.ts` injects a real database-level write failure part-way
+   through the derivation (after the task row exists) and asserts nothing survives
+   and the capture is reprocessable. Without that test the fix would have been
+   unverified.
 
 ## Next testing work (per milestone)
 
-- Milestone 2: duplicate-update idempotency, non-owner refusal, capture stored when
-  the AI provider fails, `/undo` with confirmation.
+- Milestone 2: **done** — duplicate-update idempotency, non-owner refusal, capture
+  stored when the AI provider fails, correction buttons, `/undo` with confirmation,
+  webhook secret, voice marker, the capture API, and derivation rollback under an
+  injected write failure.
 - Milestone 3: state-transition enforcement, relationship persistence, search
   filtering and pagination, export/restore round-trip.
 - Milestone 4: exactly-once delivery, restart recovery, quiet hours deferral, daily

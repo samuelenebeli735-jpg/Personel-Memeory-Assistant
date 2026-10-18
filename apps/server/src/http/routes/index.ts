@@ -9,6 +9,7 @@ import type { FastifyInstance } from 'fastify';
 
 import type { AppContext } from '../../context.js';
 import type { RuntimeStatus } from '../server.js';
+import { registerCaptureRoutes } from './capture-routes.js';
 import { registerHealthRoutes } from './health-routes.js';
 import { registerSettingsRoutes } from './settings-routes.js';
 
@@ -19,4 +20,5 @@ export async function registerProtectedRoutes(
 ): Promise<void> {
   await registerHealthRoutes(app, ctx, runtime);
   await registerSettingsRoutes(app, ctx);
+  await registerCaptureRoutes(app, ctx);
 }

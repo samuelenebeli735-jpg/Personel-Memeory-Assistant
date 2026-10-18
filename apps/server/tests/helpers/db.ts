@@ -16,22 +16,35 @@ export interface TestDb {
 }
 
 const TABLES_IN_DELETE_ORDER = [
-  'reminderDeliveries',
-  'reminders',
-  'captureRelations',
-  'captureTags',
-  'taskTags',
-  'noteTags',
-  'ideaTags',
-  'tasks',
-  'notes',
-  'ideas',
-  'events',
-  'projects',
-  'tags',
-  'captures',
+  'reminderDelivery',
+  'reminder',
+  'captureRelation',
+  'captureTag',
+  'taskTag',
+  'noteTag',
+  'ideaTag',
+  'task',
+  'note',
+  'idea',
+  'event',
+  'project',
+  'tag',
+  'capture',
   'userSettings',
 ] as const;
+
+/** Prisma model delegates are keyed by the lower-camel model name. */
+type DeletableModel = (typeof TABLES_IN_DELETE_ORDER)[number];
+
+/** Wipes every row while keeping the schema, in foreign-key-safe order. */
+async function deleteAllRows(db: Db): Promise<void> {
+  for (const model of TABLES_IN_DELETE_ORDER) {
+    const delegate = (db as unknown as Record<DeletableModel, { deleteMany(): Promise<unknown> }>)[
+      model
+    ];
+    await delegate.deleteMany();
+  }
+}
 
 export async function createTestDatabase(label = 'test'): Promise<TestDb> {
   if (!fs.existsSync(TEMPLATE_DB)) {
@@ -66,10 +79,7 @@ export async function createTestDatabase(label = 'test'): Promise<TestDb> {
     db,
     filePath,
     async reset() {
-      for (const table of TABLES_IN_DELETE_ORDER) {
-        // Table names come from a fixed list, never from user input.
-        await db.$executeRawUnsafe(`DELETE FROM "${table}";`);
-      }
+      await deleteAllRows(db);
     },
     async cleanup() {
       await db.$disconnect();

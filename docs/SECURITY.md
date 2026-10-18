@@ -23,12 +23,27 @@ user activity, monitoring of other applications.
 ### Telegram
 
 - `TELEGRAM_OWNER_IDS` is a comma-separated allow-list of numeric Telegram user
-  ids. Any update from another user id is refused with a neutral message; nothing
-  about stored data is disclosed and nothing is written.
+  ids. The check runs in the adapter **before** any service call, for both messages
+  and callback-query buttons. Any update from another user id is refused with a
+  neutral message; nothing about stored data is disclosed and nothing is written
+  (integration test).
+- An owner messaging from a group chat is told to use a private chat; group content
+  is never stored.
 - When `TELEGRAM_ENABLED=true`, startup validation *fails* if no owner id is
   configured. There is no "open bot" mode.
 - Webhook mode requires a `secret_token`; the handler compares the
-  `X-Telegram-Bot-Api-Secret-Token` header and rejects mismatches.
+  `X-Telegram-Bot-Api-Secret-Token` header with `timingSafeEqual` and rejects
+  mismatches with `401` before the body is read. With no secret configured the
+  endpoint refuses with `503` rather than accepting unauthenticated updates.
+- A non-owner gets `200` from the webhook (nothing stored) so Telegram does not
+  retry the same refusal indefinitely.
+- `edited_message` updates are ignored: stored text is immutable, so a later edit
+  cannot rewrite history or invalidate derived records.
+- Idempotency on `(source, externalId)` means a replayed update cannot create a
+  second capture; a replay returns the existing one.
+- A reply that fails to send is logged and swallowed. The capture is already
+  committed, and message content is never copied into logs unless
+  `LOG_MESSAGE_CONTENT=true`.
 
 ### Dashboard
 
@@ -167,6 +182,11 @@ for the server or web dependency trees other than that chain).
 - [x] Expired session rejected.
 - [x] Logs never contain secrets, capture text or transcripts (unit test).
 - [x] Invalid configuration fails fast without echoing secret values.
-- [ ] Telegram non-owner refusal (Milestone 2).
-- [ ] Webhook secret verification (Milestone 2).
+- [x] Telegram non-owner refusal, for messages and for callback buttons
+      (`telegram-capture.test.ts`).
+- [x] Webhook secret verification: wrong secret → 401 and nothing stored; missing
+      secret → 503; malformed body → 400 (`telegram-capture.test.ts`).
+- [x] Replayed Telegram update creates no second capture (integration test).
+- [x] A permanent delete requires `{"force": true}`; the softer `undo` is separate
+      (`capture-api.test.ts`).
 - [ ] Prompt-injection resistance of the recall path (Milestone 7).

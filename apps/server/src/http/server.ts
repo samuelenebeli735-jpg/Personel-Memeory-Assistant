@@ -16,7 +16,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { AppContext } from '../context.js';
 import { AppError, toAppError } from '../lib/errors.js';
 import { extractToken, sessionCookieOptions, verifySession } from './auth.js';
-import { registerPublicRoutes } from './routes/public-routes.js';
+import { registerPublicRoutes, type PublicRouteOptions } from './routes/public-routes.js';
 import { registerProtectedRoutes } from './routes/index.js';
 
 export interface SchedulerStatusSnapshot {
@@ -37,6 +37,8 @@ export interface BuildServerOptions {
   runtime?: RuntimeStatus;
   /** Set to false in tests to reduce noise. */
   enableRateLimit?: boolean;
+  /** Registered by the process entry point when the bot runs in webhook mode. */
+  telegramWebhook?: PublicRouteOptions['telegramWebhook'];
 }
 
 /** Attaches the resolved session to the request for downstream hooks/routes. */

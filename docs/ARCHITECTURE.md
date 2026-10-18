@@ -152,6 +152,16 @@ transaction (`withTransaction`, bounded timeouts). A partial write would mean
 | D15 | Structured JSON logs with a redaction allow-list | Debuggable in production without ever writing a private thought or a token to disk. |
 | D16 | Tests copy a migrated template database | Exercises the real migrations while keeping each test file fast and isolated. |
 | D17 | No FTS5 or vector search yet | SQLite `LIKE`-based search over a personal dataset is fast and predictable. Full-text or semantic search is deferred until a real retrieval need is demonstrated (backlog item). |
+| D18 | A failed reply is logged, never thrown | The capture is already committed. Turning a Telegram send failure into an exception would either lose the acknowledgement or trigger a retry that produces a confusing "Already saved" instead of the real confirmation. The capture matters more than the reply. |
+| D19 | Polling offset lives in memory | No new table for one integer. A restart re-fetches recent updates, and `(source, externalId)` idempotency makes the replay a no-op. Documented as a known limitation rather than hidden. |
+| D20 | `edited_message` is ignored | `rawText` is the immutable record of what the user said. Accepting edits would silently rewrite history and invalidate derived records. A correction is an explicit action with its own record of who changed what. |
+| D21 | Voice is stored with a marker, not transcribed early | The brief requires voice to be accepted in Milestone 2 but real transcription in Milestone 6. A placeholder row with provenance metadata and `NEEDS_REVIEW` preserves the message without pretending to understand it. |
+| D22 | Unsupported media is acknowledged, not stored | A sticker has no text to keep. Silently dropping it looks like a bug; a short note explains the limitation. |
+| D23 | Commands from later milestones answer "not yet" | `/tasks` can exist in the UI as a plan without being a working feature. Pretending otherwise (or silently ignoring the command) would break the "no decorative buttons" rule. |
+| D24 | The webhook secret is compared with `timingSafeEqual` | A plain string comparison leaks length and prefix timing. The hook is public by necessity, so it is the one place that needs this care. |
+| D25 | Undo is soft; purge is explicit | `undo` sets `deletedAt` and keeps the audit trail; permanent deletion requires `{"force": true}`. Destructive actions should need a deliberate second intent. |
+| D26 | The capture and its derivation are two transactions, not one | Committing the capture first means a provider outage cannot lose the user's words (D8), and the second transaction keeps the derived records and the capture's classification state consistent. The alternative — one transaction — would roll the raw text back on a classification failure, which is the one thing that must never happen. The second transaction's rollback is proven by an injected write failure (`capture-atomicity.test.ts`). |
+| D27 | No fallback between polling and webhook mode | A deployment that silently switches transports hides a misconfiguration and can double-deliver. The mode is explicit and startup fails if its requirements are unmet. |
 
 ## 6. Extension points
 
