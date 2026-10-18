@@ -5,7 +5,16 @@
  * can never break a message or inject formatting. Every function here is pure and
  * unit tested.
  */
-import type { CaptureDto, CaptureKind, ReminderDto, TaskDto } from '@recall/shared';
+import type {
+  CaptureDto,
+  CaptureKind,
+  IdeaDto,
+  NoteDto,
+  ProjectDto,
+  ReminderDto,
+  SearchResponse,
+  TaskDto,
+} from '@recall/shared';
 
 import { describeRelative, formatLocalCompact, formatLocalHuman } from '../lib/time.js';
 import { truncate } from '../lib/text.js';
@@ -188,6 +197,78 @@ export function formatCaptureList(captures: CaptureDto[], timeZone: string, head
   return [header, '', ...captures.slice(0, 15).map((c) => formatCaptureLine(c, timeZone))].join('\n');
 }
 
+export function formatIdeaList(ideas: IdeaDto[], timeZone: string, header: string): string {
+  if (ideas.length === 0) return `${header}\n\nNo ideas saved yet.`;
+  const shown = ideas.slice(0, 20);
+  const lines = [header, ''];
+  for (const idea of shown) {
+    lines.push(`• ${truncate(idea.title, 90)}`);
+    if (idea.body) lines.push(`   ${quote(idea.body, 120)}`);
+    lines.push(
+      `   ${formatLocalCompact(new Date(idea.createdAt), timeZone)}${idea.projectName ? ` · [${idea.projectName}]` : ''} · #${idea.id.slice(0, 6)}`,
+    );
+  }
+  if (ideas.length > shown.length) lines.push('', `…and ${ideas.length - shown.length} more.`);
+  return lines.join('\n');
+}
+
+export function formatNoteList(notes: NoteDto[], timeZone: string, header: string): string {
+  if (notes.length === 0) return `${header}\n\nNo notes saved yet.`;
+  const shown = notes.slice(0, 20);
+  const lines = [header, ''];
+  for (const note of shown) {
+    lines.push(`• ${truncate(note.title ?? quote(note.body, 70), 90)}`);
+    if (note.url) lines.push(`   ${truncate(note.url, 120)}`);
+    lines.push(
+      `   ${formatLocalCompact(new Date(note.createdAt), timeZone)}${note.projectName ? ` · [${note.projectName}]` : ''} · #${note.id.slice(0, 6)}`,
+    );
+  }
+  if (notes.length > shown.length) lines.push('', `…and ${notes.length - shown.length} more.`);
+  return lines.join('\n');
+}
+
+export function formatProjectList(projects: ProjectDto[], header: string): string {
+  if (projects.length === 0) return `${header}\n\nNo projects yet.`;
+  const lines = [header, ''];
+  for (const project of projects.slice(0, 30)) {
+    const open = project.counts.openTasks > 0 ? ` · ${project.counts.openTasks} open` : '';
+    const archived = project.status === 'ARCHIVED' ? ' (archived)' : '';
+    lines.push(`• ${truncate(project.name, 80)}${archived}${open}`);
+    const parts: string[] = [];
+    if (project.counts.notes > 0) parts.push(`${project.counts.notes} notes`);
+    if (project.counts.ideas > 0) parts.push(`${project.counts.ideas} ideas`);
+    if (project.counts.events > 0) parts.push(`${project.counts.events} appointments`);
+    if (parts.length > 0) lines.push(`   ${parts.join(' · ')}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Search results. Each row states the type and, when the match was not in the
+ * title, which field matched — so a result is never unexplained.
+ */
+export function formatSearchResults(response: SearchResponse, header: string): string {
+  if (response.items.length === 0) {
+    return `${header}\n\nNothing matched. Try fewer or different words.`;
+  }
+  const lines = [header, ''];
+  response.items.slice(0, 15).forEach((item, index) => {
+    lines.push(
+      `${index + 1}. ${item.type.toLowerCase()} · ${truncate(item.title, 80)}${item.status ? ` (${item.status.toLowerCase()})` : ''}`,
+    );
+    if (item.matchedOn.length > 0) lines.push(`   matched: ${item.matchedOn.join(', ')}`);
+    if (item.snippet.length > 0 && !item.title.includes(item.snippet)) {
+      lines.push(`   ${truncate(item.snippet, 140)}`);
+    }
+    lines.push(`   #${item.id.slice(0, 6)}`);
+  });
+  const shown = Math.min(15, response.items.length);
+  if (response.total > shown) {
+    lines.push('', `…${response.total - shown} more. Add words to narrow it down.`);
+  }
+  return lines.join('\n');
+}
+
 export function formatReminderLine(reminder: ReminderDto, timeZone: string): string {
   const when = formatLocalHuman(new Date(reminder.remindAt), timeZone);
   const status = reminder.status === 'SCHEDULED' ? '' : ` (${reminder.status.toLowerCase()})`;
@@ -213,6 +294,13 @@ export function formatHelp(ownerConfigured: boolean): string {
     '• Save this link for me: https://example.com/post',
     '',
     'Commands',
+    '/tasks — open tasks (add "all" to include finished ones)',
+    '/today — what is due today',
+    '/overdue — what is past its deadline',
+    '/search <words> — search everything you have saved',
+    '/ideas — your ideas',
+    '/notes — your notes and saved links',
+    '/projects — your projects',
     '/inbox — captures that need review',
     '/undo — undo your most recent capture',
     '/settings — your configuration',
@@ -221,8 +309,8 @@ export function formatHelp(ownerConfigured: boolean): string {
     'You can also tap the buttons under any confirmation to change how something',
     'was classified.',
     '',
-    'Task lists, search, reminders and questions about what you saved are on the',
-    'way in the next milestones.',
+    'Reminders and questions about what you saved are on the way in the next',
+    'milestones.',
   ];
   if (!ownerConfigured) {
     lines.push('', 'Warning: no owner id is configured, so I cannot accept messages.');

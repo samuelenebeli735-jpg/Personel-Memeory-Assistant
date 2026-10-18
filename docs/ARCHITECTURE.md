@@ -25,7 +25,7 @@
    (dashboard)      │  http api (Fastify)      │─▶│  application services    │
                     │  session auth, cors,     │  │  capture, task, library, │
                     │  rate limits, dto mapping│  │  reminder, search,       │
-                    └──────────────────────────┘  │  recall, briefing        │
+                    └──────────────────────────┘  │  export, recall, briefing│
                                                   └───────┬──────────┬───────┘
                                                           │          │
                        ┌──────────────────────────────────┘          │
@@ -84,6 +84,35 @@ infrastructure. Services never import Fastify or Telegram types.
 
 **Invariant:** the capture row is never rewritten by classification. Editing a
 task changes the task; it never changes what the user originally sent.
+
+### Search (Milestone 3)
+
+1. The query is validated against the shared `searchQuerySchema`; a type-specific
+   filter implies its type (`status`/`priority` → tasks, `kind` → captures), and a
+   `types` list narrows to those types.
+2. The query is split into words. Every word must appear in one of the type's
+   searched fields, but not necessarily in the same field; the SQL (`AND` of `OR`s)
+   and the in-application `matchedOn` computation apply the same rule, so a result
+   can never claim a match the database did not agree with.
+3. Each type is fetched into a bounded window and the windows are merged and sorted
+   once, so `limit`/`offset` paginate a single deterministic order. `total` comes
+   from real `count` queries, so it is accurate even beyond the window.
+4. A result carries `matchedOn` (the fields that matched) and a `snippet` centred on
+   the match, so the UI can explain it rather than guess.
+
+### Export and restore (Milestone 3)
+
+1. `GET /api/export` reads every table into a versioned bundle (`schemaVersion`) and
+   reports the row counts. The bundle is the backup format; it is deliberately plain
+   JSON so it can be read without Recall.
+2. `POST /api/restore` validates the bundle, rejects a newer `schemaVersion`, and
+   walks tables parent-first. Each row is matched against the database by primary
+   key and then by natural identity (tag name, `(source, externalId)`,
+   reminder `occurrenceKey`); an existing row is skipped and its id mapped, so links
+   that follow point at the row that actually exists.
+3. Nothing is deleted, updated or overwritten, and the default is a **dry run**.
+   A row that cannot be written is reported with its table and id; the rest still
+   loads, and re-running after a fix is safe.
 
 ### Reminder delivery (Milestone 4 target)
 
@@ -162,6 +191,10 @@ transaction (`withTransaction`, bounded timeouts). A partial write would mean
 | D25 | Undo is soft; purge is explicit | `undo` sets `deletedAt` and keeps the audit trail; permanent deletion requires `{"force": true}`. Destructive actions should need a deliberate second intent. |
 | D26 | The capture and its derivation are two transactions, not one | Committing the capture first means a provider outage cannot lose the user's words (D8), and the second transaction keeps the derived records and the capture's classification state consistent. The alternative — one transaction — would roll the raw text back on a classification failure, which is the one thing that must never happen. The second transaction's rollback is proven by an injected write failure (`capture-atomicity.test.ts`). |
 | D27 | No fallback between polling and webhook mode | A deployment that silently switches transports hides a misconfiguration and can double-deliver. The mode is explicit and startup fails if its requirements are unmet. |
+| D28 | Search is `LIKE` over a bounded window, not full-text | A personal database is small, and `LIKE` needs no schema, no index maintenance and no tokenizer to explain itself. The per-type window (`SEARCH_WINDOW_CAP = 200`) bounds the work; `total` is still exact because it comes from `count`. Honest limits beat a half-configured FTS table. Replacing this with SQLite FTS5 is a backlog item, and `search-service.ts` is the only module that would change. |
+| D29 | Restore is additive, dry-run by default, and reports every row it cannot write | A backup feature that can destroy the live database is worse than none. Restore never deletes or overwrites, so a mistaken call is survivable; the dry run is the default because bulk writes should be asked for. Identity reuse (tag name, `(source, externalId)`, `occurrenceKey`) makes a restore onto a partly-populated database correct instead of conflicting, and rows are written one at a time so one bad row cannot take the transaction with it — the cost is a truthful `errors` list the caller must read. |
+| D30 | `dueAt`/`priority` sorts finish in application code over a bounded window | SQLite sorts `NULL` first on ascending and Prisma cannot express `NULLS LAST`, so an undated task would head a "what is due" list. Rather than pretend, the window is capped (500 rows) and the cap is documented. |
+| D31 | The export bundle includes the tag join tables | A bundle without them would restore every entity and silently drop every tag link while reporting success. `schemaVersion` guards the contract so a future change is detectable rather than assumed. |
 
 ## 6. Extension points
 

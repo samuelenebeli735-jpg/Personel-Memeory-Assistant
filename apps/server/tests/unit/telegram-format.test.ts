@@ -258,15 +258,27 @@ describe('buttonsToReplyMarkup', () => {
 });
 
 describe('formatHelp', () => {
-  it('advertises only commands that exist today', () => {
+  it('advertises exactly the commands that exist today', () => {
     const text = formatHelp(true);
-    expect(text).toContain('/inbox');
-    expect(text).toContain('/undo');
-    expect(text).toContain('/settings');
-    expect(text).toContain('/help');
-    // These arrive in later milestones and must not be advertised as working.
-    expect(text).not.toContain('/tasks —');
-    expect(text).not.toContain('/ask —');
+    for (const name of [
+      '/tasks',
+      '/today',
+      '/overdue',
+      '/search',
+      '/ideas',
+      '/notes',
+      '/projects',
+      '/inbox',
+      '/undo',
+      '/settings',
+      '/help',
+    ]) {
+      expect(text, name).toContain(name);
+    }
+    // Reminders and questions arrive in later milestones and must not be
+    // advertised as working.
+    expect(text).not.toContain('/remind');
+    expect(text).not.toContain('/ask');
   });
 
   it('warns when no owner is configured', () => {

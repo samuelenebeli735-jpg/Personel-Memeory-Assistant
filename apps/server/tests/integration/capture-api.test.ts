@@ -98,8 +98,23 @@ describe('ingest', () => {
   it('stores without classifying when captureOnly is set', async () => {
     const ack = await capture('a thought I have not sorted out', { captureOnly: true });
     expect(ack.capture.status).toBe('RECEIVED');
+    expect(ack.capture.kind).toBe('UNKNOWN');
     expect(ack.created).toHaveLength(0);
     expect(await testDb.db.task.count()).toBe(0);
+  });
+
+  it('honours an explicit forcedKind even when captureOnly is set', async () => {
+    // Contradictory inputs are resolved rather than silently dropped: the owner
+    // said what it is, so that wins, and no classifier runs.
+    const ack = await capture('a thing I have not decided about', {
+      captureOnly: true,
+      forcedKind: 'OTHER',
+    });
+    expect(ack.capture.kind).toBe('OTHER');
+    expect(ack.created).toHaveLength(0);
+
+    const stored = await authed(`/api/captures/${ack.capture.id}`);
+    expect(stored.json().kind).toBe('OTHER');
   });
 });
 
@@ -181,6 +196,38 @@ describe('correcting', () => {
     expect(await testDb.db.task.count()).toBe(1);
   });
 
+  it('refuses to convert a record the owner has edited, unless forced', async () => {
+    const ack = await capture('I need to ring the dentist tomorrow');
+    const task = await testDb.db.task.findFirstOrThrow();
+
+    // Pretend the task was created a minute ago and edited since: the guard
+    // exists so a conversion cannot throw away the owner's own words.
+    await testDb.db.task.update({
+      where: { id: task.id },
+      data: { createdAt: new Date(Date.now() - 60_000) },
+    });
+
+    const refused = await authed(`/api/captures/${ack.capture.id}/convert`, {
+      method: 'POST',
+      payload: { kind: 'IDEA' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({
+      error: { details: { requiresConfirmation: true, edited: [task.id] } },
+    });
+    // Nothing changed: the task is still the task.
+    expect(await testDb.db.task.count()).toBe(1);
+    expect(await testDb.db.idea.count()).toBe(0);
+
+    const forced = await authed(`/api/captures/${ack.capture.id}/convert`, {
+      method: 'POST',
+      payload: { kind: 'IDEA', force: true },
+    });
+    expect(forced.statusCode).toBe(200);
+    expect(await testDb.db.idea.count()).toBe(1);
+    expect(await testDb.db.task.count()).toBe(0);
+  });
+
   it('rejects an unknown kind', async () => {
     const ack = await capture('something');
     const response = await authed(`/api/captures/${ack.capture.id}/convert`, {
@@ -192,6 +239,32 @@ describe('correcting', () => {
 });
 
 describe('removing', () => {
+  it('refuses to undo a record the owner has edited, unless forced', async () => {
+    const ack = await capture('I need to call Ada tomorrow');
+    const task = await testDb.db.task.findFirstOrThrow();
+    await testDb.db.task.update({
+      where: { id: task.id },
+      data: { createdAt: new Date(Date.now() - 60_000) },
+    });
+
+    const refused = await authed(`/api/captures/${ack.capture.id}/undo`, {
+      method: 'POST',
+      payload: {},
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({
+      error: { details: { requiresConfirmation: true, edited: [task.id] } },
+    });
+    expect(await testDb.db.task.count()).toBe(1);
+
+    const forced = await authed(`/api/captures/${ack.capture.id}/undo`, {
+      method: 'POST',
+      payload: { force: true },
+    });
+    expect(forced.statusCode).toBe(200);
+    expect(await testDb.db.task.count()).toBe(0);
+  });
+
   it('undoes reversibly, then purges only with an explicit confirmation', async () => {
     const ack = await capture('I need to call Ada tomorrow');
     expect(await testDb.db.task.count()).toBe(1);

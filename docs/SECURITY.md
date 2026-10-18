@@ -77,10 +77,12 @@ user activity, monitoring of other applications.
 - AI model output is **untrusted**. It is parsed as JSON and validated against
   `classifyCaptureSchema` before anything is persisted. Missing or malformed
   fields are rejected (`ProviderError`), and the raw capture remains stored.
-- SQL is only ever issued through Prisma's parameterised query builder. The two
-  places using `$queryRawUnsafe`/`$executeRawUnsafe` are PRAGMA statements and
-  test-only table truncation with a hard-coded table list — no user input reaches
-  them.
+- SQL is only ever issued through Prisma's parameterised query builder. The only
+  place using raw SQL is the PRAGMA statements that configure the SQLite connection
+  (`$queryRawUnsafe` with hard-coded text); no user input reaches them.
+- A restore bundle is untrusted input: it is validated row by row against Zod before
+  anything is written, rejected if it declares a newer `schemaVersion`, and capped
+  per table so a wrong file cannot turn into an unbounded write.
 
 ## 4. Transport and browser policy
 
@@ -146,13 +148,22 @@ external service that receives anything is Telegram, when the bot is enabled.
 ## 9. Data ownership
 
 - The whole database is a single local file you control.
-- JSON export and a documented restore path are built in from Milestone 3
-  (`GET /api/export`, `POST /api/restore`), with deletion of individual records and
-  of the whole dataset.
+- JSON export and restore are built in (`GET /api/export`, `POST /api/restore`).
+  Export contains **everything**, including private text, so an exported bundle is
+  as sensitive as the database file itself and is git-ignored by default.
+- Restore is the one route that can bulk-write, so it is defensive by design: it
+  never deletes, never updates and never overwrites; it **defaults to a dry run**
+  unless the caller passes `{"dryRun": false}`; it refuses a bundle written by a
+  newer schema version; it caps how many rows it will take per table
+  (`maxRowsPerTable`); and it reuses a row that already exists by id or by its
+  natural key (a tag name, a capture's `(source, externalId)`) instead of colliding
+  with it. Every row it could not write is reported in the response.
 - Deletion semantics: deleting a task removes the task; the original capture
   survives (that is the point of keeping it). Deleting a capture nulls the link on
-  derived records rather than destroying them. `/undo` in Telegram removes a capture
-  together with the records it produced, after an explicit confirmation.
+  derived records rather than destroying them. Deleting a project detaches its
+  members. `/undo` in Telegram removes a capture together with the records it
+  produced, after an explicit confirmation, and refuses if you have since edited one
+  of those records unless you force it.
 - Destructive actions require confirmation.
 
 ## 10. Local development is not production

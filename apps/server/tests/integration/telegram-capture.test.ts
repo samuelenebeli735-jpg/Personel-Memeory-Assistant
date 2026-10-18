@@ -301,9 +301,17 @@ describe('commands', () => {
 
   it('is honest that a planned command is not wired up yet', async () => {
     const { ctx, adapter, fake } = setup();
-    await adapter.handleUpdate(textUpdate('/tasks'));
+    await adapter.handleUpdate(textUpdate('/remind me at 4pm'));
     expect(fake.sent[0]).toMatch(/not available yet/);
-    expect(fake.sent[0]).toMatch(/Milestone 3/);
+    expect(fake.sent[0]).toMatch(/Milestone 4/);
+    expect(await ctx.db.capture.count()).toBe(0);
+  });
+
+  it('answers a library command that is wired up', async () => {
+    const { ctx, adapter, fake } = setup();
+    await adapter.handleUpdate(textUpdate('/tasks'));
+    expect(fake.sent[0]).toMatch(/Open tasks/);
+    expect(fake.sent[0]).not.toMatch(/not available yet/);
     expect(await ctx.db.capture.count()).toBe(0);
   });
 

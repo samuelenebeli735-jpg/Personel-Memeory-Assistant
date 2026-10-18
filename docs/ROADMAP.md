@@ -112,32 +112,62 @@ offset is in memory; idempotency makes that harmless.
 
 ---
 
-## Milestone 3 — Tasks, library and search  ·  Not started
+## Milestone 3 — Tasks, library and search  ·  **Done**
 
-**Scope**
+**Goal:** the owner can work with what was captured — find it, change it, and get
+it back out — without a dashboard and without a cloud account.
 
-- Task CRUD with states `PENDING → IN_PROGRESS → COMPLETED|CANCELLED`, a guarded
-  transition table, priority, deadline, tags, category and project.
-- Ideas, notes and saved references are separate entities and never auto-promote
-  into obligations.
-- Events carry `startsAt`/`endsAt`.
-- Projects group tasks, ideas, notes and events.
-- Search across capture text, task titles, note bodies, idea titles and project
-  names, with filters for type, status, project, tag, date and priority, plus
-  sorting and pagination.
-- `/tasks`, `/today`, `/overdue`, `/search`, `/ideas`, `/notes`, `/projects`
-  Telegram commands and matching API endpoints.
-- Data export (JSON) and restore.
+**Delivered**
 
-**Acceptance criteria**
+- Task management with the guarded transition table
+  (`PENDING → IN_PROGRESS → COMPLETED|CANCELLED`, plus an explicit *reopen* back to
+  `PENDING`). Completing records `completedAt`; reopening clears it; an invalid
+  transition is rejected with the two states named. Nothing completes a task as a
+  side effect of editing it.
+- Notes, ideas, events and projects as separate entities with their own fields.
+  An idea becomes a task only through an explicit `POST /ideas/:id/promote`, and
+  the idea is kept.
+- Projects group members, expose per-kind counts, and detach (never delete) their
+  members on delete.
+- **Cross-entity search** (`services/search-service.ts`): one query over captures,
+  tasks, notes, ideas, events, projects and reminders, with filters for type,
+  status, capture kind, project, tag, priority, date range and deleted rows, plus
+  sorting (relevance, dates, title) and merged pagination with an accurate total.
+  Every result reports the fields that matched (`matchedOn`) and a snippet centred
+  on the match.
+- Library HTTP API for every entity, with pagination and filters, plus
+  `/tasks/today`, `/tasks/overdue`, `/tasks/counts`, `/tags` and `/tags/prune`.
+- **Export and restore**: `GET /api/export` returns a versioned, lossless JSON
+  bundle of every table; `POST /api/restore` is additive, dry-run by default,
+  identity-aware (a tag that already exists by name or a capture that already
+  exists by `(source, externalId)` is reused rather than duplicated) and reports
+  any row it could not write instead of dropping it silently.
+- Telegram commands `/tasks` (`all` for finished), `/today`, `/overdue`,
+  `/search` (also `/find`), `/ideas`, `/notes`, `/projects`, all reading the owner's
+  configured time zone.
 
-- [ ] An idea is distinguishable from a task everywhere, including search.
-- [ ] Completing a task records `completedAt` and never happens as a side effect of
-      discussing it.
-- [ ] Invalid state transitions are rejected with a clear error.
-- [ ] Search returns matches from captures *and* structured records, with the
-      matched field reported.
-- [ ] REST endpoints are covered by integration tests, including pagination.
+**Acceptance criteria — verified**
+
+- [x] An idea is distinguishable from a task everywhere, including search: they
+      are separate rows, separate types in results, and promotion is explicit.
+- [x] Completing a task records `completedAt` and never happens as a side effect of
+      discussing it (asserted: editing the title leaves the task `PENDING`).
+- [x] Invalid state transitions are rejected with a clear error naming both states.
+- [x] Search returns matches from captures *and* structured records, with the
+      matched field reported and the snippet centred on the match.
+- [x] REST endpoints are covered by integration tests, including pagination and
+      export/restore round-trip.
+
+**Verification:** 292 tests pass across 18 files (`npx vitest run`,
+`Test Files 18 passed`, `Tests 292 passed`, 37.81s); `npm run typecheck` and
+`npm run build` pass. Search is exercised over seeded rows of every type, and
+restore is checked by exporting a populated database, wiping it, restoring, and
+exporting again to compare bundle-for-bundle.
+
+**Known limitation:** search uses `LIKE` over a bounded per-type window
+(`SEARCH_WINDOW_CAP = 200` rows per type per query) rather than full-text search;
+correct for personal-scale data, and recorded in `docs/ARCHITECTURE.md` (D28) as a
+backlog item.
 
 ---
 

@@ -39,6 +39,26 @@ export interface TaskFilter {
 
 const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 
+/**
+ * Rows fetched before sorting in application code. `dueAt` and `priority` are
+ * nullable and SQLite sorts NULL first in ascending order, which would put
+ * undated tasks at the top of a "what is due" list. Prisma cannot express
+ * NULLS LAST on SQLite, so those two sorts are finished here over a bounded
+ * window (see docs/ARCHITECTURE.md, D30).
+ */
+const NULL_SORT_WINDOW = 500;
+
+/**
+ * Decides the order of two nullable values: nulls always sort last. Returns
+ * `null` when both values are present and the caller must compare them.
+ */
+function compareNullable(a: string | null, b: string | null): number | null {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return null;
+}
+
 export function assertTaskTransition(from: TaskStatus, to: TaskStatus): void {
   const allowed = TASK_TRANSITIONS[from];
   if (!allowed.includes(to)) {
@@ -91,29 +111,47 @@ export async function findTasks(db: Db, filter: TaskFilter, now: Date): Promise<
 
   const order = filter.order ?? 'asc';
   const sort = filter.sort ?? 'dueAt';
-  const orderBy: Record<string, unknown>[] =
-    sort === 'priority'
-      ? [{ priority: order }, { dueAt: 'asc' }]
-      : [{ [sort]: order }, { createdAt: 'desc' }];
+  const limit = filter.limit ?? 100;
+  const offset = filter.offset ?? 0;
 
+  // `dueAt` and `priority` are nullable; SQLite sorts NULL first on ascending,
+  // so the final ordering happens in application code over a bounded window.
+  if (sort === 'dueAt' || sort === 'priority') {
+    const orderBy: Record<string, unknown>[] =
+      sort === 'priority' ? [{ priority: order }] : [{ dueAt: order }];
+    const window = Math.min(offset + limit, NULL_SORT_WINDOW);
+    const rows = await db.task.findMany({ where, include: taskInclude, orderBy });
+    const tasks = rows.slice(0, window).map((row) => toTaskDto(row as TaskRow, now));
+
+    tasks.sort((a, b) => {
+      if (sort === 'priority') {
+        const rankA = a.priority ? (PRIORITY_RANK[a.priority] ?? 9) : 9;
+        const rankB = b.priority ? (PRIORITY_RANK[b.priority] ?? 9) : 9;
+        if (rankA !== rankB) return order === 'asc' ? rankA - rankB : rankB - rankA;
+        const due = compareNullable(a.dueAt, b.dueAt);
+        if (due !== null) return due;
+        return (a.dueAt ?? '').localeCompare(b.dueAt ?? '');
+      }
+      const nulls = compareNullable(a.dueAt, b.dueAt);
+      if (nulls !== null) return nulls;
+      const byDue = (a.dueAt ?? '').localeCompare(b.dueAt ?? '');
+      if (byDue !== 0) return order === 'asc' ? byDue : -byDue;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+
+    return tasks.slice(offset, offset + limit);
+  }
+
+  const orderBy: Record<string, unknown>[] = [{ [sort]: order }, { createdAt: 'desc' }];
   const rows = await db.task.findMany({
     where,
     include: taskInclude,
     orderBy,
-    take: filter.limit ?? 100,
-    skip: filter.offset ?? 0,
+    take: limit,
+    skip: offset,
   });
 
-  const tasks = rows.map((row) => toTaskDto(row as TaskRow, now));
-  if (sort === 'priority') {
-    // Prisma sorts strings alphabetically, which is meaningless for priorities.
-    tasks.sort((a, b) => {
-      const rankA = a.priority ? (PRIORITY_RANK[a.priority] ?? 9) : 9;
-      const rankB = b.priority ? (PRIORITY_RANK[b.priority] ?? 9) : 9;
-      return order === 'asc' ? rankA - rankB : rankB - rankA;
-    });
-  }
-  return tasks;
+  return rows.map((row) => toTaskDto(row as TaskRow, now));
 }
 
 export async function countTasks(db: Db, filter: TaskFilter, now: Date): Promise<number> {

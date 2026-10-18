@@ -269,8 +269,18 @@ export async function ingestCapture(
   }
 
   if (options.captureOnly) {
+    // `captureOnly` means "store this without interpreting it", but an explicit
+    // `forcedKind` is the owner *telling* us what it is, so it is honoured
+    // rather than silently dropped. No classifier runs either way.
+    const stored = input.forcedKind
+      ? await db.capture.update({
+          where: { id: captureRow.id },
+          data: { kind: input.forcedKind },
+          include: captureInclude,
+        })
+      : captureRow;
     return {
-      capture: toCaptureDto(captureRow),
+      capture: toCaptureDto(stored),
       created: [],
       duplicate: false,
       classification: null,

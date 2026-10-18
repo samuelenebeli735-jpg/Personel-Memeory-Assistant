@@ -10,14 +10,27 @@
  * belong to a later milestone reply with a plain "not yet" note instead of
  * pretending to work.
  */
+import { searchQuerySchema, type SearchQuery } from '@recall/shared';
+
 import type { AppContext } from '../context.js';
+import { localDayRange } from '../lib/time.js';
 import { listCaptures, listInbox } from '../services/capture-service.js';
+import { findIdeas } from '../services/idea-service.js';
+import { findNotes } from '../services/note-service.js';
+import { listProjects } from '../services/project-service.js';
+import { searchAll } from '../services/search-service.js';
 import { getSettings } from '../services/settings-service.js';
+import { findTasks } from '../services/task-service.js';
 import type { ReplyMarkup } from './client.js';
 import {
   formatCaptureList,
   formatHelp,
+  formatIdeaList,
+  formatNoteList,
+  formatProjectList,
+  formatSearchResults,
   formatSettingsSummary,
+  formatTaskList,
   undoConfirmButtons,
 } from './format.js';
 
@@ -102,16 +115,105 @@ const undo: CommandHandler = async ({ ctx }) => {
   };
 };
 
+/** Reads the owner's time zone, creating the settings row when it is missing. */
+async function timeZoneOf(ctx: AppContext): Promise<string> {
+  const row = await getSettings(ctx.db, ctx.defaults);
+  return row.timeZone;
+}
+
+const tasks: CommandHandler = async ({ ctx, args }) => {
+  const now = ctx.clock.now();
+  const includeFinished = args.trim().toLowerCase() === 'all';
+  const open = await findTasks(
+    ctx.db,
+    {
+      ...(includeFinished ? {} : { openOnly: true }),
+      sort: includeFinished ? 'updatedAt' : 'dueAt',
+      order: 'asc',
+      limit: 25,
+    },
+    now,
+  );
+  const header = includeFinished ? 'All tasks' : 'Open tasks';
+  return { text: formatTaskList(open, await timeZoneOf(ctx), header) };
+};
+
+const today: CommandHandler = async ({ ctx }) => {
+  const now = ctx.clock.now();
+  const timeZone = await timeZoneOf(ctx);
+  const range = localDayRange(now, timeZone);
+  const due = await findTasks(
+    ctx.db,
+    {
+      status: ['PENDING', 'IN_PROGRESS'],
+      dueAfter: range.startUtc,
+      dueBefore: range.endUtc,
+      sort: 'dueAt',
+      order: 'asc',
+      limit: 25,
+    },
+    now,
+  );
+  return { text: formatTaskList(due, timeZone, `Due today (${range.localDate})`) };
+};
+
+const overdue: CommandHandler = async ({ ctx }) => {
+  const now = ctx.clock.now();
+  const late = await findTasks(
+    ctx.db,
+    { overdueOnly: true, sort: 'dueAt', order: 'asc', limit: 25 },
+    now,
+  );
+  return { text: formatTaskList(late, await timeZoneOf(ctx), 'Past due') };
+};
+
+const search: CommandHandler = async ({ ctx, args }) => {
+  const term = args.trim();
+  if (term.length === 0) {
+    return { text: 'What should I look for? Send /search followed by some words.' };
+  }
+  const query: SearchQuery = searchQuerySchema.parse({
+    q: term,
+    limit: 10,
+    sort: 'relevance',
+    order: 'desc',
+  });
+  const response = await searchAll(ctx.db, query);
+  return { text: formatSearchResults(response, `Search — "${term}"`) };
+};
+
+const ideas: CommandHandler = async ({ ctx, args }) => ({
+  text: formatIdeaList(
+    await findIdeas(ctx.db, {
+      ...(args.trim().length > 0 ? { q: args.trim() } : {}),
+      limit: 20,
+      sort: 'createdAt',
+      order: 'desc',
+    }),
+    await timeZoneOf(ctx),
+    'Your ideas',
+  ),
+});
+
+const notes: CommandHandler = async ({ ctx, args }) => ({
+  text: formatNoteList(
+    await findNotes(ctx.db, {
+      ...(args.trim().length > 0 ? { q: args.trim() } : {}),
+      limit: 20,
+      sort: 'createdAt',
+      order: 'desc',
+    }),
+    await timeZoneOf(ctx),
+    'Your notes',
+  ),
+});
+
+const projects: CommandHandler = async ({ ctx }) => ({
+  text: formatProjectList(await listProjects(ctx.db, { limit: 50 }), 'Your projects'),
+});
+
 /** Commands that exist in the product plan but are not wired up yet. */
 const NOT_YET: Record<string, string> = {
-  today: 'Milestone 3',
-  overdue: 'Milestone 3',
-  tasks: 'Milestone 3',
-  search: 'Milestone 3',
-  find: 'Milestone 3',
-  ideas: 'Milestone 3',
-  notes: 'Milestone 3',
-  projects: 'Milestone 3',
   reminders: 'Milestone 4',
   remind: 'Milestone 4',
   snooze: 'Milestone 4',
@@ -125,13 +227,21 @@ export const COMMANDS: Record<string, CommandHandler> = {
   settings,
   inbox,
   undo,
+  tasks,
+  today,
+  overdue,
+  search,
+  find: search,
+  ideas,
+  notes,
+  projects,
 };
 
 export const NOT_YET_COMMANDS: Readonly<Record<string, string>> = NOT_YET;
 
 /** Message for a command the product will have but does not have yet. */
 export function formatNotYet(command: string, milestone: string): string {
-  return `/${command} is not available yet — it arrives with ${milestone}. For now I can save anything you send, plus /help, /inbox, /settings and /undo.`;
+  return `/${command} is not available yet — it arrives with ${milestone}. For now I can save anything you send, and /tasks, /today, /overdue, /search, /ideas, /notes, /projects, /inbox, /settings and /undo all work.`;
 }
 
 export function formatUnknownCommand(command: string): string {

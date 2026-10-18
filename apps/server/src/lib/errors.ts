@@ -91,6 +91,39 @@ export class ProviderError extends AppError {
 /** Zod → ValidationError, keeping the field paths for the client. */
 export function toAppError(error: unknown): AppError {
   if (error instanceof AppError) return error;
+
+  // Prisma constraint failures are caused by the request, not by a bug, so they
+  // must not surface as a 500. Mapping them here means every route benefits.
+  const prismaError = error as { code?: unknown; meta?: { target?: unknown; field_name?: unknown } };
+  if (error instanceof Error && typeof prismaError.code === 'string') {
+    const target = Array.isArray(prismaError.meta?.target)
+      ? prismaError.meta?.target.join(', ')
+      : typeof prismaError.meta?.target === 'string'
+        ? prismaError.meta.target
+        : undefined;
+    switch (prismaError.code) {
+      case 'P2002':
+        return new AppError('CONFLICT', `That value is already taken${target ? `: ${target}` : ''}`, {
+          httpStatus: 409,
+          details: target ? { field: target } : undefined,
+          internal: error.message,
+        });
+      case 'P2003':
+        return new AppError('VALIDATION_ERROR', 'A referenced record does not exist', {
+          httpStatus: 400,
+          details: target ? { field: target } : undefined,
+          internal: error.message,
+        });
+      case 'P2025':
+        return new AppError('NOT_FOUND', 'That record does not exist', {
+          httpStatus: 404,
+          internal: error.message,
+        });
+      default:
+        break;
+    }
+  }
+
   if (error instanceof Error) {
     return new AppError('INTERNAL_ERROR', 'Something went wrong on the server', {
       internal: error.message,

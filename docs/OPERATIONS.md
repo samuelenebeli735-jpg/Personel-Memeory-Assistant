@@ -191,16 +191,44 @@ sqlite3 apps/server/prisma/dev.db ".backup 'backups/recall-2026-10-17.db'"
 ```
 
 If the `sqlite3` CLI is unavailable, a logical export is equivalent and is built
-into the product from Milestone 3 (`GET /api/export`, JSON):
+into the product (`GET /api/export`, JSON):
 
 ```bash
 curl -H "cookie: recall_session=<token>" http://127.0.0.1:4000/api/export > backups/export.json
 ```
 
 Store backups outside the repository. `backups/` and `exports/` are git-ignored.
+An export bundle contains every message you have saved, so treat it exactly like the
+database file: never commit it, and encrypt it if it leaves the machine.
 
-**(pending)** A restore drill is a Milestone 8 acceptance criterion; this section
-will be updated with the actual executed commands and results.
+### Restoring from an export
+
+Restore is **additive**: it never deletes or overwrites, it reuses rows that already
+exist (by id, or by natural key such as a tag name or `(source, externalId)`), and it
+writes nothing unless asked to. Always check first:
+
+```bash
+# 1. Dry run (the default) — reports what would be inserted and skipped.
+curl -X POST http://127.0.0.1:4000/api/restore \
+  -H "cookie: recall_session=<token>" -H 'content-type: application/json' \
+  -d '{"bundle": '"$(cat backups/export.json)"'}'
+
+# 2. Apply it.
+curl -X POST http://127.0.0.1:4000/api/restore \
+  -H "cookie: recall_session=<token>" -H 'content-type: application/json' \
+  -d '{"bundle": '"$(cat backups/export.json)"', "dryRun": false}'
+```
+
+Read the `errors` array: a row that could not be written is listed with its table and
+id, and the rest still load. Because the operation is id-based and additive, fixing
+the bundle and re-running is safe.
+
+**(pending)** A full restore drill from a production-shaped backup is a Milestone 8
+acceptance criterion; this section will be updated with the executed commands and
+results. The restore path itself runs end to end in
+`apps/server/tests/integration/export-restore.test.ts` (export → wipe → restore →
+re-export) against a real SQLite database, but that is a throwaway test database, not
+an owner's backup.
 
 ## 8. Recovery
 
@@ -234,6 +262,13 @@ will be updated with the actual executed commands and results.
 | Webhook returns 503 | `TELEGRAM_WEBHOOK_SECRET` is not set. Webhook mode will not accept unsigned updates. |
 | `A reminder is set.` never appears | A reminder is only created when you asked for one ("remind me …") *and* a time was recognised. Tasks with a deadline get a `dueAt`, not a reminder. |
 | Voice replies "cannot transcribe it yet" | Expected until Milestone 6. The message is stored with a marker. |
+| Search finds nothing although you know the text exists | Every word in the query must appear somewhere in the row, and only the fields listed in `search-service.ts` are searched (for a task: title, description, category; for a capture: text and transcript). Try fewer words. An undone capture is excluded unless you pass `includeDeleted=true`. |
+| Search results look stale | Results are computed from the database on every request; nothing is cached. An undone capture and a soft-deleted row are simply not returned. |
+| `/today` shows a task you expected tomorrow (or the reverse) | `/today` uses `settings.timeZone`, not the server clock. Check it with `/settings` or `GET /api/settings`. |
+| Restore returns `errors` | Nothing was lost: each entry names the table and row that could not be written (usually a missing parent row or a bundle edited by hand). Fix the bundle and re-run; rows already present are skipped. |
+| Restore did nothing | It runs as a dry run unless `{"dryRun": false}` is passed. That is deliberate. |
+| `DELETE /api/tasks/:id` returns 400 with `requiresConfirmation` | Same pattern as capture purge: destructive routes want an explicit confirmation in the body. |
+| Conversion or undo refused after editing a record | Deliberate: converting or undoing a capture whose derived record you have since edited would discard your edits. Pass `{"force": true}` if that is what you want. |
 
 ## 10. Deployment
 

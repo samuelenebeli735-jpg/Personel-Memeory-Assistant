@@ -17,7 +17,7 @@ screenshots of your activity.
 | --- | --- | --- |
 | 1. Foundation | workspaces, config validation, database + migrations, health checks, logging, baseline tests | **Done** |
 | 2. Capture | Telegram bot (polling + webhook), text + voice capture, classification, confirmation, correction, undo, idempotency, capture API | **Done** |
-| 3. Tasks | tasks, ideas, notes, events, projects, search/filter | Not started |
+| 3. Tasks, library and search | task state machine, ideas/notes/events/projects, cross-entity search, library API, export/restore | **Done** |
 | 4. Reminders | natural-language dates, persistent scheduling, retries, restart recovery | Not started |
 | 5. Dashboard | React/Vite web interface on the authenticated API | Not started |
 | 6. Voice + AI | speech-to-text, replaceable AI providers, degraded operation | Not started |
@@ -114,8 +114,26 @@ Due: Sun 18 Oct 2026, 16:00 (tomorrow at 4:00 PM)
 
 Every confirmation carries buttons: **Task / Idea / Note / Appointment** to correct
 the classification, and **Undo** (which asks for confirmation before removing
-anything). `/help`, `/inbox`, `/settings`, `/undo` and `/start` are available; other
-commands answer honestly with the milestone that will bring them.
+anything).
+
+Commands that work today:
+
+| Command | What it does |
+| --- | --- |
+| `/tasks` | Open tasks, soonest deadline first (`/tasks all` includes finished ones) |
+| `/today` | Tasks due in your local day |
+| `/overdue` | Open tasks past their deadline |
+| `/search <words>` | Search captures, tasks, notes, ideas, appointments, projects and reminders (alias `/find`) |
+| `/ideas` | Your ideas |
+| `/notes` | Your notes and saved links |
+| `/projects` | Projects with their open-task counts |
+| `/inbox` | Captures that need review |
+| `/undo` | Undo your most recent capture |
+| `/settings` | Your configuration |
+| `/help` | This list |
+
+Commands from later milestones (`/remind`, `/ask`, …) answer honestly with the
+milestone that will bring them.
 
 Anything other than text, voice, or a known command — stickers, documents, photos —
 is acknowledged and ignored rather than silently dropped. Voice messages are stored
@@ -157,6 +175,36 @@ owner session (the server enforces this, not the UI).
 | `POST` | `/api/captures/:id/convert` | Change the kind (guarded) |
 | `POST` | `/api/captures/:id/undo` | Reversible removal |
 | `DELETE` | `/api/captures/:id` | Permanent; requires `{"force": true}` |
+
+### Library, search, export
+
+The same session protects everything below; the server enforces it, never the UI.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET`/`POST` | `/api/tasks` | List (filter, sort, paginate) and create |
+| `GET`/`PATCH`/`DELETE` | `/api/tasks/:id` | Read, update (guarded status), delete |
+| `GET` | `/api/tasks/today` | Open tasks due in your local day |
+| `GET` | `/api/tasks/overdue` | Open tasks past their deadline |
+| `GET` | `/api/tasks/counts` | Counters for the dashboard |
+| `GET`/`POST` | `/api/notes` | Notes and saved links |
+| `GET`/`POST` | `/api/ideas` | Ideas |
+| `POST` | `/api/ideas/:id/promote` | Turn an idea into a task (the idea is kept) |
+| `GET`/`POST` | `/api/events` | Appointments |
+| `GET`/`POST` | `/api/projects` | Projects (`DELETE` detaches members, never deletes them) |
+| `GET` | `/api/tags`, `POST /api/tags/prune` | Labels, and removal of unused ones |
+| `GET` | `/api/search` | One query across every entity; results state the matched field |
+| `GET` | `/api/export` | Versioned JSON bundle of the whole database |
+| `POST` | `/api/restore` | Additive restore; **dry-run unless `{"dryRun": false}`** |
+
+Search accepts `q`, `types`, `status`, `kind`, `projectId`, `tag`, `priority`,
+`from`, `to`, `includeDeleted`, `sort`, `order`, `limit` and `offset`. A
+type-specific filter narrows the search to that type (`status`/`priority` → tasks,
+`kind` → captures). Each result reports `matchedOn` so a match is never unexplained.
+
+Restore never deletes or overwrites: a row that already exists (by id, or by its
+natural key such as a tag name) is reused and reported as skipped, and any row that
+cannot be written is listed in `errors` while the rest still load.
 
 ---
 

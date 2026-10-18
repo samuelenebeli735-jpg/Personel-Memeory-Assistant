@@ -256,6 +256,11 @@ export interface ExportBundleDto {
     events: unknown[];
     projects: unknown[];
     tags: unknown[];
+    /** Join rows. Without these a restore would lose every tag link. */
+    captureTags: unknown[];
+    taskTags: unknown[];
+    noteTags: unknown[];
+    ideaTags: unknown[];
     reminders: unknown[];
     reminderDeliveries: unknown[];
     captureRelations: unknown[];
