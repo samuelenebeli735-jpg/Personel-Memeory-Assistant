@@ -236,6 +236,7 @@ const PLANS: TablePlan[] = [
       'deliveredAt',
       'nextRetryAt',
       'error',
+      'occurrenceKey',
       'idempotencyKey',
       'createdAt',
       'updatedAt',

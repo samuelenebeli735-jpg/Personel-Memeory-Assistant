@@ -301,9 +301,9 @@ describe('commands', () => {
 
   it('is honest that a planned command is not wired up yet', async () => {
     const { ctx, adapter, fake } = setup();
-    await adapter.handleUpdate(textUpdate('/remind me at 4pm'));
+    await adapter.handleUpdate(textUpdate('/ask me at 4pm'));
     expect(fake.sent[0]).toMatch(/not available yet/);
-    expect(fake.sent[0]).toMatch(/Milestone 4/);
+    expect(fake.sent[0]).toMatch(/Milestone 7/);
     expect(await ctx.db.capture.count()).toBe(0);
   });
 

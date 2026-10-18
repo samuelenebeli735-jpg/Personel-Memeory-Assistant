@@ -65,14 +65,22 @@ export function createTelegramNotifier(options: TelegramNotifierOptions): Notifi
         return { ok: true, messageId: String(sent.message_id) };
       } catch (error) {
         const permanent = isPermanent(error);
+        // Telegram answers a rate limit with `retry_after`; passing that on lets
+        // the scheduler wait exactly as long as asked instead of guessing.
+        const retryAfterMs =
+          error instanceof TelegramApiError && typeof error.retryAfterSeconds === 'number'
+            ? Math.max(0, error.retryAfterSeconds * 1000)
+            : undefined;
         logger?.warn('telegram delivery failed', {
           reason: error instanceof Error ? error.message : String(error),
           permanent,
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         });
         return {
           ok: false,
           error: error instanceof Error ? error.message : 'telegram delivery failed',
           retryable: !permanent,
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         };
       }
     },

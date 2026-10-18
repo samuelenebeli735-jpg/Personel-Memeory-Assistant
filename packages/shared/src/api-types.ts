@@ -124,6 +124,8 @@ export interface ReminderDto {
   captureId: string | null;
   recurrence: ReminderRecurrence | null;
   parentId: string | null;
+  /** Identity of this occurrence within its series, or null for a standalone one. */
+  occurrenceKey: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +137,9 @@ export interface ReminderDeliveryDto {
   status: DeliveryStatus;
   scheduledFor: string;
   attemptedAt: string | null;
+  /** Identity of the logical occurrence this attempt belongs to. */
+  occurrenceKey: string | null;
+  nextRetryAt: string | null;
   error: string | null;
   idempotencyKey: string;
 }

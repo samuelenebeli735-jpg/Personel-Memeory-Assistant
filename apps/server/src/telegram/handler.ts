@@ -16,7 +16,7 @@
 import { CAPTURE_KINDS, type CaptureKind } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
-import { ValidationError } from '../lib/errors.js';
+import { ValidationError, toAppError } from '../lib/errors.js';
 import { timingSafeEqualStrings } from '../lib/crypto.js';
 import { getSettings } from '../services/settings-service.js';
 import {
@@ -26,7 +26,7 @@ import {
   undoCapture,
   type IngestOutcome,
 } from '../services/capture-service.js';
-import { parseCommand, runCommand } from './commands.js';
+import { parseCommand, runCommand, type CommandReply } from './commands.js';
 import type {
   ReplyMarkup,
   TelegramCallbackQuery,
@@ -145,12 +145,25 @@ export function createTelegramAdapter(
     if (typeof text === 'string') {
       const command = parseCommand(text);
       if (command) {
-        const reply = await runCommand({
-          ctx,
-          command: command.command,
-          args: command.args,
-          chatId,
-        });
+        let reply: CommandReply;
+        try {
+          reply = await runCommand({
+            ctx,
+            command: command.command,
+            args: command.args,
+            chatId,
+          });
+        } catch (error) {
+          // A command failure (a cancelled reminder, a missing record) is
+          // reported as its safe user message; it never becomes a stack trace.
+          const appError = toAppError(error);
+          ctx.logger.warn('telegram command failed', {
+            command: command.command,
+            code: appError.code,
+            reason: appError.message,
+          });
+          reply = { text: formatCallbackProblem(appError.userMessage) };
+        }
         await sendText(chatId, reply.text, reply.markup);
         return { handled: true };
       }

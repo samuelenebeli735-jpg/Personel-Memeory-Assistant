@@ -33,7 +33,7 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 export const REMINDER_STATUSES = ['SCHEDULED', 'SENT', 'CANCELLED', 'FAILED', 'MISSED'] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
-export const DELIVERY_STATUSES = ['PENDING', 'DELIVERED', 'FAILED', 'SKIPPED'] as const;
+export const DELIVERY_STATUSES = ['PENDING', 'SENDING', 'DELIVERED', 'FAILED', 'SKIPPED'] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
 export const RECURRENCE_FREQUENCIES = ['DAILY', 'WEEKLY', 'MONTHLY'] as const;

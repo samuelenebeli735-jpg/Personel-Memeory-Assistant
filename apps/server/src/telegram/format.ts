@@ -12,6 +12,7 @@ import type {
   NoteDto,
   ProjectDto,
   ReminderDto,
+  ReminderRecurrence,
   SearchResponse,
   TaskDto,
 } from '@recall/shared';
@@ -269,15 +270,123 @@ export function formatSearchResults(response: SearchResponse, header: string): s
   return lines.join('\n');
 }
 
-export function formatReminderLine(reminder: ReminderDto, timeZone: string): string {
-  const when = formatLocalHuman(new Date(reminder.remindAt), timeZone);
-  const status = reminder.status === 'SCHEDULED' ? '' : ` (${reminder.status.toLowerCase()})`;
-  return `• ${truncate(reminder.title, 80)} · ${when}${status} · #${reminder.id.slice(0, 6)}`;
+function recurrenceLabel(recurrence: ReminderRecurrence): string {
+  if (recurrence.frequency === 'DAILY') return 'repeats daily';
+  if (recurrence.frequency === 'MONTHLY') return 'repeats monthly';
+  const names = recurrence.weekdays
+    .map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day] ?? '')
+    .filter(Boolean)
+    .join('/');
+  return names ? `repeats weekly (${names})` : 'repeats weekly';
 }
 
-export function formatReminderList(reminders: ReminderDto[], timeZone: string, header: string): string {
-  if (reminders.length === 0) return `${header}\n\nNo reminders set.`;
-  return [header, '', ...reminders.slice(0, 20).map((r) => formatReminderLine(r, timeZone))].join('\n');
+export function formatReminderLine(reminder: ReminderDto, timeZone: string, now?: Date): string {
+  const due = new Date(reminder.remindAt);
+  const isOverdue = reminder.status === 'SCHEDULED' && now !== undefined && due.getTime() <= now.getTime();
+  const when = formatLocalHuman(due, timeZone);
+  const parts = [
+    `${isOverdue ? '⚠' : '•'} ${truncate(reminder.title, 80)}`,
+    `${when}${isOverdue ? ' (due now)' : ''}`,
+    ...(reminder.recurrence ? [recurrenceLabel(reminder.recurrence)] : []),
+    ...(reminder.status === 'SCHEDULED' ? [] : [reminder.status.toLowerCase()]),
+    `#${reminder.id.slice(0, 6)}`,
+  ];
+  return parts.join(' · ');
+}
+
+export function formatReminderList(
+  reminders: ReminderDto[],
+  timeZone: string,
+  header: string,
+  now?: Date,
+): string {
+  if (reminders.length === 0) {
+    return `${header}\n\nNo reminders set. Try /remind tomorrow at 9am Call the office`;
+  }
+  const shown = reminders.slice(0, 20);
+  const lines = [header, '', ...shown.map((r) => formatReminderLine(r, timeZone, now))];
+  if (reminders.length > shown.length) lines.push('', `…and ${reminders.length - shown.length} more.`);
+  lines.push('', 'Snooze one with /snooze 10m, or cancel it with /cancel <id>.');
+  return lines.join('\n');
+}
+
+/** Confirmation for a newly created reminder, including any assumption made. */
+export function formatReminderCreated(reminder: ReminderDto, timeZone: string, referenceNow: Date): string {
+  const when = formatLocalHuman(new Date(reminder.remindAt), timeZone);
+  const lines = [
+    `Reminder set for ${when} (${describeRelative(new Date(reminder.remindAt), referenceNow, timeZone)}).`,
+    `• ${quote(reminder.title, 160)}`,
+    `#${reminder.id.slice(0, 6)}`,
+  ];
+  if (reminder.recurrence) lines.push(recurrenceLabel(reminder.recurrence));
+  return lines.join('\n');
+}
+
+/** Returned when `/remind` had no usable time; nothing was created. */
+export function formatRemindNeedsTime(): string {
+  return [
+    'When should I remind you? I could not find a time in that.',
+    '',
+    'Try:',
+    '• /remind in 10 minutes Review the documentation',
+    '• /remind tomorrow at 9am Call the office',
+    '',
+    'Nothing was created yet.',
+  ].join('\n');
+}
+
+/** Returned when `/remind` had a time but nothing to remind about. */
+export function formatRemindNeedsTitle(): string {
+  return 'What should I remind you about? Add the words after the time, for example: /remind in 10 minutes Review the docs. Nothing was created yet.';
+}
+
+/** Returned when `/remind` was given a day but no time of day. */
+export function formatRemindNeedsClockTime(dayText: string | null): string {
+  const day = dayText ? ` for ${dayText}` : '';
+  return `I have a day${day}, but no time of day. Reminders need a clock time so they are not sent at an invented hour — for example: /remind tomorrow at 9am Call the office. Nothing was created yet.`;
+}
+
+export function formatSnoozeUsage(): string {
+  return [
+    'How long should I snooze it for?',
+    '',
+    'Supported:',
+    '• /snooze 10m',
+    '• /snooze 1h',
+    '• /snooze tomorrow 9am',
+  ].join('\n');
+}
+
+export function formatSnoozeNothingUpcoming(): string {
+  return 'There are no reminders to snooze right now.';
+}
+
+export function formatSnoozeAmbiguous(): string {
+  return 'Which reminder? Send /reminders to see them, then /snooze 10m <id>.';
+}
+
+export function formatReminderSnoozed(reminder: ReminderDto, timeZone: string, label: string): string {
+  return `Snoozed for ${label} — I will remind you at ${formatLocalHuman(new Date(reminder.remindAt), timeZone)}.\n• ${quote(reminder.title, 160)}`;
+}
+
+export function formatReminderCancelled(reminder: ReminderDto): string {
+  return `Cancelled: ${quote(reminder.title, 160)}. The reminder is stopped; the task or note it came from was not touched.`;
+}
+
+export function formatCancelNothingUpcoming(): string {
+  return 'There are no reminders to cancel right now.';
+}
+
+export function formatCancelNeedsId(): string {
+  return 'Which reminder should I cancel? Send /reminders, then /cancel <id> — or arrange a new one with /remind.';
+}
+
+export function formatCancelAmbiguous(): string {
+  return 'Which reminder? That id matches more than one. Send /reminders and use the full id after /cancel.';
+}
+
+export function formatReminderNotFound(prefix: string): string {
+  return `I could not find a reminder matching "${prefix}". Send /reminders to see the current ones.`;
 }
 
 export function formatHelp(ownerConfigured: boolean): string {
@@ -297,6 +406,10 @@ export function formatHelp(ownerConfigured: boolean): string {
     '/tasks — open tasks (add "all" to include finished ones)',
     '/today — what is due today',
     '/overdue — what is past its deadline',
+    '/remind <when> <what> — set a reminder, e.g. /remind tomorrow at 9am Call the office',
+    '/reminders — your reminders (add "all" to include finished ones)',
+    '/snooze <10m|1h|tomorrow 9am> [id] — snooze a reminder',
+    '/cancel <id> — cancel a reminder',
     '/search <words> — search everything you have saved',
     '/ideas — your ideas',
     '/notes — your notes and saved links',
@@ -309,8 +422,7 @@ export function formatHelp(ownerConfigured: boolean): string {
     'You can also tap the buttons under any confirmation to change how something',
     'was classified.',
     '',
-    'Reminders and questions about what you saved are on the way in the next',
-    'milestones.',
+    'Questions about what you saved are on the way in a later milestone.',
   ];
   if (!ownerConfigured) {
     lines.push('', 'Warning: no owner id is configured, so I cannot accept messages.');

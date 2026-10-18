@@ -226,6 +226,26 @@ export const snoozeSchema = z.object({
 });
 export type SnoozeInput = z.infer<typeof snoozeSchema>;
 
+/**
+ * Query contract for listing reminders. Shared so the HTTP route and any other
+ * caller are held to one definition.
+ */
+export const reminderQuerySchema = z.object({
+  status: z.array(zReminderStatus).max(5).optional(),
+  taskId: zId.optional(),
+  captureId: zId.optional(),
+  /** Only reminders scheduled at or after this instant. */
+  dueAfter: zUtcDateTime.optional(),
+  /** Only reminders scheduled before this instant. */
+  dueBefore: zUtcDateTime.optional(),
+  /** Exclude generated series occurrences (default false: they are shown). */
+  seriesHeadsOnly: z.boolean().default(false),
+  limit: z.number().int().min(1).max(200).default(50),
+  offset: z.number().int().min(0).default(0),
+  order: z.enum(['asc', 'desc']).default('asc'),
+});
+export type ReminderQuery = z.infer<typeof reminderQuerySchema>;
+
 /* -------------------------------------------------------------------------- */
 /* Settings                                                                    */
 /* -------------------------------------------------------------------------- */

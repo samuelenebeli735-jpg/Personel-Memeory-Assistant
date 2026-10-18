@@ -306,6 +306,7 @@ model Reminder {
   @@unique([occurrenceKey])
   @@index([status, remindAt])
   @@index([remindAt])
+  @@index([parentId])
   @@index([taskId])
   @@map("reminders")
 }
@@ -322,6 +323,10 @@ model ReminderDelivery {
   deliveredAt   DateTime?
   nextRetryAt   DateTime?
   error         String?
+  /// Identity of the logical occurrence this attempt belongs to. It is
+  /// `<reminderId>:<scheduledForIso>`, so every attempt for the same occurrence
+  /// shares it while a reschedule (snooze/edit) starts a new one.
+  occurrenceKey String?
   idempotencyKey String   @unique
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -329,6 +334,7 @@ model ReminderDelivery {
   reminder Reminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
 
   @@index([status, nextRetryAt])
-  @@index([reminderId])
+  @@index([reminderId, occurrenceKey])
+  @@index([deliveredAt])
   @@map("reminder_deliveries")
 }

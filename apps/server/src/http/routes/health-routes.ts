@@ -37,7 +37,9 @@ export async function registerHealthRoutes(
         ctx.db.capture.count(),
         ctx.db.task.count(),
         ctx.db.reminder.count(),
-        ctx.db.reminderDelivery.count({ where: { status: 'PENDING' } }),
+        // SENDING counts as outstanding too: it is a delivery a worker is
+        // currently sending, not a finished one.
+        ctx.db.reminderDelivery.count({ where: { status: { in: ['PENDING', 'SENDING'] } } }),
       ]);
       return {
         status: 'ok',

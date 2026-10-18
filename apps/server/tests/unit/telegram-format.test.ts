@@ -264,6 +264,10 @@ describe('formatHelp', () => {
       '/tasks',
       '/today',
       '/overdue',
+      '/remind',
+      '/reminders',
+      '/snooze',
+      '/cancel',
       '/search',
       '/ideas',
       '/notes',
@@ -275,9 +279,7 @@ describe('formatHelp', () => {
     ]) {
       expect(text, name).toContain(name);
     }
-    // Reminders and questions arrive in later milestones and must not be
-    // advertised as working.
-    expect(text).not.toContain('/remind');
+    // /ask arrives in Milestone 7
     expect(text).not.toContain('/ask');
   });
 

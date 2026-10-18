@@ -241,6 +241,7 @@ export function toReminderDto(row: ReminderRow): ReminderDto {
     captureId: row.captureId,
     recurrence: parseRecurrence(row.recurrence),
     parentId: row.parentId,
+    occurrenceKey: row.occurrenceKey,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -254,6 +255,8 @@ export function toReminderDeliveryDto(row: ReminderDeliveryRow): ReminderDeliver
     status: row.status as DeliveryStatus,
     scheduledFor: row.scheduledFor.toISOString(),
     attemptedAt: row.attemptedAt?.toISOString() ?? null,
+    occurrenceKey: row.occurrenceKey,
+    nextRetryAt: row.nextRetryAt?.toISOString() ?? null,
     error: row.error,
     idempotencyKey: row.idempotencyKey,
   };

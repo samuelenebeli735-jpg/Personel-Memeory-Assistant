@@ -13,6 +13,7 @@ import { registerCaptureRoutes } from './capture-routes.js';
 import { registerExportRoutes } from './export-routes.js';
 import { registerHealthRoutes } from './health-routes.js';
 import { registerLibraryRoutes } from './library-routes.js';
+import { registerReminderRoutes } from './reminder-routes.js';
 import { registerSearchRoutes } from './search-routes.js';
 import { registerSettingsRoutes } from './settings-routes.js';
 
@@ -25,6 +26,7 @@ export async function registerProtectedRoutes(
   await registerSettingsRoutes(app, ctx);
   await registerCaptureRoutes(app, ctx);
   await registerLibraryRoutes(app, ctx);
+  await registerReminderRoutes(app, ctx);
   await registerSearchRoutes(app, ctx);
   await registerExportRoutes(app, ctx);
 }

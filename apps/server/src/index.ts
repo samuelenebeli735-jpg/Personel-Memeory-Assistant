@@ -13,6 +13,7 @@ import { applySqlitePragmas, createDb, pingDatabase } from './db/client.js';
 import { ConfigError } from './config/env.js';
 import { buildServer, type RuntimeStatus } from './http/server.js';
 import { loggerFromConfig, type Logger } from './lib/logger.js';
+import { createReminderScheduler, type ReminderScheduler } from './services/reminder-scheduler.js';
 import { resolveTranscriber } from './stt/index.js';
 import { TelegramClient } from './telegram/client.js';
 import { createTelegramAdapter, type TelegramAdapter } from './telegram/handler.js';
@@ -95,10 +96,13 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
     ? createTelegramAdapter(ctx, { client: telegramClient })
     : null;
 
+  // The scheduler is database-backed: this object only owns the tick loop.
+  const scheduler: ReminderScheduler = createReminderScheduler(ctx);
+
   const runtime: RuntimeStatus = {
     version: config.version,
     startedAt,
-    schedulerStatus: () => ({ running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0 }),
+    schedulerStatus: () => scheduler.status(),
     telegramStatus: () => ({
       enabled: config.telegram.enabled,
       mode: config.telegram.mode,
@@ -145,12 +149,17 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
     logger.info('telegram adapter disabled');
   }
 
+  // Recovery runs before the first tick: overdue reminders inside the grace
+  // window fire once, older ones are marked missed instead of flooding.
+  await scheduler.start();
+
   let closed = false;
   return {
     ctx,
     async close() {
       if (closed) return;
       closed = true;
+      scheduler.stop();
       if (polling) {
         polling.stop();
         // A long poll can hold the request open; do not let shutdown hang on it.

@@ -13,23 +13,46 @@
 import { searchQuerySchema, type SearchQuery } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
+import { parseRemindCommand, parseSnoozeCommand, splitSnoozeTarget } from '../lib/reminder-commands.js';
 import { localDayRange } from '../lib/time.js';
 import { listCaptures, listInbox } from '../services/capture-service.js';
 import { findIdeas } from '../services/idea-service.js';
 import { findNotes } from '../services/note-service.js';
 import { listProjects } from '../services/project-service.js';
+import {
+  cancelReminder,
+  createReminder,
+  findReminders,
+  findUpcomingReminders,
+  matchReminderByIdPrefix,
+  snoozeReminder,
+} from '../services/reminder-service.js';
 import { searchAll } from '../services/search-service.js';
 import { getSettings } from '../services/settings-service.js';
 import { findTasks } from '../services/task-service.js';
 import type { ReplyMarkup } from './client.js';
 import {
+  formatCancelAmbiguous,
+  formatCancelNeedsId,
+  formatCancelNothingUpcoming,
   formatCaptureList,
   formatHelp,
   formatIdeaList,
   formatNoteList,
   formatProjectList,
+  formatRemindNeedsClockTime,
+  formatRemindNeedsTime,
+  formatRemindNeedsTitle,
+  formatReminderCancelled,
+  formatReminderCreated,
+  formatReminderList,
+  formatReminderNotFound,
+  formatReminderSnoozed,
   formatSearchResults,
   formatSettingsSummary,
+  formatSnoozeAmbiguous,
+  formatSnoozeNothingUpcoming,
+  formatSnoozeUsage,
   formatTaskList,
   undoConfirmButtons,
 } from './format.js';
@@ -212,12 +235,120 @@ const projects: CommandHandler = async ({ ctx }) => ({
   text: formatProjectList(await listProjects(ctx.db, { limit: 50 }), 'Your projects'),
 });
 
+/* -------------------------------------------------------------------------- */
+/* Reminders                                                                   */
+/* -------------------------------------------------------------------------- */
+
+const reminders: CommandHandler = async ({ ctx, args }) => {
+  const timeZone = await timeZoneOf(ctx);
+  const now = ctx.clock.now();
+  const showAll = args.trim().toLowerCase() === 'all';
+  const list = showAll
+    ? await findReminders(ctx.db, { limit: 20, order: 'asc' })
+    : await findUpcomingReminders(ctx.db, { limit: 20 });
+  return {
+    text: formatReminderList(list, timeZone, showAll ? 'All reminders' : 'Your reminders', now),
+  };
+};
+
+/**
+ * `/remind <when> <what>`. The time must be explicit: an unrecognised or
+ * date-only expression asks a question instead of inventing an hour.
+ */
+const remind: CommandHandler = async ({ ctx, args }) => {
+  const settings = await getSettings(ctx.db, ctx.defaults);
+  const now = ctx.clock.now();
+  const parsed = parseRemindCommand(args, {
+    timeZone: settings.timeZone,
+    now,
+    morningTime: settings.morningDefaultTime,
+    eveningTime: settings.eveningDefaultTime,
+  });
+
+  if (!parsed.ok) {
+    if (parsed.reason === 'ambiguous-time') return { text: formatRemindNeedsClockTime(parsed.matchedText) };
+    if (parsed.reason === 'missing-title') return { text: formatRemindNeedsTitle() };
+    return { text: formatRemindNeedsTime() };
+  }
+
+  const reminder = await createReminder(ctx, {
+    title: parsed.title.slice(0, 300),
+    remindAt: parsed.remindAt.toISOString(),
+    taskId: null,
+    captureId: null,
+    recurrence: parsed.recurrence,
+  });
+  const confirmation = formatReminderCreated(reminder, settings.timeZone, now);
+  return {
+    text: parsed.assumption ? `${confirmation}\n\n(Note: ${parsed.assumption}.)` : confirmation,
+  };
+};
+
+const snooze: CommandHandler = async ({ ctx, args }) => {
+  const settings = await getSettings(ctx.db, ctx.defaults);
+  const now = ctx.clock.now();
+  const timeZone = settings.timeZone;
+  const { interval, id } = splitSnoozeTarget(args);
+
+  const parsed = parseSnoozeCommand(interval, {
+    timeZone,
+    now,
+    morningTime: settings.morningDefaultTime,
+  });
+  if (!parsed.ok) return { text: formatSnoozeUsage() };
+
+  if (id !== null) {
+    const match = await matchReminderByIdPrefix(ctx.db, id);
+    if (match.ambiguous) return { text: formatSnoozeAmbiguous() };
+    if (!match.reminder) return { text: formatReminderNotFound(id) };
+    const updated = await snoozeReminder(
+      ctx,
+      match.reminder.id,
+      'minutes' in parsed ? { minutes: parsed.minutes } : { until: parsed.until.toISOString() },
+    );
+    return { text: formatReminderSnoozed(updated, timeZone, parsed.label) };
+  }
+
+  const upcoming = (await findUpcomingReminders(ctx.db, { limit: 5, includeFailed: false })).filter(
+    (reminder) => reminder.status === 'SCHEDULED',
+  );
+  if (upcoming.length === 0) return { text: formatSnoozeNothingUpcoming() };
+  if (upcoming.length > 1) {
+    return {
+      text: `${formatSnoozeAmbiguous()}\n\n${formatReminderList(upcoming, timeZone, 'Your reminders', now)}`,
+    };
+  }
+  const target = upcoming[0] as (typeof upcoming)[number];
+  const updated = await snoozeReminder(
+    ctx,
+    target.id,
+    'minutes' in parsed ? { minutes: parsed.minutes } : { until: parsed.until.toISOString() },
+  );
+  return { text: formatReminderSnoozed(updated, timeZone, parsed.label) };
+};
+
+const cancel: CommandHandler = async ({ ctx, args }) => {
+  const timeZone = await timeZoneOf(ctx);
+  const now = ctx.clock.now();
+  const idText = args.trim();
+
+  if (idText.length === 0) {
+    const upcoming = await findUpcomingReminders(ctx.db, { limit: 5, includeFailed: false });
+    if (upcoming.length === 0) return { text: formatCancelNothingUpcoming() };
+    return {
+      text: `${formatCancelNeedsId()}\n\n${formatReminderList(upcoming, timeZone, 'Your reminders', now)}`,
+    };
+  }
+
+  const match = await matchReminderByIdPrefix(ctx.db, idText);
+  if (match.ambiguous) return { text: formatCancelAmbiguous() };
+  if (!match.reminder) return { text: formatReminderNotFound(idText) };
+  const cancelled = await cancelReminder(ctx, match.reminder.id);
+  return { text: formatReminderCancelled(cancelled) };
+};
+
 /** Commands that exist in the product plan but are not wired up yet. */
 const NOT_YET: Record<string, string> = {
-  reminders: 'Milestone 4',
-  remind: 'Milestone 4',
-  snooze: 'Milestone 4',
-  cancel: 'Milestone 4',
   ask: 'Milestone 7',
 };
 
@@ -235,13 +366,17 @@ export const COMMANDS: Record<string, CommandHandler> = {
   ideas,
   notes,
   projects,
+  reminders,
+  remind,
+  snooze,
+  cancel,
 };
 
 export const NOT_YET_COMMANDS: Readonly<Record<string, string>> = NOT_YET;
 
 /** Message for a command the product will have but does not have yet. */
 export function formatNotYet(command: string, milestone: string): string {
-  return `/${command} is not available yet — it arrives with ${milestone}. For now I can save anything you send, and /tasks, /today, /overdue, /search, /ideas, /notes, /projects, /inbox, /settings and /undo all work.`;
+  return `/${command} is not available yet — it arrives with ${milestone}. For now I can save anything you send, and /tasks, /today, /overdue, /remind, /reminders, /snooze, /cancel, /search, /ideas, /notes, /projects, /inbox, /settings and /undo all work.`;
 }
 
 export function formatUnknownCommand(command: string): string {

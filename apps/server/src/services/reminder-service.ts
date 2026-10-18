@@ -61,6 +61,8 @@ export async function countReminders(db: Db, filter: ReminderFilter = {}): Promi
     where.status = Array.isArray(filter.status) ? { in: filter.status } : filter.status;
   }
   if (filter.taskId) where.taskId = filter.taskId;
+  if (filter.captureId) where.captureId = filter.captureId;
+  if (filter.includeSeriesChildren === false) where.parentId = null;
   if (filter.dueBefore || filter.dueAfter) {
     where.remindAt = {
       ...(filter.dueAfter ? { gte: filter.dueAfter } : {}),
@@ -76,6 +78,79 @@ export async function listDeliveries(db: Db, reminderId: string) {
     orderBy: { attempt: 'asc' },
   });
   return rows.map(toReminderDeliveryDto);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Occurrence identity and recurrence advance                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Identity of one logical occurrence: `<reminderId>:<scheduledForIso>`.
+ *
+ * Including the instant is what makes a reschedule safe: snoozing or editing a
+ * reminder changes `remindAt`, so the next attempt belongs to a new occurrence
+ * namespace and cannot collide with a delivery recorded for the old time.
+ */
+export function occurrenceKeyFor(reminderId: string, scheduledFor: Date): string {
+  return `${reminderId}:${scheduledFor.toISOString()}`;
+}
+
+/** HARD bound on how far a series may be advanced in one step. */
+export const MAX_RECURRENCE_ADVANCE_STEPS = 1000;
+
+export interface AdvanceRecurrenceResult {
+  /** First occurrence strictly after `notBefore`, or null when exhausted. */
+  occurrence: Date | null;
+  /** Occurrences skipped over (because the service was offline past them). */
+  skipped: number;
+}
+
+/**
+ * Walks a recurrence forward to the first occurrence after `notBefore`.
+ *
+ * This is what stops a long outage from turning into a burst of notifications:
+ * a daily series that has been unreachable for a month advances here instead of
+ * generating thirty overlapping occurrences. `until` and `maxOccurrences` still
+ * apply, and the loop is hard-capped.
+ */
+export function advanceRecurrence(input: {
+  recurrence: NonNullable<ReminderDto['recurrence']>;
+  lastOccurrenceUtc: Date;
+  occurrenceCount: number;
+  timeZone: string;
+  notBefore?: Date;
+}): AdvanceRecurrenceResult {
+  const { recurrence, timeZone, notBefore } = input;
+  let last = input.lastOccurrenceUtc;
+  let count = input.occurrenceCount;
+  let skipped = 0;
+
+  for (let step = 0; step < MAX_RECURRENCE_ADVANCE_STEPS; step += 1) {
+    const candidate = computeNextOccurrence({
+      recurrence,
+      lastOccurrenceUtc: last,
+      occurrenceCount: count,
+      timeZone,
+    });
+    if (!candidate) return { occurrence: null, skipped };
+    last = candidate;
+    count += 1;
+    if (!notBefore || candidate.getTime() > notBefore.getTime()) {
+      return { occurrence: candidate, skipped };
+    }
+    skipped += 1;
+  }
+  return { occurrence: null, skipped };
+}
+
+/** The plain-text body of a due reminder. Channel-neutral: no markup. */
+export function formatReminderNotification(reminder: {
+  title: string;
+  body: string | null;
+}): string {
+  const title = reminder.title.trim();
+  const body = reminder.body?.trim();
+  return body ? `Reminder: ${title}\n\n${body}` : `Reminder: ${title}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -131,6 +206,17 @@ export async function updateReminder(
     throw new ValidationError('remindAt is not a valid date');
   }
 
+  // Changing the schedule (or the rule) invalidates the occurrences already
+  // generated from the old definition; they are cancelled, not deleted, so the
+  // history stays readable. The series then restarts from this reminder.
+  const scheduleChanged = remindAt !== undefined || patch.recurrence !== undefined;
+  if (scheduleChanged) {
+    await db.reminder.updateMany({
+      where: { parentId: id, status: 'SCHEDULED' },
+      data: { status: 'CANCELLED' },
+    });
+  }
+
   const row = await db.reminder.update({
     where: { id },
     data: {
@@ -140,37 +226,52 @@ export async function updateReminder(
       ...(patch.recurrence === undefined
         ? {}
         : { recurrence: patch.recurrence ? JSON.stringify(patch.recurrence) : null }),
-      // Editing resets a cancelled reminder to scheduled, and clears failure state.
+      // Editing resets a cancelled/failed reminder and, when the schedule moved,
+      // restarts the attempt count so a stale failure is not carried forward.
       ...(existing.status === 'CANCELLED' || existing.status === 'FAILED'
         ? { status: 'SCHEDULED', attempts: 0, lastError: null }
         : {}),
+      ...(scheduleChanged ? { attempts: 0, lastError: null, deliveredAt: null } : {}),
     },
   });
-  if (remindAt !== undefined) {
-    await db.reminderDelivery.updateMany({
-      where: { reminderId: id, status: 'PENDING' },
-      data: { status: 'SKIPPED', error: 'reminder rescheduled', attemptedAt: ctx.clock.now() },
-    });
+  if (scheduleChanged) {
+    await skipOutstandingDeliveries(db, [id], 'reminder rescheduled', ctx.clock.now());
   }
   return toReminderDto(row as ReminderRow);
 }
 
+/**
+ * Cancels a reminder. Cancelling a series head cancels the occurrences generated
+ * from it too, because "cancel the daily one" must not leave tomorrow's copy
+ * armed. The reminder itself is kept (status `CANCELLED`) rather than deleted.
+ */
 export async function cancelReminder(ctx: AppContext, id: string): Promise<ReminderDto> {
   const db = ctx.db;
   const existing = await db.reminder.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Reminder', id);
 
+  const now = ctx.clock.now();
   const row = await db.reminder.update({ where: { id }, data: { status: 'CANCELLED' } });
-  await db.reminderDelivery.updateMany({
-    where: { reminderId: id, status: 'PENDING' },
-    data: { status: 'SKIPPED', error: 'reminder cancelled', attemptedAt: ctx.clock.now() },
+  await skipOutstandingDeliveries(db, [id], 'reminder cancelled', now);
+
+  const children = await db.reminder.findMany({
+    where: { parentId: id, status: 'SCHEDULED' },
+    select: { id: true },
   });
+  if (children.length > 0) {
+    const ids = children.map((child) => child.id);
+    await db.reminder.updateMany({ where: { id: { in: ids } }, data: { status: 'CANCELLED' } });
+    await skipOutstandingDeliveries(db, ids, 'series cancelled', now);
+  }
   return toReminderDto(row as ReminderRow);
 }
 
 /**
  * Snooze moves the reminder forward. The original delivery attempt is marked
  * SKIPPED so a retry cannot fire at the old time.
+ *
+ * A cancelled reminder is not snoozed: reviving it silently would resurrect
+ * something the owner explicitly stopped.
  */
 export async function snoozeReminder(
   ctx: AppContext,
@@ -180,6 +281,9 @@ export async function snoozeReminder(
   const db = ctx.db;
   const existing = await db.reminder.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Reminder', id);
+  if (existing.status === 'CANCELLED') {
+    throw new ValidationError('That reminder was cancelled. Create a new one instead.');
+  }
 
   if (input.minutes === undefined && input.until === undefined) {
     throw new ValidationError('Provide either minutes or an absolute time to snooze until');
@@ -201,17 +305,70 @@ export async function snoozeReminder(
     where: { id },
     data: { remindAt: target, status: 'SCHEDULED', attempts: 0, lastError: null, deliveredAt: null },
   });
-  await db.reminderDelivery.updateMany({
-    where: { reminderId: id, status: { in: ['PENDING', 'FAILED'] } },
-    data: { status: 'SKIPPED', error: 'snoozed', attemptedAt: ctx.clock.now() },
-  });
+  await skipOutstandingDeliveries(db, [id], 'snoozed', ctx.clock.now(), ['PENDING', 'SENDING', 'FAILED']);
   return toReminderDto(row as ReminderRow);
 }
 
+/** Deletes a reminder and the pending occurrences generated from it. */
 export async function deleteReminder(db: Db, id: string): Promise<void> {
   const existing = await db.reminder.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Reminder', id);
+  await db.reminder.deleteMany({ where: { parentId: id } });
   await db.reminder.delete({ where: { id } });
+}
+
+/** Marks outstanding delivery attempts as skipped (never sent). */
+export async function skipOutstandingDeliveries(
+  db: Db,
+  reminderIds: string[],
+  reason: string,
+  now: Date,
+  statuses: readonly string[] = ['PENDING', 'SENDING'],
+): Promise<void> {
+  await db.reminderDelivery.updateMany({
+    where: { reminderId: { in: reminderIds }, status: { in: [...statuses] } },
+    data: { status: 'SKIPPED', error: reason, attemptedAt: now, nextRetryAt: null },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Queries used by the Telegram commands and the dashboard                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Upcoming reminders, plus ones that already failed or passed their time without
+ * being resolved — those are the ones a user most needs to see.
+ */
+export async function findUpcomingReminders(
+  db: Db,
+  options: { limit?: number; includeFailed?: boolean } = {},
+): Promise<ReminderDto[]> {
+  const rows = await db.reminder.findMany({
+    where: { status: { in: options.includeFailed === false ? ['SCHEDULED'] : ['SCHEDULED', 'FAILED'] } },
+    orderBy: { remindAt: 'asc' },
+    take: options.limit ?? 20,
+  });
+  return rows.map((row) => toReminderDto(row as ReminderRow));
+}
+
+export interface ReminderMatch {
+  reminder: ReminderDto | null;
+  /** True when the prefix matched more than one reminder. */
+  ambiguous: boolean;
+}
+
+/** Resolves the short `#abc123` id shown in a list back to a reminder. */
+export async function matchReminderByIdPrefix(db: Db, prefix: string): Promise<ReminderMatch> {
+  const cleaned = prefix.replace(/^#/, '').trim();
+  if (cleaned.length === 0) return { reminder: null, ambiguous: false };
+  const rows = await db.reminder.findMany({
+    where: { id: { startsWith: cleaned } },
+    orderBy: { createdAt: 'desc' },
+    take: 2,
+  });
+  if (rows.length === 0) return { reminder: null, ambiguous: false };
+  if (rows.length > 1) return { reminder: null, ambiguous: true };
+  return { reminder: toReminderDto(rows[0] as ReminderRow), ambiguous: false };
 }
 
 /* -------------------------------------------------------------------------- */

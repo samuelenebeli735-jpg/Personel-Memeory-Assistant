@@ -58,6 +58,12 @@ export interface DeliveryOutcome {
   error?: string;
   /** True when retrying later could plausibly succeed. */
   retryable?: boolean;
+  /**
+   * Provider guidance: do not retry before this many milliseconds have passed
+   * (Telegram sends `retry_after` with a 429). The scheduler uses the larger of
+   * this and its own backoff.
+   */
+  retryAfterMs?: number;
 }
 
 export interface Notifier {
