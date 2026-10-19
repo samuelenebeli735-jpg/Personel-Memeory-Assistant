@@ -18,8 +18,8 @@ screenshots of your activity.
 | 1. Foundation | workspaces, config validation, database + migrations, health checks, logging, baseline tests | **Done** |
 | 2. Capture | Telegram bot (polling + webhook), text + voice capture, classification, confirmation, correction, undo, idempotency, capture API | **Done** |
 | 3. Tasks, library and search | task state machine, ideas/notes/events/projects, cross-entity search, library API, export/restore | **Done** |
-| 4. Reminders | natural-language dates, persistent scheduling, retries, restart recovery | Not started |
-| 5. Dashboard | React/Vite web interface on the authenticated API | Not started |
+| 4. Reminders | natural-language dates, persistent scheduling, retries, restart recovery | **Done** |
+| 5. Dashboard | React/Vite web interface on the authenticated API | **In progress** |
 | 6. Voice + AI | speech-to-text, replaceable AI providers, degraded operation | Not started |
 | 7. Recall + briefings | database-grounded retrieval, configurable daily briefing | Not started |
 | 8. Deployment | production config, persistent hosting, backups, recovery | Not started |
@@ -131,8 +131,12 @@ Commands that work today:
 | `/undo` | Undo your most recent capture |
 | `/settings` | Your configuration |
 | `/help` | This list |
+| `/remind <when> <what>` | Set a reminder (e.g. `/remind in 10 minutes Review docs`, `/remind tomorrow at 9am Call office`) |
+| `/reminders` | Your reminders (`/reminders all` includes finished) |
+| `/snooze <10m|1h|tomorrow 9am> [id]` | Snooze a reminder |
+| `/cancel [id]` | Cancel a reminder |
 
-Commands from later milestones (`/remind`, `/ask`, …) answer honestly with the
+Commands from later milestones (`/ask`, …) answer honestly with the
 milestone that will bring them.
 
 Anything other than text, voice, or a known command — stickers, documents, photos —

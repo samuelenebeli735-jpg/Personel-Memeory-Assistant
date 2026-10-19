@@ -172,6 +172,42 @@ down, and includes the database latency, scheduler state (last tick, due count)
 and whether AI/STT/Telegram are configured and enabled. This distinguishes
 "process down" from "dependency down".
 
+## 6a. Reminder scheduler configuration and behavior
+
+The reminder scheduler is a database-backed tick loop; no reminders live only in
+memory. Configuration is via environment variables (validated at startup):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCHEDULER_INTERVAL_SECONDS` | `20` | How often the scheduler ticks and checks for due reminders. |
+| `REMINDER_MAX_ATTEMPTS` | `5` | Maximum delivery attempts before a reminder is marked `FAILED`. |
+| `REMINDER_RETRY_BASE_SECONDS` | `30` | Base delay for exponential backoff between retries. |
+| `REMINDER_OVERDUE_GRACE_HOURS` | `12` | On startup, overdue reminders inside this window fire once; older ones are marked `MISSED`. |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(unset)* | Local-time window (HH:MM) during which notifications are deferred, not dropped. Supports wrap past midnight (e.g. `22:00` / `07:00`). |
+| `MAX_NOTIFICATIONS_PER_DAY` | `0` (unlimited) | Daily cap on delivered notifications. When reached, further deliveries are deferred to the next local day. |
+
+**Startup recovery:** when the process starts, the scheduler runs a recovery pass
+before the first tick. Reminders past their scheduled time but within the grace
+window are delivered; those beyond it are marked `MISSED` and their series (if
+recurring) advances to the next future occurrence. This prevents a notification
+storm after prolonged downtime.
+
+**Quiet hours and daily cap:** both defer rather than drop. A deferred delivery
+remains `PENDING` with a future `nextRetryAt`; it is retried on the next tick
+after the quiet window ends or the next local day begins. The `idempotencyKey`
+(`<reminderId>:<scheduledForIso>:<attempt>`) guarantees exactly-once delivery
+across restarts and concurrent processes.
+
+**Recurrence:** `DAILY`, `WEEKLY` (with optional weekdays), and `MONTHLY` are
+supported. Occurrences are generated one at a time, each with a unique
+`occurrenceKey`, bounded by `maxOccurrences` and `until`. Editing or cancelling
+a series head cancels all pending generated occurrences; cancelling a child
+affects only that occurrence.
+
+**Cancelling vs editing:** cancelling a reminder marks it `CANCELLED` and skips
+all pending deliveries. Editing the schedule (time or recurrence) of a series
+head cancels its pending children so the series restarts from the new definition.
+
 ## 7. Backups
 
 ### What to back up

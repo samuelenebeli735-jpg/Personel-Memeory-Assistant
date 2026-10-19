@@ -201,3 +201,8 @@ for the server or web dependency trees other than that chain).
 - [x] A permanent delete requires `{"force": true}`; the softer `undo` is separate
       (`capture-api.test.ts`).
 - [ ] Prompt-injection resistance of the recall path (Milestone 7).
+- [x] Reminder delivery idempotency: `idempotencyKey` uniqueness prevents duplicate sends (integration test).
+- [x] Reminder startup recovery: grace window enforced, no notification storm (integration test).
+- [x] Quiet hours and daily cap: deferral without data loss (integration test).
+- [x] Reminder cancellation: pending deliveries skipped, series children cancelled (integration test).
+- [x] Reminder API authorization: all routes require owner session (integration test).

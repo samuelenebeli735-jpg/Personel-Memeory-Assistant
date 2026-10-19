@@ -2,7 +2,7 @@
 
 Legend: **Done** · **In progress** · **Not started**
 
-Last updated: 2026-10-17 (session 1, Milestone 2 complete)
+Last updated: 2026-10-19 (session 2, Milestone 4 complete, Milestone 5 in progress)
 
 ---
 
@@ -171,7 +171,7 @@ backlog item.
 
 ---
 
-## Milestone 4 — Reminders  ·  Not started
+## Milestone 4 — Reminders  ·  **Done**
 
 **Scope**
 
@@ -190,19 +190,27 @@ backlog item.
 - `/reminders`, `/remind`, `/snooze`, `/cancel` commands.
 - Timing behaviour verified with an injectable clock.
 
-**Acceptance criteria**
+**Acceptance criteria — verified**
 
-- [ ] A reminder set for +10 minutes is delivered once, and only once.
-- [ ] Killing and restarting the process does not lose a pending reminder.
-- [ ] A completed or cancelled reminder is never delivered.
-- [ ] Delivery failures are recorded with the error and retried with backoff.
-- [ ] Quiet hours defer delivery to the end of the window.
-- [ ] The daily notification cap is enforced.
-- [ ] Tests use a controllable clock; no test sleeps for real time.
+- [x] A reminder set for +10 minutes is delivered once, and only once.
+- [x] Killing and restarting the process does not lose a pending reminder.
+- [x] A completed or cancelled reminder is never delivered.
+- [x] Delivery failures are recorded with the error and retried with backoff.
+- [x] Quiet hours defer delivery to the end of the window.
+- [x] The daily notification cap is enforced.
+- [x] Tests use a controllable clock; no test sleeps for real time.
+
+**Verification:** 361 tests pass across 22 files (`npx vitest run`,
+`Test Files 22 passed`, `Tests 361 passed`, ~41s); `npm run typecheck` and
+`npm run build` pass. The scheduler was tested against a fake notifier with an
+injectable clock; no live Telegram delivery was claimed.
+
+**Known limitation:** a restart re-fetches the last few Telegram updates because
+the polling offset is in memory; idempotency makes that harmless.
 
 ---
 
-## Milestone 5 — Dashboard  ·  Not started
+## Milestone 5 — Dashboard  ·  **In progress**
 
 **Scope**
 

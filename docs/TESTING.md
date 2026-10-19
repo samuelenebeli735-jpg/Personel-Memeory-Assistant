@@ -60,7 +60,10 @@ apps/server/tests/
     ├── library-api.test.ts         task rules, entity separation, projects, tags
     ├── search-api.test.ts          cross-entity matching, filters, pagination
     ├── telegram-library.test.ts    /tasks, /today, /overdue, /search, /ideas, /notes, /projects
-    └── export-restore.test.ts      bundle shape, round trip, dry run, identity reuse
+    ├── export-restore.test.ts      bundle shape, round trip, dry run, identity reuse
+    ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
+    ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
+    └── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
 ```
 
 ### How the database tests work
@@ -73,12 +76,12 @@ silently ignored.
 
 ## Current results
 
-Executed 2026-10-18 on Node v24.17.0, npm 11.13.0, Windows (win32):
+Executed 2026-10-19 on Node v24.17.0, npm 11.13.0, Windows (win32):
 
 ```
- Test Files  18 passed (18)
-      Tests  292 passed (292)
-   Duration  37.81s
+ Test Files  22 passed (22)
+      Tests  361 passed (361)
+   Duration  41.47s
 ```
 
 | Suite | Tests | Result |
@@ -93,6 +96,7 @@ Executed 2026-10-18 on Node v24.17.0, npm 11.13.0, Windows (win32):
 | `unit/telegram-notifier.test.ts` | 8 | passed |
 | `unit/telegram-polling.test.ts` | 6 | passed |
 | `unit/library-format.test.ts` | 24 | passed |
+| `unit/reminder-commands.test.ts` | 24 | passed |
 | `integration/health-and-auth.test.ts` | 17 | passed |
 | `integration/telegram-capture.test.ts` | 28 | passed |
 | `integration/capture-api.test.ts` | 17 | passed |
@@ -101,7 +105,10 @@ Executed 2026-10-18 on Node v24.17.0, npm 11.13.0, Windows (win32):
 | `integration/search-api.test.ts` | 18 | passed |
 | `integration/telegram-library.test.ts` | 15 | passed |
 | `integration/export-restore.test.ts` | 13 | passed |
-| **Total** | **292** | **all passed** |
+| `integration/reminder-scheduler.test.ts` | 16 | passed |
+| `integration/reminder-api.test.ts` | 10 | passed |
+| `integration/telegram-reminders.test.ts` | 19 | passed |
+| **Total** | **361** | **all passed** |
 
 `npm run typecheck` (shared + server, `--strict`, `noUncheckedIndexedAccess`)
 passes with no errors. `npm run build` (shared + server) also passes.
@@ -165,7 +172,8 @@ arrive with Milestone 3).
 use exponential backoff (100/200/400); the delay is capped; jitter stays within
 bounds and is not constant; a permanent error stops retrying immediately; a
 transient failure recovers and reports the attempt count; a total-time budget stops
-the loop; each retry is reported through `onRetry`.
+the loop; each retry is reported through `onRetry`. The full DB-backed scheduler
+is covered by integration tests with an injectable clock (no real sleeps).
 
 **Authorization** — a signed session round-trips with the right expiry; a tampered
 payload is rejected; a token signed with another secret is rejected; malformed
@@ -464,8 +472,10 @@ Deliberately included as first-class cases, not afterthoughts:
   search with matched-field reporting, filters and merged pagination, the library
   API, the Telegram library commands, the edited-record conversion/undo guards, and
   a full export → wipe → restore → re-export round trip including identity reuse.
-- Milestone 4: exactly-once delivery, restart recovery, quiet hours deferral, daily
-  cap, snooze, recurrence bounds — all with an injected clock.
+- Milestone 4: **done** — exactly-once delivery, restart recovery, quiet hours deferral, daily
+  cap, snooze, recurrence bounds — all with an injected clock. Covered by
+  `reminder-scheduler.test.ts` (16), `reminder-api.test.ts` (10), `telegram-reminders.test.ts` (19),
+  and `reminder-commands.test.ts` (24) — 69 new tests with an injectable clock, no real sleeps.
 - Milestone 5: dashboard interaction tests proving every visible control acts.
 - Milestone 6: mocked-provider tests for timeout, 429, malformed JSON, empty
   response, unsupported model and missing credentials.
