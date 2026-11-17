@@ -54,7 +54,7 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
-    trustProxy: true,
+    trustProxy: ctx.config.trustProxy,
     bodyLimit: 2 * 1024 * 1024,
   });
 
@@ -67,11 +67,14 @@ export async function buildServer(
 
   if (options.enableRateLimit !== false) {
     await app.register(rateLimit, {
-      global: false,
+      // Enabled globally; login and the public webhook override the bucket with
+      // their tighter route-level limits below.
+      global: true,
       max: 240,
       timeWindow: '1 minute',
       keyGenerator: (request: FastifyRequest) => request.ip,
       errorResponseBuilder: () => ({
+        statusCode: 429,
         error: { code: 'RATE_LIMITED', message: 'Too many requests, please slow down' },
       }),
     });

@@ -33,6 +33,10 @@ export async function registerPublicRoutes(
     options.enableRateLimit === false
       ? {}
       : { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
+  const webhookRouteOptions =
+    options.enableRateLimit === false
+      ? {}
+      : { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
 
   app.post('/api/auth/login', loginRouteOptions, async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
@@ -89,7 +93,7 @@ export async function registerPublicRoutes(
 
   if (options.telegramWebhook) {
     const handler = options.telegramWebhook;
-    app.post('/api/telegram/webhook', async (request, reply) => {
+    app.post('/api/telegram/webhook', webhookRouteOptions, async (request, reply) => {
       const headerSecret = request.headers['x-telegram-bot-api-secret-token'];
       const result = await handler({
         secretHeader: typeof headerSecret === 'string' ? headerSecret : undefined,

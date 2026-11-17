@@ -38,6 +38,7 @@ import type {
   ExportBundleDto,
   RestoreReportDto,
 } from '../types/api'
+import { notifyUnauthorized, shouldNotifyUnauthorized } from './auth-events'
 
 export type {
   CaptureDto,
@@ -107,7 +108,10 @@ async function request<T>(
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      // Fastify rejects an empty body when the request claims to be JSON, so
+      // only advertise JSON when a body is actually present. Several actions
+      // (logout, reprocess, undo) are bodyless POSTs.
+      ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...options.headers,
     },
     credentials: 'include',
@@ -119,6 +123,9 @@ async function request<T>(
       errorData = await response.json()
     } catch {
       errorData = { error: { code: 'UNKNOWN', message: response.statusText } }
+    }
+    if (shouldNotifyUnauthorized(path, response.status)) {
+      notifyUnauthorized()
     }
     throw new ApiError(
       errorData.error?.message ?? 'Request failed',

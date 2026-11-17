@@ -2,22 +2,23 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
-import { dashboardApi, type DashboardOverviewDto, type TaskDto, type ReminderDto, type CaptureDto } from '../lib/api'
-import { formatLocalDateTime, formatRelative, isOverdue, getTimeZone } from '../lib/date'
-import { Card, Button, Badge, EmptyState } from '../components/ui'
+import { dashboardApi, type DashboardOverviewDto } from '../lib/api'
+import { getTimeZone } from '../lib/date'
+import { Card, Button, EmptyState } from '../components/ui'
+import { CaptureRow, ReminderRow, TaskRow } from '../components/record-rows'
 import { TasksIcon, RemindersIcon, CaptureIcon, SearchIcon } from '../components/Layout'
 
 interface StatCardProps {
   icon: React.ReactNode
   label: string
   value: number | string
-  href?: string
+  href: string
   trend?: string
 }
 
 function StatCard({ icon, label, value, href, trend }: StatCardProps) {
   return (
-    <Link to={href || '#'} style={{ textDecoration: 'none', color: 'inherit' }}>
+    <Link to={href} style={{ textDecoration: 'none', color: 'inherit' }}>
       <Card style={{ height: '100%' }}>
         <div className="card-content" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div>
@@ -40,69 +41,6 @@ function SectionHeader({ title, href, count }: { title: string; href: string; co
         {count !== undefined && count > 0 ? `View all (${count})` : 'View all'}
       </Link>
     </div>
-  )
-}
-
-function TaskRow({ task, timeZone }: { task: TaskDto; timeZone: string }) {
-  const overdue = task.isOverdue
-  return (
-    <Link to={`/tasks/${task.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="list-item-content" style={{ minWidth: 0 }}>
-        <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {task.title}
-        </div>
-        <div className="list-item-meta">
-          {task.dueAt && (
-            <span style={{ color: overdue ? 'var(--color-overdue)' : 'var(--color-text-muted)' }}>
-              {overdue ? '⚠ ' : ''}{formatLocalDateTime(task.dueAt, timeZone)}
-            </span>
-          )}
-          {task.priority && <Badge variant={task.priority === 'URGENT' ? 'danger' : task.priority === 'HIGH' ? 'warning' : 'muted'}>{task.priority}</Badge>}
-          {task.projectName && <Badge variant="muted">{task.projectName}</Badge>}
-          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{task.id.slice(0, 6)}</span>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-function ReminderRow({ reminder, timeZone }: { reminder: ReminderDto; timeZone: string }) {
-  return (
-    <Link to={`/reminders/${reminder.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="list-item-content" style={{ minWidth: 0 }}>
-        <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {reminder.title}
-        </div>
-        <div className="list-item-meta">
-          <span style={{ color: reminder.status === 'SCHEDULED' && isOverdue(reminder.remindAt) ? 'var(--color-overdue)' : 'var(--color-text-muted)' }}>
-            {formatLocalDateTime(reminder.remindAt, timeZone)}
-            {reminder.recurrence && <Badge variant="muted" style={{ marginLeft: '8px' }}>{reminder.recurrence.frequency}</Badge>}
-          </span>
-          <Badge variant={reminder.status === 'SCHEDULED' ? 'primary' : reminder.status === 'SENT' ? 'success' : reminder.status === 'FAILED' ? 'danger' : reminder.status === 'MISSED' ? 'warning' : 'muted'}>
-            {reminder.status}
-          </Badge>
-          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{reminder.id.slice(0, 6)}</span>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-function CaptureRow({ capture, timeZone }: { capture: CaptureDto; timeZone: string }) {
-  return (
-    <Link to={`/captures/${capture.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="list-item-content" style={{ minWidth: 0 }}>
-        <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {capture.rawText.slice(0, 120)}
-        </div>
-        <div className="list-item-meta">
-          <Badge variant="muted">{capture.kind}</Badge>
-          <span>{formatRelative(capture.capturedAt, timeZone)}</span>
-          {capture.needsReview && <Badge variant="warning">needs review</Badge>}
-          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{capture.id.slice(0, 6)}</span>
-        </div>
-      </div>
-    </Link>
   )
 }
 

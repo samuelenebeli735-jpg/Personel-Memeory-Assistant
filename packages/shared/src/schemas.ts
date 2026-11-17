@@ -10,6 +10,7 @@ import {
   PROJECT_STATUSES,
   RECURRENCE_FREQUENCIES,
   REMINDER_STATUSES,
+  SEARCH_ENTITY_TYPES,
   STRUCTURED_TYPES,
   TASK_STATUSES,
   TRANSCRIPT_SOURCES,
@@ -55,6 +56,7 @@ export const zDeliveryStatus = z.enum(DELIVERY_STATUSES);
 export const zRecurrenceFrequency = z.enum(RECURRENCE_FREQUENCIES);
 export const zTranscriptSource = z.enum(TRANSCRIPT_SOURCES);
 export const zStructuredType = z.enum(STRUCTURED_TYPES);
+export const zSearchEntityType = z.enum(SEARCH_ENTITY_TYPES);
 export const zCaptureRelationType = z.enum(CAPTURE_RELATION_TYPES);
 
 export const zTagName = z
@@ -77,6 +79,15 @@ export const zUrl = z
 /* Capture                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Maximum stored transcript length.
+ *
+ * Speech providers are untrusted and can return arbitrarily long output. The
+ * ingestion boundary enforces the same limit so an oversized transcript is
+ * rejected explicitly instead of failing the whole capture.
+ */
+export const TRANSCRIPT_MAX_CHARS = 8000;
+
 export const captureInputSchema = z.object({
   /** Raw text exactly as the user supplied it. Never rewritten. */
   rawText: zText(8000),
@@ -91,6 +102,18 @@ export const captureInputSchema = z.object({
   forcedKind: zCaptureKind.nullable().optional(),
   /** Extra structured fields the source already knows about. */
   metadata: z.record(z.unknown()).nullable().optional(),
+  /** Transcription text, if the source provided one. Never treated as user-typed. */
+  transcript: z.string().trim().max(TRANSCRIPT_MAX_CHARS).nullable().optional(),
+  /** Explicit provenance for `transcript`; required whenever a transcript is set. */
+  transcriptSource: zTranscriptSource.nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.transcript && !value.transcriptSource) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['transcriptSource'],
+      message: 'A transcript must declare where it came from',
+    });
+  }
 });
 export type CaptureInput = z.infer<typeof captureInputSchema>;
 
@@ -280,7 +303,7 @@ export type SettingsUpdateInput = z.infer<typeof settingsUpdateSchema>;
 
 export const searchQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
-  types: z.array(zStructuredType).max(4).optional(),
+  types: z.array(zSearchEntityType).max(SEARCH_ENTITY_TYPES.length).optional(),
   status: zTaskStatus.optional(),
   kind: zCaptureKind.optional(),
   projectId: zId.optional(),

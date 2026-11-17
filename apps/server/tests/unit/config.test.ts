@@ -46,6 +46,13 @@ describe('configuration validation', () => {
     expect(expectOk({ LOG_MESSAGE_CONTENT: '' }).logMessageContent).toBe(false);
   });
 
+  it('trusts forwarded headers only when explicitly configured', () => {
+    expect(expectOk({}).trustProxy).toBe(false);
+    expect(expectOk({ TRUST_PROXY: 'false' }).trustProxy).toBe(false);
+    expect(expectOk({ TRUST_PROXY: 'true' }).trustProxy).toBe(true);
+    expect(expectOk({ TRUST_PROXY: '127.0.0.1,::1' }).trustProxy).toEqual(['127.0.0.1', '::1']);
+  });
+
   it('splits list values and trims blanks', () => {
     const config = expectOk({ TELEGRAM_OWNER_IDS: ' 111 , 222 ,, ' });
     expect(config.telegram.ownerIds).toEqual(['111', '222']);
@@ -67,6 +74,25 @@ describe('configuration validation', () => {
     );
   });
 
+  it('rejects a placeholder owner id when Telegram is enabled', () => {
+    expectInvalid(
+      {
+        TELEGRAM_ENABLED: 'true',
+        TELEGRAM_BOT_TOKEN: '123456:abcdefghijklmnopqrstuvwxyz',
+        TELEGRAM_OWNER_IDS: '123456789',
+      },
+      'telegram.ownerIds',
+    );
+    expectInvalid(
+      {
+        TELEGRAM_ENABLED: 'true',
+        TELEGRAM_BOT_TOKEN: '123456:abcdefghijklmnopqrstuvwxyz',
+        TELEGRAM_OWNER_IDS: '555000111,123456789',
+      },
+      'telegram.ownerIds',
+    );
+  });
+
   it('accepts an enabled Telegram bot with token and owner', () => {
     const config = expectOk({
       TELEGRAM_ENABLED: 'true',
@@ -74,6 +100,16 @@ describe('configuration validation', () => {
       TELEGRAM_OWNER_IDS: '555000111',
     });
     expect(config.telegram.enabled).toBe(true);
+  });
+
+  it('keeps weak placeholder values usable in development where appropriate', () => {
+    const config = expectOk({
+      NODE_ENV: 'development',
+      DASHBOARD_PASSWORD: 'a',
+      SESSION_SECRET: 'a',
+    });
+    expect(config.dashboard.password).toBe('a');
+    expect(config.dashboard.sessionSecret).toBe('a');
   });
 
   it('rejects an unknown IANA time zone', () => {
@@ -102,6 +138,53 @@ describe('configuration validation', () => {
     expectInvalid({ STT_PROVIDER: 'openai' }, 'stt.apiKey');
   });
 
+  it('rejects unsafe provider base URLs', () => {
+    const aiKey = 'sk-test-abcdefghijklmnop';
+    const sttKey = 'sk-test-abcdefghijklmnop';
+    expectInvalid(
+      { AI_PROVIDER: 'openai', AI_API_KEY: aiKey, AI_BASE_URL: 'file:///etc/passwd' },
+      'ai.baseUrl',
+    );
+    expectInvalid(
+      { AI_PROVIDER: 'openai', AI_API_KEY: aiKey, AI_BASE_URL: 'https://user:pass@example.com/v1' },
+      'ai.baseUrl',
+    );
+    expectInvalid(
+      { STT_PROVIDER: 'openai', STT_API_KEY: sttKey, STT_BASE_URL: 'ftp://example.com/v1' },
+      'stt.baseUrl',
+    );
+    expect(
+      expectOk({
+        AI_PROVIDER: 'openai-compatible',
+        AI_API_KEY: aiKey,
+        AI_BASE_URL: 'http://127.0.0.1:11434/v1',
+      }).ai.baseUrl,
+    ).toBe('http://127.0.0.1:11434/v1');
+    expect(
+      expectOk({
+        AI_PROVIDER: 'openai-compatible',
+        AI_API_KEY: aiKey,
+        AI_BASE_URL: 'http://localhost:11434/v1',
+      }).ai.baseUrl,
+    ).toBe('http://localhost:11434/v1');
+    expectInvalid(
+      { AI_PROVIDER: 'openai', AI_API_KEY: aiKey, AI_BASE_URL: 'http://example.com/v1' },
+      'ai.baseUrl',
+    );
+    expectInvalid(
+      { STT_PROVIDER: 'openai', STT_API_KEY: sttKey, STT_BASE_URL: 'http://example.com/v1' },
+      'stt.baseUrl',
+    );
+    expect(
+      expectOk({
+        NODE_ENV: 'development',
+        AI_PROVIDER: 'openai-compatible',
+        AI_API_KEY: aiKey,
+        AI_BASE_URL: 'http://example.com/v1',
+      }).ai.baseUrl,
+    ).toBe('http://example.com/v1');
+  });
+
   it('rejects unknown providers instead of silently ignoring them', () => {
     expectInvalid({ AI_PROVIDER: 'gemini' }, 'ai.provider');
     expectInvalid({ STT_PROVIDER: 'deepgram' }, 'stt.provider');
@@ -110,8 +193,8 @@ describe('configuration validation', () => {
   describe('production hardening', () => {
     const production = {
       NODE_ENV: 'production',
-      DASHBOARD_PASSWORD: 'a-very-long-production-password',
-      SESSION_SECRET: 's'.repeat(40),
+      DASHBOARD_PASSWORD: 'Correct-Horse-Battery-Staple-42',
+      SESSION_SECRET: 's9K2mQ7xR4tN8vB3cZ6dF1gH5jL0pW2yU7',
       COOKIE_SECURE: 'true',
     };
 
@@ -125,8 +208,49 @@ describe('configuration validation', () => {
       expectInvalid({ ...production, DASHBOARD_PASSWORD: '' }, 'dashboard.password');
     });
 
+    it('rejects weak or placeholder production passwords', () => {
+      for (const password of ['a', 'short', 'password', 'changeme', '123456789']) {
+        expectInvalid({ ...production, DASHBOARD_PASSWORD: password }, 'dashboard.password');
+      }
+    });
+
     it('requires a long session secret', () => {
       expectInvalid({ ...production, SESSION_SECRET: 'short' }, 'dashboard.sessionSecret');
+    });
+
+    it('rejects repeated or placeholder production session secrets', () => {
+      for (const secret of ['a'.repeat(32), 'ab'.repeat(16), 'password'.repeat(4), 'changeme'.repeat(4)]) {
+        expectInvalid({ ...production, SESSION_SECRET: secret }, 'dashboard.sessionSecret');
+      }
+    });
+
+    it('does not echo a rejected password or secret in validation errors', () => {
+      expect(() =>
+        loadConfig({
+          env: testEnv({
+            NODE_ENV: 'production',
+            DASHBOARD_PASSWORD: 'weak-password',
+            SESSION_SECRET: 'a'.repeat(32),
+            COOKIE_SECURE: 'true',
+          }),
+          loadFiles: false,
+        }),
+      ).toThrow(ConfigError);
+      try {
+        loadConfig({
+          env: testEnv({
+            NODE_ENV: 'production',
+            DASHBOARD_PASSWORD: 'weak-password',
+            SESSION_SECRET: 'a'.repeat(32),
+            COOKIE_SECURE: 'true',
+          }),
+          loadFiles: false,
+        });
+      } catch (error) {
+        const message = (error as ConfigError).message;
+        expect(message).not.toContain('weak-password');
+        expect(message).not.toContain('aaaaaaaa');
+      }
     });
 
     it('requires secure cookies (HTTPS)', () => {

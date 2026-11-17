@@ -66,6 +66,10 @@ model Capture {
   transcriptSource String? // TRANSCRIPT_SOURCES
   /// Path to the retained audio file, only when STT_RETAIN_AUDIO=true.
   mediaRef    String?
+  /// Last validated AI classification for this capture, as JSON.
+  classificationCache    String?
+  /// Cache key: content + classifier configuration + local reference day.
+  classificationCacheKey String?
   sourceRef   String?
   /// When the user actually sent it (source timestamp), defaults to createdAt.
   capturedAt  DateTime  @default(now())
@@ -337,4 +341,33 @@ model ReminderDelivery {
   @@index([reminderId, occurrenceKey])
   @@index([deliveredAt])
   @@map("reminder_deliveries")
+}
+
+/// One delivery attempt for a scheduled daily briefing.
+///
+/// The occurrence is identified by `occurrenceKey`: the local calendar date the
+/// briefing covers (`YYYY-MM-DD` in the owner's zone). Every attempt for the
+/// same day shares that key, while `idempotencyKey` (<occurrenceKey>:<attempt>)
+/// makes a duplicate attempt impossible.
+model BriefingDelivery {
+  id             String    @id @default(cuid())
+  /// Local calendar date covered by this briefing (YYYY-MM-DD).
+  occurrenceKey  String
+  attempt        Int       @default(1)
+  status         String    @default("PENDING") // DELIVERY_STATUSES
+  channel        String    @default("telegram")
+  /// The instant the briefing was due (UTC).
+  scheduledFor   DateTime
+  attemptedAt    DateTime?
+  deliveredAt    DateTime?
+  nextRetryAt    DateTime?
+  error          String?
+  idempotencyKey String    @unique
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@index([occurrenceKey])
+  @@index([deliveredAt])
+  @@map("briefing_deliveries")
 }

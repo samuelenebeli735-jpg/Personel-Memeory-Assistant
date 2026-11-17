@@ -12,6 +12,7 @@ import type {
   Priority,
   ProjectStatus,
   ReminderStatus,
+  SearchEntityType,
   TaskStatus,
   TranscriptSource,
 } from './enums.js';
@@ -34,6 +35,11 @@ export interface CaptureDto {
   classificationRationale: string | null;
   transcript: string | null;
   transcriptSource: TranscriptSource | null;
+  /**
+   * True when the source was an audio message. This is a safe presentation flag
+   * only: provider names, file ids, audio paths and raw metadata stay server-side.
+   */
+  isVoice: boolean;
   capturedAt: string;
   processedAt: string | null;
   deletedAt: string | null;
@@ -204,7 +210,7 @@ export interface DashboardOverviewDto {
 }
 
 export interface SearchResultItem {
-  type: 'TASK' | 'NOTE' | 'IDEA' | 'EVENT' | 'CAPTURE' | 'PROJECT' | 'REMINDER';
+  type: SearchEntityType;
   id: string;
   title: string;
   snippet: string;

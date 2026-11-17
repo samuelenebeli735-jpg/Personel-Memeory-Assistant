@@ -92,6 +92,30 @@ export class ProviderError extends AppError {
 export function toAppError(error: unknown): AppError {
   if (error instanceof AppError) return error;
 
+  // @fastify/rate-limit throws a Fastify error with statusCode 429. Preserve the
+  // status instead of letting the generic error path turn it into a 500.
+  const httpError = error as { statusCode?: unknown };
+  if (httpError.statusCode === 429) {
+    return new RateLimitError('Too many requests, please slow down');
+  }
+
+  // Fastify's own request errors (unreadable JSON body, unsupported media type,
+  // body too large) are client errors. Reporting them as a 500 would blame the
+  // server for a bad request, so the status is preserved.
+  const fastifyError = error as { statusCode?: unknown; code?: unknown };
+  if (
+    typeof fastifyError.code === 'string' &&
+    fastifyError.code.startsWith('FST_ERR_') &&
+    typeof fastifyError.statusCode === 'number' &&
+    fastifyError.statusCode >= 400 &&
+    fastifyError.statusCode < 500
+  ) {
+    return new AppError('VALIDATION_ERROR', 'The request could not be read', {
+      httpStatus: fastifyError.statusCode,
+      internal: error instanceof Error ? error.message : undefined,
+    });
+  }
+
   // Prisma constraint failures are caused by the request, not by a bug, so they
   // must not surface as a 500. Mapping them here means every route benefits.
   const prismaError = error as { code?: unknown; meta?: { target?: unknown; field_name?: unknown } };

@@ -1,41 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { eventsApi, type EventDto } from '../lib/api'
-import { formatLocalDateTime, formatRelative, getTimeZone } from '../lib/date'
-import { Button, Input, Textarea, Card, Badge, EmptyState, Modal } from '../components/ui'
+import { getTimeZone } from '../lib/date'
+import { Button, Input, Textarea, Card, EmptyState, Modal } from '../components/ui'
+import { EventRow } from '../components/record-rows'
 import { EventsIcon } from '../components/Layout'
-
-function EventRow({ event, timeZone }: { event: EventDto; timeZone: string }) {
-  const isUpcoming = new Date(event.startsAt).getTime() > Date.now()
-  return (
-    <Link to={`/events/${event.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="list-item-content" style={{ minWidth: 0 }}>
-        <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {event.title}
-        </div>
-        <div className="list-item-meta">
-          <Badge variant={isUpcoming ? 'primary' : 'muted'}>
-            {isUpcoming ? 'Upcoming' : 'Past'}
-          </Badge>
-          <span>{formatLocalDateTime(event.startsAt, timeZone)}</span>
-          {event.endsAt && <span>– {formatLocalTime(event.endsAt, timeZone)}</span>}
-          {event.projectName && <Badge variant="muted">{event.projectName}</Badge>}
-          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{event.id.slice(0, 6)}</span>
-        </div>
-      </div>
-    </Link>
-  )
-}
-
-function formatLocalTime(isoString: string, timeZone: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, { timeZone, hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(isoString))
-  } catch {
-    return '—'
-  }
-}
 
 export function EventsPage() {
   const { showToast } = useToast()
@@ -119,7 +90,7 @@ export function EventsPage() {
             <>
               <div className="list" style={{ borderTop: '1px solid var(--color-border)' }}>
                 {events.map(event => (
-                  <EventRow key={event.id} event={event} timeZone={getTimeZone()} />
+                  <EventRow key={event.id} event={event} timeZone={timeZone} />
                 ))}
               </div>
             </>

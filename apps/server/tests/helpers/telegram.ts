@@ -31,8 +31,18 @@ export interface FakeTelegram {
   reset(): void;
 }
 
+export interface FakeAudioFile {
+  /** Telegram file path, e.g. `voice/file_1.oga`. Defaults to `<fileId>.ogg`. */
+  path?: string;
+  bytes: Uint8Array;
+  /** Simulates a non-200 download response. */
+  status?: number;
+}
+
 export interface FakeTelegramOptions {
   username?: string;
+  /** Voice files keyed by `file_id`, served by `getFile` and the download URL. */
+  files?: Record<string, FakeAudioFile>;
   /**
    * Lets a test simulate an API failure. Return `undefined` to accept the call
    * normally.
@@ -78,6 +88,9 @@ export function createFakeTelegram(options: FakeTelegramOptions = {}): FakeTeleg
       } catch {
         payload = {};
       }
+    } else if (typeof FormData !== 'undefined' && init?.body instanceof FormData) {
+      // Form bodies are only used for provider calls, never for the Bot API.
+      payload = {};
     }
     calls.push({ method, payload });
     if (method === 'sendMessage') {
@@ -92,6 +105,38 @@ export function createFakeTelegram(options: FakeTelegramOptions = {}): FakeTeleg
     const override = options.onCall?.(method, payload);
     if (override) {
       return json(override.body ?? { ok: false, description: 'injected failure' }, override.status ?? 400);
+    }
+
+    if (method === 'getFile') {
+      const fileId = String(payload.file_id ?? '');
+      const file = options.files?.[fileId];
+      if (file) {
+        const filePath = file.path ?? `${fileId}.ogg`;
+        return json({
+          ok: true,
+          result: {
+            file_id: fileId,
+            file_path: filePath,
+            file_size: file.bytes.byteLength,
+          },
+        });
+      }
+    }
+
+    // Audio downloads land on `/file/bot<token>/<file_path>`; the last segment
+    // is enough to find the registered fake file.
+    const audio = Object.values(options.files ?? {}).find((file) => {
+      const filePath = file.path ?? '';
+      return filePath.length > 0 && filePath.split('/').pop() === method;
+    });
+    if (audio) {
+      if (audio.status && audio.status !== 200) {
+        return json({ ok: false, description: 'download failed' }, audio.status);
+      }
+      return new Response(audio.bytes as unknown as BodyInit, {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
     }
 
     switch (method) {

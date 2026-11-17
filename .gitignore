@@ -11,6 +11,7 @@ build/
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Databases (personal data - never commit)
 *.db
@@ -26,6 +27,11 @@ logs/
 *.log
 npm-debug.log*
 
+# Browser E2E output / disposable E2E database and credentials
+apps/web/e2e/.tmp/
+test-results/
+playwright-report/
+
 # Local configuration
 apps/server/config/local.json
 apps/web/.env.local
@@ -33,6 +39,9 @@ apps/web/.env.local
 # Backups / exports of personal data
 backups/
 exports/
+
+# Retained voice audio (STT_RETAIN_AUDIO=true)
+data/
 
 # Editor / OS noise
 .DS_Store

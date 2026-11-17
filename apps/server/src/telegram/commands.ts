@@ -15,6 +15,7 @@ import { searchQuerySchema, type SearchQuery } from '@recall/shared';
 import type { AppContext } from '../context.js';
 import { parseRemindCommand, parseSnoozeCommand, splitSnoozeTarget } from '../lib/reminder-commands.js';
 import { localDayRange } from '../lib/time.js';
+import { askQuestion, MAX_QUESTION_LENGTH } from '../services/ask-service.js';
 import { listCaptures, listInbox } from '../services/capture-service.js';
 import { findIdeas } from '../services/idea-service.js';
 import { findNotes } from '../services/note-service.js';
@@ -32,6 +33,7 @@ import { getSettings } from '../services/settings-service.js';
 import { findTasks } from '../services/task-service.js';
 import type { ReplyMarkup } from './client.js';
 import {
+  formatAskAnswer,
   formatCancelAmbiguous,
   formatCancelNeedsId,
   formatCancelNothingUpcoming,
@@ -205,6 +207,23 @@ const search: CommandHandler = async ({ ctx, args }) => {
   return { text: formatSearchResults(response, `Search — "${term}"`) };
 };
 
+/**
+ * `/ask <question>`: retrieval first, then an answer grounded in those records.
+ * The command owns no retrieval or grounding rules; it delegates to the same
+ * service as `POST /api/ask`, so both surfaces answer identically.
+ */
+const ask: CommandHandler = async ({ ctx, args }) => {
+  const question = args.trim();
+  if (question.length === 0) {
+    return { text: 'What would you like to ask? Send /ask followed by a question about what you have saved.' };
+  }
+  if (question.length > MAX_QUESTION_LENGTH) {
+    return { text: `That question is too long. Keep it under ${MAX_QUESTION_LENGTH} characters.` };
+  }
+  const result = await askQuestion(ctx, { question });
+  return { text: formatAskAnswer(result) };
+};
+
 const ideas: CommandHandler = async ({ ctx, args }) => ({
   text: formatIdeaList(
     await findIdeas(ctx.db, {
@@ -348,9 +367,7 @@ const cancel: CommandHandler = async ({ ctx, args }) => {
 };
 
 /** Commands that exist in the product plan but are not wired up yet. */
-const NOT_YET: Record<string, string> = {
-  ask: 'Milestone 7',
-};
+const NOT_YET: Record<string, string> = {};
 
 export const COMMANDS: Record<string, CommandHandler> = {
   start: help,
@@ -363,6 +380,7 @@ export const COMMANDS: Record<string, CommandHandler> = {
   overdue,
   search,
   find: search,
+  ask,
   ideas,
   notes,
   projects,

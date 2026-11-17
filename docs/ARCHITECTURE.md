@@ -85,6 +85,103 @@ infrastructure. Services never import Fastify or Telegram types.
 **Invariant:** the capture row is never rewritten by classification. Editing a
 task changes the task; it never changes what the user originally sent.
 
+### Voice capture (Milestone 6)
+
+1. The adapter claims `telegram:<chatId>:<messageId>` in an adapter-scoped
+   in-flight promise map before any Bot API or provider work. A concurrent
+   delivery of the same message joins that promise, so it cannot start a second
+   download, transcription or confirmation. The claim is removed when the attempt
+   settles, whether it succeeds or fails, so a later retry starts cleanly. This is
+   process-local only; it is not a distributed lock. The persistent
+   `(source, externalId)` unique constraint remains the final safeguard.
+2. The adapter looks the capture up by `(source, externalId)`. A replayed update is
+   answered from the stored row — no Bot API call, download or provider call. Only
+   a genuinely new update continues.
+3. The clip is rejected before download when it exceeds `STT_MAX_AUDIO_SECONDS` or
+   its mime type is unsupported. With no transcriber configured the capture is
+   still stored, marked `NEEDS_REVIEW`.
+4. The file is downloaded through a bounded stream. A declared `Content-Length`
+   over `STT_MAX_AUDIO_BYTES` is rejected before the body is read; otherwise each
+   chunk is counted and reading is cancelled as soon as the cap is exceeded. The
+   bounded bytes are then held in memory for transcription and are written to
+   `STT_AUDIO_DIR` only when `STT_RETAIN_AUDIO=true`, with the path stored in
+   `mediaRef`. Permanent purge unlinks that file; undo does not, because the
+   capture row is retained as a reversible soft delete.
+5. The capture is stored **before** classification, exactly as for text:
+   `rawText` is the caption (surrounding whitespace trimmed, or
+   `VOICE_PLACEHOLDER` when there is none), `transcript` holds the accepted speech
+   output, and `transcriptSource` is `SPEECH_PROVIDER`. Provider/model/status live
+   in the capture metadata. Provider output over `TRANSCRIPT_MAX_CHARS` (8,000) is
+   rejected, not truncated: the capture keeps the caption or placeholder,
+   `transcript`/`transcriptSource` stay `null`, metadata status is
+   `transcript-too-long`, and the reply reports the limit.
+6. Classification reads `composeVoiceText(caption, transcript)`: the caption first,
+   then the transcript, with identical or contained content collapsed. A transcript
+   is never treated as user-typed text and is never merged into `rawText`.
+7. Any transcription failure degrades in place: the capture and its voice metadata
+   are stored, the reply names the reason, and nothing is invented from the
+   placeholder.
+
+### AI classification and caching (Milestone 6)
+
+1. Classification runs only when `ctx.ai` exists **and** `settings.aiEnabled` is
+   true. Otherwise the deterministic rules classifier runs and no provider is
+   called.
+2. Provider output is validated against `classifyCaptureSchema` at the service
+   boundary even though the transport already validates it, then sanitised
+   (bounded confidence, no invented dates, `needsReview` for uncertain shapes).
+3. A successful, validated result is stored on the capture (`classificationCache`)
+   under a key built from: explicit cache version, exact text, hint kind, time
+   zone, morning/evening defaults, sorted known projects, provider name, model and
+   the **exact reference instant**.
+4. Relative dates are resolved against the capture's original `capturedAt`, not
+   the processing clock. "Remind me in two hours" therefore keeps the same
+   deadline when the capture is reprocessed later, and the cache remains useful
+   without becoming stale. The exact reference instant keeps the key deterministic
+   for a stored capture and prevents same-day collisions for any caller that ever
+   supplies a moving reference. A cache hit is sanitised again against the same
+   reference before use, and the 30-day/5-year plausibility bounds use that
+   reference too, so an older capture does not lose a valid deadline on reprocess.
+5. Failures, timeouts, malformed output and unsupported types are never cached.
+   The next attempt asks the provider again.
+6. Reprocessing the same capture concurrently in one process is refused
+   (`reprocessing` claim set), so two requests cannot write two sets of derived
+   records.
+
+### Ask and briefings (Milestone 7)
+
+1. `ask-service.ts` is the single answer path for `POST /api/ask` and Telegram
+   `/ask`. It retrieves candidates through the existing search service first,
+   replaces each search excerpt with the record's own text, and returns that
+   evidence with the answer.
+2. Search matches a record only when *every* query word appears in it, so a
+   natural question ("what did I say about tiles") would find nothing. The ask
+   service therefore drops the question's filler words and, when the strict
+   query still matches nothing, retries with the individual content words. The
+   strict query always wins when it matches, so a record that matches every
+   content word beats a looser match. The search engine itself is unchanged.
+3. A provider answer is accepted only when every cited id is in the evidence and
+   every statement is supported by the cited records' words and numbers.
+   Unsupported statements are removed; if none survive, the deterministic
+   summary is returned. The deterministic summary is also the answer when AI is
+   absent, disabled (`settings.aiEnabled = false`), fails, or finds no records.
+4. Prompt construction delimits the records and the question and labels both as
+   untrusted data. Text such as "ignore previous instructions" inside a record is
+   data; it is never appended as a sibling instruction.
+5. `briefing-service.ts` is the single briefing implementation for the HTTP
+   routes and scheduled delivery. It resolves the reference day in the owner's
+   IANA zone, returns configured sections in order, and reports empty sections
+   instead of inventing content. The `upcoming` window is seven local days, so a
+   DST transition cannot move its boundary by an hour.
+6. `briefing-delivery.ts` rides the reminder scheduler's one tick. A
+   `briefing_deliveries` row is the durable occurrence; its unique
+   idempotency key (`<localDate>:<attempt>`) prevents a duplicate send across
+   ticks or processes. Quiet hours and the shared daily cap defer an attempt;
+   transient failures retry with backoff, permanent failures stop, a stale day is
+   skipped, and startup recovery re-queues a send interrupted mid-flight.
+7. The scheduler's daily cap counts both delivered reminders and delivered
+   briefings, because both consume the same notification budget the owner set.
+
 ### Search (Milestone 3)
 
 1. The query is validated against the shared `searchQuerySchema`; a type-specific
@@ -114,6 +211,26 @@ task changes the task; it never changes what the user originally sent.
    A row that cannot be written is reported with its table and id; the rest still
    loads, and re-running after a fix is safe.
 
+### Deployment and backup (Milestone 8)
+
+1. The production image is built in stages: workspace install, `build:all`, a
+   pruned runtime copy, and a separate Caddy stage containing the static
+   dashboard. The server container is never published to the host; Caddy is the
+   only public process.
+2. `compose.yaml` applies migrations with a one-shot service before starting the
+   app, keeps SQLite on a named volume and uses restart-on-failure plus a
+   `/api/health/live` healthcheck. A normal app restart cannot race a schema
+   change.
+3. `backup-service.ts` uses SQLite `VACUUM INTO` for a consistent snapshot while
+   the service is running, exports the JSON companion from that verified snapshot
+   so concurrent live writes cannot make the pair describe different points in
+   time, verifies integrity, foreign keys, migration state and row counts, and
+   prunes only timestamped managed files. A snapshot is self-contained; stale
+   `-wal`/`-shm` files are removed if it is restored over a live database.
+4. Deployment and restore procedures live in `docs/OPERATIONS.md`; local
+   validation does not substitute for a remote host, public TLS, live Telegram
+   delivery or the owner's populated backup drill.
+
 ### Reminder delivery (Milestone 4 target)
 
 1. `Reminder` rows are the schedule. The scheduler polls them; nothing lives only
@@ -136,7 +253,7 @@ and are enforced by Zod on every write path.
 | Entity | Purpose | Key relationships |
 | --- | --- | --- |
 | `UserSettings` | Singleton owner preferences (zone, quiet hours, briefing, caps). | `id = "singleton"` |
-| `Capture` | The literal record of what was sent. Never rewritten. | `1—N` Task/Note/Idea/Event/Reminder, `N—N` Tag via `CaptureTag` |
+| `Capture` | The literal record of what was sent. Never rewritten. `rawText` is user-authored; `transcript`/`transcriptSource` carry speech provenance; `classificationCache` is a validated AI result. | `1—N` Task/Note/Idea/Event/Reminder, `N—N` Tag via `CaptureTag` |
 | `Task` | Something to do. | `N—1` Project, `N—1` Capture, `1—N` Reminder |
 | `Note` | Information or a saved reference (optional `url`). | `N—1` Project, `N—1` Capture |
 | `Idea` | A thought to keep. Explicitly not an obligation. | `N—1` Project, `N—1` Capture |
@@ -150,7 +267,9 @@ and are enforced by Zod on every write path.
 **Deletion rules.** Deleting a `Capture` sets the `captureId` of derived records to
 `NULL` (`SetNull`), so history survives. Deleting a `Project` nulls the `projectId`
 on its members rather than destroying them. Tag joins and delivery attempts cascade,
-because a join row or an attempt record has no meaning without its parent.
+because a join row or an attempt record has no meaning without its parent. A
+permanent capture purge also unlinks its retained audio from `STT_AUDIO_DIR`;
+undo is a soft delete and keeps the file for the retained audit row.
 
 **Indexes** exist for the access patterns that matter: due reminders
 (`status, remindAt`), open tasks by due date (`status, dueAt`), the capture inbox
@@ -188,7 +307,7 @@ transaction (`withTransaction`, bounded timeouts). A partial write would mean
 | D22 | Unsupported media is acknowledged, not stored | A sticker has no text to keep. Silently dropping it looks like a bug; a short note explains the limitation. |
 | D23 | Commands from later milestones answer "not yet" | `/tasks` can exist in the UI as a plan without being a working feature. Pretending otherwise (or silently ignoring the command) would break the "no decorative buttons" rule. |
 | D24 | The webhook secret is compared with `timingSafeEqual` | A plain string comparison leaks length and prefix timing. The hook is public by necessity, so it is the one place that needs this care. |
-| D25 | Undo is soft; purge is explicit | `undo` sets `deletedAt` and keeps the audit trail; permanent deletion requires `{"force": true}`. Destructive actions should need a deliberate second intent. |
+| D25 | Undo is soft; purge is explicit | `undo` sets `deletedAt`, removes derived records and keeps the capture/audit trail (including retained audio); permanent deletion requires `{"force": true}` and unlinks retained audio before the transaction commits. Destructive actions should need a deliberate second intent. |
 | D26 | The capture and its derivation are two transactions, not one | Committing the capture first means a provider outage cannot lose the user's words (D8), and the second transaction keeps the derived records and the capture's classification state consistent. The alternative — one transaction — would roll the raw text back on a classification failure, which is the one thing that must never happen. The second transaction's rollback is proven by an injected write failure (`capture-atomicity.test.ts`). |
 | D27 | No fallback between polling and webhook mode | A deployment that silently switches transports hides a misconfiguration and can double-deliver. The mode is explicit and startup fails if its requirements are unmet. |
 | D28 | Search is `LIKE` over a bounded window, not full-text | A personal database is small, and `LIKE` needs no schema, no index maintenance and no tokenizer to explain itself. The per-type window (`SEARCH_WINDOW_CAP = 200`) bounds the work; `total` is still exact because it comes from `count`. Honest limits beat a half-configured FTS table. Replacing this with SQLite FTS5 is a backlog item, and `search-service.ts` is the only module that would change. |
@@ -202,6 +321,21 @@ transaction (`withTransaction`, bounded timeouts). A partial write would mean
 | D36 | Recurrence generates occurrences one at a time, bounded | Each series head generates its next occurrence on successful delivery (or when a missed one is skipped). The unique `occurrenceKey` prevents duplicates after a restart. `maxOccurrences` and `until` bound the series. |
 | D37 | Delivery guarantee is at-least-once, documented | The external API call and the local `DELIVERED` write cannot be atomic. A crash between a successful send and the write can repeat one message; losing a message is not possible because a stale `SENDING` row is re-queued by recovery. |
 | D38 | Reminder API and Telegram commands share the same service layer | `createReminder`, `snoozeReminder`, `cancelReminder` enforce rules once (what may be snoozed, series cancellation semantics). No business logic lives in the adapters. |
+| D39 | Voice uses check-before-download ordering and a bounded stream | A replay must not pay for a second download or transcription. The existence check is the cheapest gate, duration/mime checks come before the download, and the byte cap is enforced while reading the response: a declared oversized `Content-Length` is rejected before the body, and the reader cancels on the first chunk that crosses the cap. Nothing can buffer an unbounded response. |
+| D40 | `transcript` is stored separately from `rawText` | The owner's caption is user-authored and trustworthy; speech output is untrusted. Keeping them in separate columns with `transcriptSource` makes provenance visible in the API, the Telegram confirmation and the dashboard, and means a bad transcript can be replaced without rewriting what the user actually typed. The dashboard labels provider speech output and manual transcripts separately from the caption, and never renders the internal voice placeholder as content. |
+| D41 | Classification sees caption + transcript, caption first | Neither source is discarded when both exist. The caption carries the owner's framing; the transcript carries detail. Identical or contained content is collapsed so the provider is not asked to parse the same words twice. |
+| D42 | Relative dates resolve against `capturedAt`, and the AI cache key includes that exact instant | A capture belongs to the moment it was made. Reinterpreting "in two hours" from a later reprocess would silently move the owner's reminder, so the reference is the immutable `capturedAt`. That makes reprocessing deterministic and lets the cache remain valid instead of expiring at midnight. The key still includes the exact reference instant (plus text, configuration, provider and model) so a caller using a moving reference cannot collide within a local day. A version bump invalidates entries written under the old policy. Failures are never written. |
+| D43 | Reprocess concurrency is guarded in-process, not with a lock table | Recall is a single-owner, single-process server. A claim set is enough to stop two dashboard requests racing, has no schema cost, and cannot deadlock. Multi-process deployment is explicitly out of scope; the same guarantee would then need a DB claim column. |
+| D44 | Audio is in memory unless retention is explicitly enabled | Speech providers accept a request body, so no temporary file is needed at all. `STT_RETAIN_AUDIO=false` therefore means no audio ever reaches disk, and there is nothing to clean up. Opting in writes one file per capture directly under `STT_AUDIO_DIR`. Permanent purge unlinks that direct child only; undo retains it because undo is reversible. Paths are resolved and rejected if they contain `..`, escape the directory, or name a nested entry. |
+| D45 | Concurrent voice deliveries are coalesced by an adapter-local in-flight promise, not a distributed lock | Telegram retries at least once, and two deliveries can pass the persistent duplicate check together. A promise map keyed by the same `telegram:<chatId>:<messageId>` identity as the uniqueness constraint makes the second delivery wait for the first, so only one download and STT call occurs. The entry is removed on success and failure, allowing a later retry. Recall is a single-server deployment; a second process or adapter instance would not share this map, and the database unique constraint still prevents a second capture. Adding a distributed claim would require a schema change and is out of scope. |
+| D46 | The dashboard sees `isVoice`, never the adapter metadata | A caption-only voice note must be presented differently from a typed Telegram message, but provider names, file ids, model names, retained-audio paths and classification-cache fields are not presentation data. The server derives one boolean from the stored metadata and puts only that flag in `CaptureDto`; the web never receives the blob. Detail URLs come from one route registry used by both the router and every visible row, so a row cannot link to a path the app does not register. |
+| D47 | Proxy trust is opt-in; the public webhook has its own rate limit | Unconditionally trusting `X-Forwarded-For` lets any direct client choose its own rate-limit bucket. `TRUST_PROXY` therefore defaults to `false` and accepts a trusted address/CIDR list only when the deployment is actually behind a proxy. Login (10/min) and the Telegram webhook (120/min) have tighter route-level limits than the 240/min global bucket, and a rate-limit rejection is normalised to `429` rather than falling through the generic error path as `500`. |
+| D48 | Provider endpoints are validated at startup | A base URL is operator-controlled, but accepting `file:`/`ftp:` or embedded credentials turns a typo into an unexpected transport or a secret in a URL. Validation requires `http(s)` with no credentials or fragment. Outside development, plain `http://` is limited to loopback hosts (`localhost`, `127.0.0.0/8`, `::1`) for self-hosted model servers; remote providers must use HTTPS. The destination is not blocked by IP range, because local model servers are a supported deployment. |
+| D49 | A valid citation is not proof that an answer is supported | A model can cite one real record and then assert anything at all. Each statement is therefore checked against the cited evidence on its own (content words, digit tokens, prefix matches, negation markers); unsupported statements are removed, and if none survive the answer falls back to a deterministic summary of the evidence. Trusting the citation instead of the statement would make the citation list decorative. |
+| D50 | The evidence excerpt is the record's own text | A search snippet is cut around the match, so it shows *why* a record was found but not what it says. The answer is only allowed to assert things that appear in the evidence the owner also receives, so the evidence has to carry the record's text — otherwise a correct answer would be discarded for not repeating the snippet. Only the excerpt changes; title, timestamp, status and `matchedOn` stay as the search produced them. |
+| D51 | The briefing rides the reminder scheduler's tick | One loop, one set of delivery rules. A second scheduler would mean two quiet-hours rules, two daily caps and two chances to race for the same notification budget. The shared gate (`delivery-gate.ts`) is what makes that impossible, and the briefing's own durable table (`briefing_deliveries`) keeps its occurrences independent of the reminder rows. |
+| D52 | A briefing belongs to its own day | A briefing deferred past midnight (quiet hours, an exhausted daily cap) is skipped rather than delivered the next morning: a stale briefing is worse than no briefing, and the next day's briefing covers the next day. The attempt is recorded as `SKIPPED` so the owner can see that it was not sent. |
+| D53 | The daily delivery is off by default and gates only scheduled delivery | The owner decides when to be spoken to. Reading a briefing is an on-demand retrieval and keeps working while the delivery is off, so a disabled briefing is never a lost briefing. |
 
 ## 6. Extension points
 

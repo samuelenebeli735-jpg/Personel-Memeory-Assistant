@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { Classification, CaptureDto } from '@recall/shared';
 
+import type { AskOutcome } from '../../src/services/ask-service.js';
 import type { IngestOutcome } from '../../src/services/capture-service.js';
 import { parseCommand } from '../../src/telegram/commands.js';
 import {
   buttonsToReplyMarkup,
 } from '../../src/telegram/notifier.js';
 import {
+  formatAskAnswer,
   formatCaptureConfirmation,
   formatHelp,
   kindCorrectionButtons,
@@ -257,6 +259,46 @@ describe('buttonsToReplyMarkup', () => {
   });
 });
 
+describe('formatAskAnswer', () => {
+  it('keeps the grounded answer and names the records behind it', () => {
+    const result: AskOutcome = {
+      grounded: true,
+      answer: 'The plumber is booked for tomorrow morning.',
+      evidence: [
+        {
+          type: 'TASK',
+          id: 'task-123456',
+          title: 'Call the plumber',
+          snippet: 'the plumber is booked for tomorrow morning',
+          timestamp: '2026-10-17T09:00:00.000Z',
+          status: 'PENDING',
+          matchedOn: ['title'],
+        },
+      ],
+      provider: 'deterministic',
+      deterministic: true,
+    };
+
+    const text = formatAskAnswer(result);
+
+    expect(text).toContain('The plumber is booked for tomorrow morning.');
+    expect(text).toContain('Based on:');
+    expect(text).toContain('task · Call the plumber (pending) #task-1');
+  });
+
+  it('does not invent a source list when nothing was found', () => {
+    const result: AskOutcome = {
+      grounded: false,
+      answer: 'I could not find anything about that.',
+      evidence: [],
+      provider: 'deterministic',
+      deterministic: true,
+    };
+
+    expect(formatAskAnswer(result)).toBe('I could not find anything about that.');
+  });
+});
+
 describe('formatHelp', () => {
   it('advertises exactly the commands that exist today', () => {
     const text = formatHelp(true);
@@ -269,6 +311,7 @@ describe('formatHelp', () => {
       '/snooze',
       '/cancel',
       '/search',
+      '/ask',
       '/ideas',
       '/notes',
       '/projects',
@@ -279,8 +322,6 @@ describe('formatHelp', () => {
     ]) {
       expect(text, name).toContain(name);
     }
-    // /ask arrives in Milestone 7
-    expect(text).not.toContain('/ask');
   });
 
   it('warns when no owner is configured', () => {

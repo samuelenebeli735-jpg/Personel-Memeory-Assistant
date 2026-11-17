@@ -47,6 +47,18 @@ export type TranscriptSource = (typeof TRANSCRIPT_SOURCES)[number];
 export const STRUCTURED_TYPES = ['TASK', 'NOTE', 'IDEA', 'EVENT'] as const;
 export type StructuredType = (typeof STRUCTURED_TYPES)[number];
 
+/** Every entity type the search API can return and filter by. */
+export const SEARCH_ENTITY_TYPES = [
+  'TASK',
+  'NOTE',
+  'IDEA',
+  'EVENT',
+  'CAPTURE',
+  'PROJECT',
+  'REMINDER',
+] as const;
+export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];
+
 export const CAPTURE_RELATION_TYPES = ['DUPLICATE_OF', 'RELATED_TO', 'FOLLOW_UP_OF'] as const;
 export type CaptureRelationType = (typeof CAPTURE_RELATION_TYPES)[number];
 

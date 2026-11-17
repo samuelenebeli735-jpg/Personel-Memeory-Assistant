@@ -14,7 +14,9 @@
  * 3. **A type-specific filter narrows the search to that type.** Passing
  *    `status` or `priority` searches tasks only; `kind` searches captures only.
  *    A filter that silently applied to some rows and not others would be worse
- *    than a slightly narrower result set.
+ *    than a slightly narrower result set. The same rule applies to `tag`:
+ *    events, projects and reminders have no tag relation, so they return no
+ *    rows under a tag filter rather than ignoring it.
  *
  * Search is plain `LIKE` (`contains`), one condition per query word, so every
  * word must appear somewhere in the row but the words do not need to be adjacent
@@ -23,25 +25,20 @@
  * `matchedOn` is always case-insensitive. Full-text search is a documented
  * backlog item, not an accident.
  */
-import type {
-  SearchQuery,
-  SearchResponse,
-  SearchResultItem,
+import {
+  SEARCH_ENTITY_TYPES,
+  type SearchEntityType,
+  type SearchQuery,
+  type SearchResponse,
+  type SearchResultItem,
 } from '@recall/shared';
 
 import type { Db } from '../db/client.js';
 import { normalizeWhitespace, truncate } from '../lib/text.js';
+import { VOICE_PLACEHOLDER } from '../lib/voice.js';
 
-export const SEARCH_TYPES = [
-  'TASK',
-  'NOTE',
-  'IDEA',
-  'EVENT',
-  'CAPTURE',
-  'PROJECT',
-  'REMINDER',
-] as const;
-export type SearchType = (typeof SEARCH_TYPES)[number];
+export const SEARCH_TYPES = SEARCH_ENTITY_TYPES;
+export type SearchType = SearchEntityType;
 
 /**
  * Per-type row cap for one search. `limit` and `offset` are bounded by the
@@ -237,6 +234,9 @@ function ideaWhere(query: SearchQuery, q?: string): Where {
 
 function eventWhere(query: SearchQuery, q?: string): Where {
   const where: Where = {};
+  // Events have no tag relation. Do not ignore the filter: that would return
+  // untagged rows in a tag-filtered result and inflate `total`.
+  if (query.tag) where.id = { in: [] };
   if (query.projectId) where.projectId = query.projectId;
   const text = textWhere(['title', 'description'], q);
   if (text) where.AND = text;
@@ -259,7 +259,9 @@ function captureWhere(query: SearchQuery, q?: string): Where {
 
 function projectWhere(query: SearchQuery, q?: string): Where {
   const where: Where = {};
-  if (query.projectId) where.id = query.projectId;
+  // Projects have no tag relation; see the comment on `eventWhere`.
+  if (query.tag) where.id = { in: [] };
+  else if (query.projectId) where.id = query.projectId;
   const text = textWhere(['name', 'description'], q);
   if (text) where.AND = text;
   const range = timeRange(query);
@@ -269,6 +271,8 @@ function projectWhere(query: SearchQuery, q?: string): Where {
 
 function reminderWhere(query: SearchQuery, q?: string): Where {
   const where: Where = {};
+  // Reminders have no tag relation; see the comment on `eventWhere`.
+  if (query.tag) where.id = { in: [] };
   const text = textWhere(['title', 'body'], q);
   if (text) where.AND = text;
   const range = timeRange(query);
@@ -338,9 +342,24 @@ function compareCandidates(
 /* Fetching                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function titleFromCapture(row: { rawText: string }): string {
-  const firstLine = normalizeWhitespace(row.rawText).split('\n')[0] ?? '';
-  return truncate(firstLine, 80) || '(empty capture)';
+function titleFromCapture(row: { rawText: string; transcript: string | null }): string {
+  const caption = row.rawText === VOICE_PLACEHOLDER ? '' : normalizeWhitespace(row.rawText);
+  const firstLine = caption.split('\n')[0] ?? '';
+  if (firstLine) return truncate(firstLine, 80);
+
+  const transcript = row.transcript ? normalizeWhitespace(row.transcript) : '';
+  const transcriptLine = transcript.split('\n')[0] ?? '';
+  if (transcriptLine) return truncate(transcriptLine, 80);
+
+  return row.rawText === VOICE_PLACEHOLDER
+    ? 'Voice capture — transcript unavailable'
+    : '(empty capture)';
+}
+
+/** The stored voice placeholder is internal state, never search-result content. */
+export function visibleCaptureText(row: { rawText: string; transcript: string | null }): string {
+  if (row.rawText !== VOICE_PLACEHOLDER) return row.rawText;
+  return row.transcript ?? 'Transcript unavailable';
 }
 
 interface FetchContext {
@@ -489,12 +508,15 @@ async function fetchCaptures(db: Db, { query, q, take }: FetchContext): Promise<
   });
   return rows.map((row) => {
     const match = q ? computeMatch('CAPTURE', row, q) : null;
+    const visibleText = visibleCaptureText(row);
+    const snippetText =
+      match?.best?.text === VOICE_PLACEHOLDER ? visibleText : (match?.best?.text ?? visibleText);
     return {
       item: {
         type: 'CAPTURE' as const,
         id: row.id,
         title: titleFromCapture(row),
-        snippet: buildSnippet(match?.best?.text ?? row.rawText, q),
+        snippet: buildSnippet(snippetText, q),
         status: row.status,
         timestamp: row.capturedAt.toISOString(),
         matchedOn: match?.matchedOn ?? [],

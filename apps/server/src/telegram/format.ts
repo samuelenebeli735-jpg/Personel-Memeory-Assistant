@@ -15,11 +15,13 @@ import type {
   ReminderRecurrence,
   SearchResponse,
   TaskDto,
+  TranscriptSource,
 } from '@recall/shared';
 
 import { describeRelative, formatLocalCompact, formatLocalHuman } from '../lib/time.js';
 import { truncate } from '../lib/text.js';
 import type { ReplyMarkup } from './client.js';
+import type { AskOutcome } from '../services/ask-service.js';
 import type { IngestOutcome } from '../services/capture-service.js';
 
 const KIND_LABELS: Record<CaptureKind, string> = {
@@ -29,6 +31,11 @@ const KIND_LABELS: Record<CaptureKind, string> = {
   EVENT: 'appointment',
   OTHER: 'note (unsure)',
   UNKNOWN: 'unsure',
+};
+
+const TRANSCRIPT_SOURCE_LABELS: Record<TranscriptSource, string> = {
+  SPEECH_PROVIDER: 'the configured speech provider',
+  MANUAL: 'manual entry',
 };
 
 export function kindLabel(kind: CaptureKind): string {
@@ -122,6 +129,14 @@ export function formatCaptureConfirmation(
   }
 
   if (outcome.remindersScheduled > 0) lines.push('A reminder is set.');
+
+  if (capture.transcript) {
+    lines.push('');
+    lines.push(`Transcribed: ${quote(capture.transcript)}`);
+    if (capture.transcriptSource) {
+      lines.push(`(Transcribed by ${TRANSCRIPT_SOURCE_LABELS[capture.transcriptSource]})`);
+    }
+  }
 
   if (outcome.aiError) {
     lines.push('');
@@ -270,6 +285,27 @@ export function formatSearchResults(response: SearchResponse, header: string): s
   return lines.join('\n');
 }
 
+/**
+ * An answer from `/ask`.
+ *
+ * The answer comes first; the records it was derived from follow, with the same
+ * short id style as the other commands. A deterministic answer already names the
+ * records, so the source list is the verifiable part rather than a second claim.
+ */
+export function formatAskAnswer(result: AskOutcome): string {
+  const lines = [result.answer];
+  if (result.evidence.length > 0) {
+    lines.push('', 'Based on:');
+    for (const item of result.evidence) {
+      const status = item.status ? ` (${item.status.toLowerCase()})` : '';
+      lines.push(
+        `• ${item.type.toLowerCase()} · ${truncate(item.title, 80)}${status} #${item.id.slice(0, 6)}`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
 function recurrenceLabel(recurrence: ReminderRecurrence): string {
   if (recurrence.frequency === 'DAILY') return 'repeats daily';
   if (recurrence.frequency === 'MONTHLY') return 'repeats monthly';
@@ -411,6 +447,7 @@ export function formatHelp(ownerConfigured: boolean): string {
     '/snooze <10m|1h|tomorrow 9am> [id] — snooze a reminder',
     '/cancel <id> — cancel a reminder',
     '/search <words> — search everything you have saved',
+    '/ask <question> — ask about what you have saved, with sources',
     '/ideas — your ideas',
     '/notes — your notes and saved links',
     '/projects — your projects',
@@ -421,8 +458,6 @@ export function formatHelp(ownerConfigured: boolean): string {
     '',
     'You can also tap the buttons under any confirmation to change how something',
     'was classified.',
-    '',
-    'Questions about what you saved are on the way in a later milestone.',
   ];
   if (!ownerConfigured) {
     lines.push('', 'Warning: no owner id is configured, so I cannot accept messages.');
@@ -466,14 +501,35 @@ export function formatUnsupportedMessage(kind: string): string {
   return `I cannot store ${kind} messages yet. Notes, ideas, tasks, appointments and voice messages all work — send me one of those.`;
 }
 
-/** Voice is stored (with a marker) in this milestone; transcription comes later. */
-export function formatVoiceStored(durationSeconds: number | null): string {
+export type VoiceStoreReason =
+  | 'disabled'
+  | 'too-long'
+  | 'failed'
+  | 'empty'
+  | 'unsupported'
+  | 'transcript-too-long';
+
+const VOICE_REASON_TEXT: Record<VoiceStoreReason, string> = {
+  disabled:
+    'Transcription is not configured, so I kept it with a "not transcribed" marker. Add a caption or send the words as text and I will organise them.',
+  'too-long':
+    'It is longer than the configured transcription limit, so I did not send it for transcription. It is stored with a "not transcribed" marker — re-send a shorter clip or add a caption.',
+  failed:
+    'The speech provider could not transcribe it. Your audio message is stored with a "not transcribed" marker — send the words as text or add a caption.',
+  empty:
+    'The speech provider found no words in it. Your audio message is stored with a "not transcribed" marker — send the words as text or add a caption.',
+  unsupported:
+    'That audio format is not supported for transcription. Your message is stored with a "not transcribed" marker — send the words as text or add a caption.',
+  'transcript-too-long':
+    'The transcript was longer than the 8,000-character limit, so I did not store it. Your message is saved with a "not transcribed" marker — send the key points as text or a shorter clip.',
+};
+
+export function formatVoiceStored(
+  durationSeconds: number | null,
+  reason: VoiceStoreReason = 'disabled',
+): string {
   const length = durationSeconds && durationSeconds > 0 ? ` (${Math.round(durationSeconds)}s)` : '';
-  return [
-    `I saved your voice message${length}, but I cannot transcribe it yet — it is kept with a`,
-    '"not transcribed yet" marker so nothing is lost. Transcription arrives in a',
-    'later update; until then, add a caption and I will read that instead.',
-  ].join(' ');
+  return `I saved your voice message${length}, but did not transcribe it. ${VOICE_REASON_TEXT[reason]}`;
 }
 
 export function formatKindUpdated(kind: CaptureKind): string {
