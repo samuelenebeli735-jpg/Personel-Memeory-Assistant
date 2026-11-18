@@ -1,0 +1,36 @@
+# Recall production reverse proxy.
+#
+# RECALL_DOMAIN is supplied by compose from .env.production. A real DNS name
+# enables Caddy's automatic HTTPS (Let's Encrypt/ZeroSSL); use `:80` only for a
+# local HTTP smoke test.
+{
+	admin off
+}
+
+{$RECALL_DOMAIN} {
+	encode zstd gzip
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy app:4000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

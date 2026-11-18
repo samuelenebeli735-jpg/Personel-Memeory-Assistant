@@ -11,7 +11,10 @@ export interface ClassificationRequest {
   /** The original capture text, unmodified. */
   text: string;
   capturedAt: Date;
-  /** Reference "now" used to resolve relative dates. */
+  /**
+   * Reference "now" used to resolve relative dates. For stored captures this is
+   * the original `capturedAt`, so reprocessing is deterministic.
+   */
   referenceNow: Date;
   timeZone: string;
   /** Local HH:MM defaults used for vague expressions. */

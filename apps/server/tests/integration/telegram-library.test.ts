@@ -83,10 +83,17 @@ describe('command registration', () => {
     expect(reply).not.toMatch(/Task lists, search/);
   });
 
-  it('still answers honestly for a later-milestone command', async () => {
-    const { adapter, fake } = setup();
-    const reply = await command(adapter, fake, '/ask what did I say about tiles');
-    expect(reply).toMatch(/arrives with Milestone 7/);
+  it('answers /ask from the owner records', async () => {
+    const { ctx, adapter, fake } = setup();
+    await task(ctx, {
+      title: 'Order kitchen tiles',
+      description: 'I said the tiles should be blue',
+    });
+
+    const reply = await command(adapter, fake, '/ask tiles');
+
+    expect(reply).toContain('Order kitchen tiles');
+    expect(reply).toContain('Based on:');
   });
 
   it('ignores a command-shaped message from a non-owner', async () => {

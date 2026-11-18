@@ -91,6 +91,57 @@ function envStr(defaultValue = '') {
   );
 }
 
+/**
+ * Proxy trust is opt-in. A boolean controls the common case; a string is passed
+ * to Fastify/proxy-addr as a trusted address or CIDR list. Leaving it false is
+ * important: accepting X-Forwarded-For from an untrusted client lets that client
+ * choose its own rate-limit bucket.
+ */
+function envTrustProxy() {
+  return z.preprocess((raw) => {
+    if (raw === undefined || raw === null) return false;
+    if (typeof raw === 'boolean') return raw;
+    const value = String(raw).trim();
+    if (value === '') return false;
+    const normalised = value.toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(normalised)) return false;
+    if (['1', 'true', 'yes', 'on'].includes(normalised)) return true;
+    const values = value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    return values.length === 1 ? values[0]! : values;
+  }, z.union([z.boolean(), z.string().min(1), z.array(z.string().min(1)).min(1)]));
+}
+
+/** Provider endpoints must be HTTP(S) and must not embed credentials. */
+function isLoopbackHostname(hostname: string): boolean {
+  const normalised = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return normalised === 'localhost' || normalised === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalised);
+}
+
+function isSafeProviderBaseUrl(value: string, nodeEnv: AppConfig['nodeEnv']): boolean {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.hash !== ''
+    ) {
+      return false;
+    }
+    // Plain HTTP is only appropriate for a loopback model server. Outside
+    // development it would send provider credentials and capture text in clear.
+    if (url.protocol === 'http:' && nodeEnv !== 'development' && !isLoopbackHostname(url.hostname)) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function envOptionalStr() {
   return z.preprocess((raw) => {
     if (raw === undefined || raw === null) return null;
@@ -110,6 +161,23 @@ function isPlaceholder(value: string | null): boolean {
   return /^(.)\1{7,}$/.test(normalised);
 }
 
+const PRODUCTION_PASSWORD_MIN_LENGTH = 12;
+const PRODUCTION_SESSION_SECRET_MIN_LENGTH = 32;
+const PRODUCTION_SECRET_MIN_UNIQUE_CHARS = 8;
+
+function isWeakProductionPassword(value: string | null): boolean {
+  return value === null || value.length < PRODUCTION_PASSWORD_MIN_LENGTH || isPlaceholder(value);
+}
+
+function isWeakProductionSessionSecret(value: string | null): boolean {
+  return (
+    value === null ||
+    value.length < PRODUCTION_SESSION_SECRET_MIN_LENGTH ||
+    isPlaceholder(value) ||
+    new Set(value).size < PRODUCTION_SECRET_MIN_UNIQUE_CHARS
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Schema                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -125,6 +193,11 @@ export const configSchema = z
       .default('info'),
     /** When false (default) capture text / transcripts never reach the logs. */
     logMessageContent: envBool(false),
+    /**
+     * Trust `X-Forwarded-*` only from the configured proxy. `false` by default;
+     * `true`, an address, or a comma-separated address/CIDR list are accepted.
+     */
+    trustProxy: envTrustProxy().default(false),
 
     databaseUrl: envStr('file:./dev.db'),
 
@@ -178,6 +251,10 @@ export const configSchema = z
       model: envStr('whisper-1'),
       retainAudio: envBool(false),
       maxAudioSeconds: envInt(180, { min: 5, max: 3600 }),
+      /** Hard byte cap enforced while downloading and before any upload. */
+      maxAudioBytes: envInt(25 * 1024 * 1024, { min: 1024, max: 50 * 1024 * 1024 }),
+      /** Only used when `retainAudio` is true; never exposed by the API. */
+      audioDir: envStr('./data/audio'),
     }),
 
     version: envStr('0.1.0'),
@@ -190,12 +267,24 @@ export const configSchema = z
           path: ['dashboard', 'password'],
           message: 'DASHBOARD_PASSWORD is required in production',
         });
+      } else if (isWeakProductionPassword(value.dashboard.password)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['dashboard', 'password'],
+          message: `DASHBOARD_PASSWORD must be at least ${PRODUCTION_PASSWORD_MIN_LENGTH} characters and must not be a placeholder in production`,
+        });
       }
-      if (!value.dashboard.sessionSecret || value.dashboard.sessionSecret.length < 32) {
+      if (!value.dashboard.sessionSecret) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['dashboard', 'sessionSecret'],
-          message: 'SESSION_SECRET must be at least 32 characters in production',
+          message: 'SESSION_SECRET is required in production',
+        });
+      } else if (isWeakProductionSessionSecret(value.dashboard.sessionSecret)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['dashboard', 'sessionSecret'],
+          message: `SESSION_SECRET must be at least ${PRODUCTION_SESSION_SECRET_MIN_LENGTH} random characters and must not be a placeholder or repeated pattern in production`,
         });
       }
       if (value.telegram.enabled && value.telegram.mode === 'webhook') {
@@ -235,6 +324,12 @@ export const configSchema = z
           code: z.ZodIssueCode.custom,
           path: ['telegram', 'ownerIds'],
           message: 'TELEGRAM_OWNER_IDS is required when TELEGRAM_ENABLED=true',
+        });
+      } else if (value.telegram.ownerIds.some((id) => isPlaceholder(id))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['telegram', 'ownerIds'],
+          message: 'TELEGRAM_OWNER_IDS must not contain documented example or placeholder ids',
         });
       }
     }
@@ -277,6 +372,19 @@ export const configSchema = z
         path: ['stt', 'apiKey'],
         message: 'STT_API_KEY is required when STT_PROVIDER is not "none"',
       });
+    }
+    for (const [providerPath, baseUrl] of [
+      [['ai', 'baseUrl'], value.ai.baseUrl],
+      [['stt', 'baseUrl'], value.stt.baseUrl],
+    ] as const) {
+      if (!isSafeProviderBaseUrl(baseUrl, value.nodeEnv)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [...providerPath],
+          message:
+            'must be an http(s) URL without embedded credentials or a fragment; plain http is only allowed for loopback hosts outside development',
+        });
+      }
     }
     if (!isValidIanaZone(value.locale.timeZone)) {
       ctx.addIssue({
@@ -330,6 +438,7 @@ export function envToConfigInput(env: NodeJS.ProcessEnv = process.env) {
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     logMessageContent: env.LOG_MESSAGE_CONTENT,
+    trustProxy: env.TRUST_PROXY,
     databaseUrl: env.DATABASE_URL,
     telegram: {
       enabled: env.TELEGRAM_ENABLED,
@@ -376,6 +485,8 @@ export function envToConfigInput(env: NodeJS.ProcessEnv = process.env) {
       model: env.STT_MODEL,
       retainAudio: env.STT_RETAIN_AUDIO,
       maxAudioSeconds: env.STT_MAX_AUDIO_SECONDS,
+      maxAudioBytes: env.STT_MAX_AUDIO_BYTES,
+      audioDir: env.STT_AUDIO_DIR,
     },
   };
 }

@@ -187,6 +187,96 @@ describe('owner settings', () => {
     });
   });
 
+  it('accepts the full dashboard form payload and returns every field on re-read', async () => {
+    const cookie = await app.login();
+    const before = (await app.app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } })).json() as SettingsDto;
+
+    // The exact shape the dashboard sends from a fresh install: every field,
+    // with unset optional values as null (never empty strings).
+    const fresh = await app.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: {
+        displayName: null,
+        timeZone: 'Africa/Lagos',
+        morningDefaultTime: '09:00',
+        eveningDefaultTime: '19:00',
+        locale: 'en',
+        quietHoursStart: null,
+        quietHoursEnd: null,
+        maxNotificationsPerDay: 0,
+        reminderOverdueGraceHours: 12,
+        aiEnabled: true,
+        briefingEnabled: false,
+        briefingTime: '07:30',
+        briefingSections: ['today', 'overdue', 'upcoming'],
+      },
+    });
+    expect(fresh.statusCode).toBe(200);
+
+    const custom = await app.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: {
+        displayName: 'Owner',
+        timeZone: 'America/New_York',
+        quietHoursStart: '22:00',
+        quietHoursEnd: '07:00',
+        aiEnabled: false,
+        briefingEnabled: true,
+        briefingTime: '06:45',
+        briefingSections: ['ideas', 'today'],
+      },
+    });
+    expect(custom.statusCode).toBe(200);
+
+    const reread = (await app.app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } })).json() as SettingsDto;
+    expect(reread).toMatchObject({
+      displayName: 'Owner',
+      timeZone: 'America/New_York',
+      quietHoursStart: '22:00',
+      quietHoursEnd: '07:00',
+      aiEnabled: false,
+      briefingEnabled: true,
+      briefingTime: '06:45',
+      briefingSections: ['ideas', 'today'],
+    });
+
+    // The pre-fix dashboard sent '' for unset quiet hours; that stays a 400.
+    const emptyStrings = await app.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: { quietHoursStart: '', quietHoursEnd: '' },
+    });
+    expect(emptyStrings.statusCode).toBe(400);
+
+    // restore for other tests in this file
+    const restore = await app.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: {
+        displayName: before.displayName,
+        timeZone: before.timeZone,
+        morningDefaultTime: before.morningDefaultTime,
+        eveningDefaultTime: before.eveningDefaultTime,
+        locale: before.locale,
+        quietHoursStart: before.quietHoursStart,
+        quietHoursEnd: before.quietHoursEnd,
+        maxNotificationsPerDay: before.maxNotificationsPerDay,
+        reminderOverdueGraceHours: before.reminderOverdueGraceHours,
+        aiEnabled: before.aiEnabled,
+        briefingEnabled: before.briefingEnabled,
+        briefingTime: before.briefingTime,
+        briefingSections: before.briefingSections,
+      },
+    });
+    expect(restore.statusCode).toBe(200);
+  });
+
   it('rejects an invalid time zone with a field-level error', async () => {
     const cookie = await app.login();
     const response = await app.app.inject({

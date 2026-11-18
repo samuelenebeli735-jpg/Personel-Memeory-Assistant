@@ -39,11 +39,12 @@ export async function findProjectByName(
 
 export async function listProjects(
   db: Db,
-  options: { includeArchived?: boolean; limit?: number } = {},
+  options: { includeArchived?: boolean; limit?: number; offset?: number } = {},
 ): Promise<ProjectDto[]> {
   const rows = await db.project.findMany({
     where: options.includeArchived ? {} : { status: 'ACTIVE' },
     orderBy: [{ status: 'asc' }, { name: 'asc' }],
+    skip: options.offset ?? 0,
     take: options.limit ?? 200,
     include: projectCountInclude,
   });

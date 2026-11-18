@@ -16,6 +16,9 @@ import { registerLibraryRoutes } from './library-routes.js';
 import { registerReminderRoutes } from './reminder-routes.js';
 import { registerSearchRoutes } from './search-routes.js';
 import { registerSettingsRoutes } from './settings-routes.js';
+import { registerDashboardRoutes } from './dashboard-routes.js';
+import { registerAskRoutes } from './ask-routes.js';
+import { registerBriefingRoutes } from './briefing-routes.js';
 
 export async function registerProtectedRoutes(
   app: FastifyInstance,
@@ -24,9 +27,12 @@ export async function registerProtectedRoutes(
 ): Promise<void> {
   await registerHealthRoutes(app, ctx, runtime);
   await registerSettingsRoutes(app, ctx);
+  await registerDashboardRoutes(app, ctx);
   await registerCaptureRoutes(app, ctx);
   await registerLibraryRoutes(app, ctx);
   await registerReminderRoutes(app, ctx);
   await registerSearchRoutes(app, ctx);
   await registerExportRoutes(app, ctx);
+  await registerAskRoutes(app, ctx);
+  await registerBriefingRoutes(app, ctx);
 }

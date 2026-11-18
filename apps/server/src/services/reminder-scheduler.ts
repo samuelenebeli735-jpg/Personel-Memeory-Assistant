@@ -30,12 +30,6 @@ import type { ReminderRecurrence } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
 import { backoffDelay } from '../lib/retry.js';
-import {
-  isWithinQuietHours,
-  nextQuietHoursEnd,
-  startOfLocalDay,
-  startOfNextLocalDay,
-} from '../lib/time.js';
 import { parseRecurrence } from '../mappers.js';
 import type { Notifier } from '../ports.js';
 import {
@@ -45,14 +39,14 @@ import {
   skipOutstandingDeliveries,
 } from './reminder-service.js';
 import { getSettings, type SettingsRow } from './settings-service.js';
+import { gateDelivery, NO_CHANNEL_DEFER_MS, type DeliveryGate } from './delivery-gate.js';
+import { deliverDueBriefing, recoverBriefingDeliveries, type BriefingDeliveryReport } from './briefing-delivery.js';
 
 export const DEFAULT_BATCH_SIZE = 50;
 /** Ceiling for reminder retry backoff (individual attempts grow ×2 up to this). */
 export const DEFAULT_MAX_BACKOFF_MS = 30 * 60_000;
 /** A `SENDING` row older than this is treated as interrupted and re-queued. */
 export const DEFAULT_STALE_CLAIM_MS = 5 * 60_000;
-/** How long a reminder waits when there is no delivery channel at all. */
-export const NO_CHANNEL_DEFER_MS = 15 * 60_000;
 
 export interface SchedulerStatusSnapshot {
   running: boolean;
@@ -79,6 +73,8 @@ export interface TickReport {
   missed: number;
   /** Next occurrences generated for recurring series. */
   advanced: number;
+  /** What the daily briefing did during this tick. */
+  briefings: BriefingDeliveryReport;
 }
 
 export interface RecoveryReport {
@@ -86,6 +82,8 @@ export interface RecoveryReport {
   missed: number;
   /** Interrupted deliveries re-queued for a retry. */
   requeued: number;
+  /** Interrupted briefing deliveries re-queued for a retry. */
+  briefingsRequeued: number;
 }
 
 /** Injectable timers so tests never rely on a real interval. */
@@ -114,11 +112,6 @@ export interface ReminderScheduler {
   /** Re-queues interrupted deliveries and misses anything past the grace window. */
   recover(): Promise<RecoveryReport>;
   status(): SchedulerStatusSnapshot;
-}
-
-interface Gate {
-  reason: string;
-  deferUntil: Date;
 }
 
 function reasonOf(error: unknown): string {
@@ -162,6 +155,15 @@ export function createReminderScheduler(
       abandoned: 0,
       missed: 0,
       advanced: 0,
+      briefings: {
+        disabled: false,
+        due: 0,
+        attempts: 0,
+        delivered: 0,
+        failed: 0,
+        deferred: 0,
+        skipped: 0,
+      },
     };
   }
 
@@ -182,31 +184,12 @@ export function createReminderScheduler(
   /**
    * Decides whether a notification may go out now. A result means "not yet":
    * quiet hours end, or the next local day when the cap is reached.
+   *
+   * The rule itself lives in `delivery-gate.ts` so the daily briefing obeys
+   * exactly the same quiet hours and daily cap as a reminder.
    */
-  async function gateFor(now: Date, settings: SettingsRow, timeZone: string): Promise<Gate | null> {
-    if (isWithinQuietHours(now, timeZone, settings.quietHoursStart, settings.quietHoursEnd)) {
-      const end = nextQuietHoursEnd(now, timeZone, settings.quietHoursStart, settings.quietHoursEnd);
-      if (end) return { reason: 'quiet hours', deferUntil: end };
-    }
-    const cap = settings.maxNotificationsPerDay;
-    if (cap > 0) {
-      const deliveredToday = await ctx.db.reminderDelivery.count({
-        where: {
-          status: 'DELIVERED',
-          deliveredAt: {
-            gte: startOfLocalDay(now, timeZone),
-            lt: startOfNextLocalDay(now, timeZone),
-          },
-        },
-      });
-      if (deliveredToday >= cap) {
-        return {
-          reason: `daily notification cap of ${cap} reached`,
-          deferUntil: startOfNextLocalDay(now, timeZone),
-        };
-      }
-    }
-    return null;
+  async function gateFor(now: Date, settings: SettingsRow, timeZone: string): Promise<DeliveryGate | null> {
+    return gateDelivery(ctx, now, settings, timeZone);
   }
 
   /**
@@ -492,6 +475,24 @@ export function createReminderScheduler(
           });
         }
       }
+
+      // 3. The daily briefing rides the same loop, so there is one scheduler.
+      try {
+        report.briefings = await deliverDueBriefing(ctx, now, { notifier });
+      } catch (error) {
+        report.briefings = {
+          disabled: false,
+          due: 0,
+          attempts: 0,
+          delivered: 0,
+          failed: 0,
+          deferred: 0,
+          skipped: 0,
+        };
+        ctx.logger.error('briefing delivery failed unexpectedly', {
+          reason: reasonOf(error),
+        });
+      }
     } finally {
       ticking = false;
       lastTickAt = now.toISOString();
@@ -503,7 +504,7 @@ export function createReminderScheduler(
   async function recover(): Promise<RecoveryReport> {
     const now = ctx.clock.now();
     const settings = await getSettings(ctx.db, ctx.defaults);
-    const report: RecoveryReport = { missed: 0, requeued: 0 };
+    const report: RecoveryReport = { missed: 0, requeued: 0, briefingsRequeued: 0 };
 
     // A delivery left mid-send by a crash is retried, never dropped.
     const stale = await ctx.db.reminderDelivery.updateMany({
@@ -515,6 +516,9 @@ export function createReminderScheduler(
       },
     });
     report.requeued = stale.count;
+
+    // The same rule applies to a briefing that was interrupted mid-send.
+    report.briefingsRequeued = await recoverBriefingDeliveries(ctx, now, staleClaimMs);
 
     // Anything past the grace window is marked missed, so a returning owner gets
     // one "these were missed" state instead of a burst of late notifications.

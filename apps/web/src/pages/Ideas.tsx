@@ -1,29 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { ideasApi, type IdeaDto } from '../lib/api'
-import { formatRelative, getTimeZone } from '../lib/date'
-import { Button, Input, Textarea, Card, Badge, EmptyState, Modal } from '../components/ui'
+import { getTimeZone } from '../lib/date'
+import { Button, Input, Textarea, Card, EmptyState, Modal } from '../components/ui'
+import { IdeaRow } from '../components/record-rows'
 import { IdeasIcon } from '../components/Layout'
-
-function IdeaRow({ idea, timeZone }: { idea: IdeaDto; timeZone: string }) {
-  return (
-    <Link to={`/ideas/${idea.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="list-item-content" style={{ minWidth: 0 }}>
-        <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {idea.title}
-        </div>
-        <div className="list-item-meta">
-          {idea.body && <span style={{ color: 'var(--color-text-muted)', fontSize: '12px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}>{idea.body.slice(0, 100)}</span>}
-          <span>{formatRelative(idea.createdAt, timeZone)}</span>
-          {idea.projectName && <Badge variant="muted">{idea.projectName}</Badge>}
-          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{idea.id.slice(0, 6)}</span>
-        </div>
-      </div>
-    </Link>
-  )
-}
 
 export function IdeasPage() {
   const { showToast } = useToast()
@@ -104,7 +87,7 @@ export function IdeasPage() {
             <>
               <div className="list" style={{ borderTop: '1px solid var(--color-border)' }}>
                 {ideas.map(idea => (
-                  <IdeaRow key={idea.id} idea={idea} timeZone={getTimeZone()} />
+                  <IdeaRow key={idea.id} idea={idea} timeZone={timeZone} />
                 ))}
               </div>
             </>

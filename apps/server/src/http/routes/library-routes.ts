@@ -136,7 +136,7 @@ const eventListQuery = z.object({
 
 const projectListQuery = z.object({
   includeArchived: z.enum(['true', 'false']).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(200),
+  ...pageSchema,
 });
 
 export async function registerLibraryRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
@@ -389,6 +389,7 @@ export async function registerLibraryRoutes(app: FastifyInstance, ctx: AppContex
     return listProjects(ctx.db, {
       includeArchived: query.includeArchived === 'true',
       limit: query.limit,
+      offset: query.offset,
     });
   });
 

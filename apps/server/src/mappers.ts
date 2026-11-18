@@ -75,6 +75,23 @@ function tagsOf(rows: { tag: { id: string; name: string } }[]): TagDto[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Voice metadata is stored as an adapter-specific JSON blob. The dashboard only
+ * needs to know whether the capture came from audio; everything else in the blob
+ * (provider, file id, model) must never cross the wire.
+ */
+export function isVoiceCapture(metadata: string | null): boolean {
+  if (!metadata) return false;
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return false;
+    const voice = (parsed as Record<string, unknown>).voice;
+    return typeof voice === 'object' && voice !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function isTaskOverdue(
   task: { status: string; dueAt: Date | null },
   now: Date,
@@ -131,6 +148,7 @@ export function toCaptureDto(row: CaptureRow): CaptureDto {
     classificationRationale: row.classificationRationale,
     transcript: row.transcript,
     transcriptSource: (row.transcriptSource as CaptureDto['transcriptSource']) ?? null,
+    isVoice: isVoiceCapture(row.metadata),
     capturedAt: row.capturedAt.toISOString(),
     processedAt: row.processedAt?.toISOString() ?? null,
     deletedAt: row.deletedAt?.toISOString() ?? null,

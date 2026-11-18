@@ -67,6 +67,7 @@ function envToInput(env: NodeJS.ProcessEnv) {
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     logMessageContent: env.LOG_MESSAGE_CONTENT,
+    trustProxy: env.TRUST_PROXY,
     databaseUrl: env.DATABASE_URL,
     telegram: {
       enabled: env.TELEGRAM_ENABLED,
@@ -113,6 +114,8 @@ function envToInput(env: NodeJS.ProcessEnv) {
       model: env.STT_MODEL,
       retainAudio: env.STT_RETAIN_AUDIO,
       maxAudioSeconds: env.STT_MAX_AUDIO_SECONDS,
+      maxAudioBytes: env.STT_MAX_AUDIO_BYTES,
+      audioDir: env.STT_AUDIO_DIR,
     },
   };
 }

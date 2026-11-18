@@ -14,15 +14,19 @@
  *  5. Nothing is invented: an EVENT without a date, or an unrecognised capture,
  *     is kept for review instead of being forced into a shape.
  */
+import fs from 'node:fs/promises';
+
 import type { CaptureDto, CaptureKind, Classification } from '@recall/shared';
 import { captureInputSchema, type CaptureInput } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
 import type { Db } from '../db/client.js';
 import { withTransaction } from '../db/client.js';
+import { resolveRetainedAudioPath } from '../lib/audio.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { captureDedupeHash } from '../lib/hash.js';
 import { extractUrls, isOnlyUrl } from '../lib/text.js';
+import { contentTextForCapture, VOICE_PLACEHOLDER } from '../lib/voice.js';
 import { captureInclude, toCaptureDto, type CaptureRow } from '../mappers.js';
 import { classifyCaptureText } from './classification-service.js';
 import { createEvent } from './event-service.js';
@@ -57,6 +61,10 @@ export interface IngestOutcome {
   dedupeSuspicion: { captureId: string; rawText: string; capturedAt: string } | null;
   /** Clarification to ask the user, when the intent or the date is unclear. */
   clarification: string | null;
+  /** Transcription text, if available. */
+  transcript: string | null;
+  /** Source of the transcript (e.g., 'SPEECH_PROVIDER', 'MANUAL'). */
+  transcriptSource: string | null;
 }
 
 export interface IngestOptions {
@@ -66,6 +74,19 @@ export interface IngestOptions {
   skipDedupeCheck?: boolean;
   /** Suppress the AI provider for this capture (used by explicit commands). */
   skipAi?: boolean;
+  /** Transcription result, if the source provided one. */
+  transcript?: string | null;
+  /** Source of the transcript (speech provider, manual, etc.). */
+  transcriptSource?: string | null;
+  /**
+   * Text the classifier should read, when it differs from `rawText`.
+   *
+   * Voice captures keep `rawText` as the user-authored caption (or a neutral
+   * placeholder) while the transcript carries the spoken content. Passing the
+   * composite here means classification uses everything the owner said without
+   * pretending the transcript was typed.
+   */
+  classificationText?: string | null;
 }
 
 /** How far back the soft-duplicate check looks. */
@@ -94,6 +115,24 @@ export async function getCapture(db: Db, id: string): Promise<CaptureDto> {
   const row = await db.capture.findUnique({ where: { id }, include: captureInclude });
   if (!row) throw new NotFoundError('Capture', id);
   return toCaptureDto(row as CaptureRow);
+}
+
+/**
+ * Looks up a capture by its adapter idempotency key.
+ *
+ * Telegram voice handling uses this *before* downloading audio, so a replayed
+ * update does not pay for a second download and transcription.
+ */
+export async function findCaptureByExternalId(
+  db: Db,
+  source: string,
+  externalId: string,
+): Promise<CaptureDto | null> {
+  const row = await db.capture.findUnique({
+    where: { source_externalId: { source, externalId } },
+    include: captureInclude,
+  });
+  return row ? toCaptureDto(row as CaptureRow) : null;
 }
 
 function captureWhere(filter: CaptureFilter): Record<string, unknown> {
@@ -159,6 +198,15 @@ export async function ingestCapture(
   }
   const input = parsed.data;
   const db = ctx.db;
+  const transcript = input.transcript ?? options.transcript ?? null;
+  const transcriptSource = transcript
+    ? (input.transcriptSource ?? options.transcriptSource ?? null)
+    : null;
+  // An explicit classification text wins; otherwise a transcript is folded in
+  // automatically so a voice capture is never classified on its placeholder.
+  const contentText =
+    options.classificationText?.trim() ||
+    contentTextForCapture({ rawText: input.rawText, transcript });
 
   // --- 1. idempotency ------------------------------------------------------
   if (input.externalId) {
@@ -183,13 +231,16 @@ export async function ingestCapture(
         dedupeSuspicion: null,
         remindersScheduled: 0,
         clarification: null,
+        transcript: existing.transcript,
+        transcriptSource: existing.transcriptSource,
       };
     }
   }
 
   const capturedAt = input.occurredAt ? new Date(input.occurredAt) : ctx.clock.now();
   const dedupeHash = captureDedupeHash({
-    rawText: input.rawText,
+    // Fingerprint the content, not the placeholder used for a silent voice note.
+    rawText: contentText,
     source: input.source,
     occurredAtIso: capturedAt.toISOString(),
   });
@@ -208,6 +259,8 @@ export async function ingestCapture(
         sourceRef: input.sourceRef ?? null,
         metadata: input.metadata ? JSON.stringify(input.metadata) : null,
         capturedAt,
+        transcript,
+        transcriptSource,
       },
       include: captureInclude,
     });
@@ -232,6 +285,8 @@ export async function ingestCapture(
           remindersScheduled: 0,
           dedupeSuspicion: null,
           clarification: null,
+          transcript: existing.transcript,
+          transcriptSource: existing.transcriptSource,
         };
       }
     }
@@ -291,17 +346,20 @@ export async function ingestCapture(
       dedupeSuspicion,
       remindersScheduled: 0,
       clarification: null,
+      transcript: stored.transcript,
+      transcriptSource: stored.transcriptSource,
     };
   }
 
   // --- 4. classify (guarded) ----------------------------------------------
   const knowledge = await currentProjects(db);
   const outcome = await classifyCaptureText(ctx, {
-    text: input.rawText,
+    text: contentText,
     capturedAt,
     hintKind: input.forcedKind ?? null,
     knownProjects: knowledge,
     forceRules: options.skipAi === true,
+    captureId: captureRow.id,
   });
 
   const classification: Classification = input.forcedKind
@@ -315,7 +373,15 @@ export async function ingestCapture(
   let status: CaptureDto['status'] = 'RECEIVED';
   try {
     const applied = await withTransaction(db, async (tx) => {
-      const result = await applyClassification(ctx, tx, captureRow.id, input, classification, captureRow);
+      const result = await applyClassification(
+        ctx,
+        tx,
+        captureRow.id,
+        input,
+        contentText,
+        classification,
+        captureRow,
+      );
       const nextStatus = statusFor(classification, result.created.length);
       await tx.capture.update({
         where: { id: captureRow.id },
@@ -360,6 +426,8 @@ export async function ingestCapture(
     dedupeSuspicion,
     remindersScheduled,
     clarification: buildClarification(classification, created),
+    transcript: (fresh ?? captureRow).transcript,
+    transcriptSource: (fresh ?? captureRow).transcriptSource,
   };
 }
 
@@ -419,6 +487,7 @@ async function applyClassification(
   db: Db,
   captureId: string,
   input: CaptureInput,
+  contentText: string,
   classification: Classification,
   captureRow: CaptureRow,
 ): Promise<{ created: CreatedLink[]; remindersScheduled: number }> {
@@ -431,7 +500,7 @@ async function applyClassification(
 
   if (classification.kind === 'TASK') {
     const task = await createTask(ctx, {
-      title: classification.title ?? input.rawText.slice(0, 200),
+      title: classification.title ?? contentText.slice(0, 200),
       description: classification.description ?? null,
       status: 'PENDING',
       priority: classification.priority ?? null,
@@ -456,11 +525,11 @@ async function applyClassification(
       ctx.logger.debug('reminder scheduled from capture', { reminderId: reminder.id });
     }
   } else if (classification.kind === 'NOTE') {
-    const urls = extractUrls(input.rawText);
+    const urls = extractUrls(contentText);
     const note = await createNote(ctx, {
       title: classification.title ?? null,
-      body: input.rawText,
-      url: urls.length > 0 && (isOnlyUrl(input.rawText) || urls.length === 1) ? (urls[0] ?? null) : null,
+      body: contentText,
+      url: urls.length > 0 && (isOnlyUrl(contentText) || urls.length === 1) ? (urls[0] ?? null) : null,
       projectId: project?.id ?? null,
       tags: classification.tags,
       captureId,
@@ -468,8 +537,8 @@ async function applyClassification(
     created.push({ type: 'NOTE', id: note.id, title: note.title ?? '(saved reference)' });
   } else if (classification.kind === 'IDEA') {
     const idea = await createIdea(ctx, {
-      title: classification.title ?? input.rawText.slice(0, 200),
-      body: classification.description ?? input.rawText,
+      title: classification.title ?? contentText.slice(0, 200),
+      body: classification.description ?? contentText,
       projectId: project?.id ?? null,
       tags: classification.tags,
       captureId,
@@ -477,7 +546,7 @@ async function applyClassification(
     created.push({ type: 'IDEA', id: idea.id, title: idea.title });
   } else if (classification.kind === 'EVENT' && classification.dueAt) {
     const event = await createEvent(ctx, {
-      title: classification.title ?? input.rawText.slice(0, 200),
+      title: classification.title ?? contentText.slice(0, 200),
       description: classification.description ?? null,
       startsAt: classification.dueAt,
       endsAt: null,
@@ -563,8 +632,9 @@ export async function convertCaptureKind(
     metadata: null,
   };
 
+  const contentText = contentTextForCapture({ rawText: row.rawText, transcript: row.transcript });
   const classification = ctx.rules.classify({
-    text: row.rawText,
+    text: contentText,
     capturedAt: row.capturedAt,
     referenceNow: ctx.clock.now(),
     timeZone: ctx.defaults.timeZone,
@@ -578,7 +648,15 @@ export async function convertCaptureKind(
   // deleted and the new one missing.
   const applied = await withTransaction(db, async (tx) => {
     const migration = await removeDerivedRecords(tx, captureId);
-    const result = await applyClassification(ctx, tx, captureId, input, classification, row as CaptureRow);
+    const result = await applyClassification(
+      ctx,
+      tx,
+      captureId,
+      input,
+      contentText,
+      classification,
+      row as CaptureRow,
+    );
     await tx.captureTag.deleteMany({ where: { captureId } });
     await replaceTags(tx, { captureId }, classification.tags);
     const nextStatus = statusFor(classification, result.created.length);
@@ -604,8 +682,30 @@ export async function convertCaptureKind(
   };
 }
 
+/**
+ * Captures currently being reprocessed in this process.
+ *
+ * Recall runs as a single server process, so an in-process claim is enough to
+ * stop two concurrent reprocess requests from racing and creating two sets of
+ * derived records. A restart clears the set; the database state is the source
+ * of truth and the next attempt simply sees the existing links.
+ */
+const reprocessing = new Set<string>();
+
 /** Re-runs classification on a capture that was stored but not processed. */
 export async function reprocessCapture(ctx: AppContext, captureId: string): Promise<IngestOutcome> {
+  if (reprocessing.has(captureId)) {
+    throw new ValidationError('This capture is already being processed');
+  }
+  reprocessing.add(captureId);
+  try {
+    return await reprocessCaptureInner(ctx, captureId);
+  } finally {
+    reprocessing.delete(captureId);
+  }
+}
+
+async function reprocessCaptureInner(ctx: AppContext, captureId: string): Promise<IngestOutcome> {
   const db = ctx.db;
   const row = await db.capture.findUnique({ where: { id: captureId }, include: captureInclude });
   if (!row) throw new NotFoundError('Capture', captureId);
@@ -625,6 +725,43 @@ export async function reprocessCapture(ctx: AppContext, captureId: string): Prom
       remindersScheduled: 0,
       dedupeSuspicion: null,
       clarification: null,
+      transcript: row.transcript,
+      transcriptSource: row.transcriptSource,
+    };
+  }
+
+  // A voice capture with neither a caption nor a transcript has no content to
+  // classify. `contentTextForCapture` would otherwise fall back to the neutral
+  // placeholder and the classifier could turn that into a phantom task.
+  const hasCaption = row.rawText !== VOICE_PLACEHOLDER && row.rawText.trim().length > 0;
+  const hasTranscript = Boolean(row.transcript?.trim());
+  if (!hasCaption && !hasTranscript) {
+    const updated = await db.capture.update({
+      where: { id: captureId },
+      data: {
+        status: 'NEEDS_REVIEW',
+        needsReview: true,
+        classificationRationale:
+          'Voice message has no caption or transcript, so there is nothing to classify',
+        processedAt: ctx.clock.now(),
+      },
+      include: captureInclude,
+    });
+    return {
+      capture: toCaptureDto(updated as CaptureRow),
+      created: [],
+      duplicate: false,
+      classification: null,
+      provider: null,
+      aiError: null,
+      needsReview: true,
+      processingError: null,
+      remindersScheduled: 0,
+      dedupeSuspicion: null,
+      clarification:
+        'This voice message has no transcript to work from. Add a caption or send the words as text.',
+      transcript: updated.transcript,
+      transcriptSource: updated.transcriptSource,
     };
   }
 
@@ -635,12 +772,16 @@ export async function reprocessCapture(ctx: AppContext, captureId: string): Prom
     occurredAt: row.capturedAt,
     forcedKind: null,
     metadata: null,
+    transcript: row.transcript,
+    transcriptSource: (row.transcriptSource as CaptureInput['transcriptSource']) ?? null,
   };
+  const contentText = contentTextForCapture({ rawText: row.rawText, transcript: row.transcript });
   const outcome = await classifyCaptureText(ctx, {
-    text: row.rawText,
+    text: contentText,
     capturedAt: row.capturedAt,
     hintKind: null,
     knownProjects: await currentProjects(db),
+    captureId,
   });
 
   let created: CreatedLink[] = [];
@@ -654,6 +795,7 @@ export async function reprocessCapture(ctx: AppContext, captureId: string): Prom
         tx,
         captureId,
         input,
+        contentText,
         outcome.classification,
         row as CaptureRow,
       );
@@ -679,6 +821,9 @@ export async function reprocessCapture(ctx: AppContext, captureId: string): Prom
   }
 
   const fresh = await db.capture.findUnique({ where: { id: captureId }, include: captureInclude });
+  // Prefer fresh data from DB, fall back to input transcript values
+  const transcriptValue = fresh?.transcript ?? input.transcript ?? null;
+  const transcriptSourceValue = fresh?.transcriptSource ?? input.transcriptSource ?? null;
   return {
     capture: toCaptureDto(fresh as CaptureRow),
     created,
@@ -691,6 +836,8 @@ export async function reprocessCapture(ctx: AppContext, captureId: string): Prom
     dedupeSuspicion: null,
     remindersScheduled,
     clarification: buildClarification(outcome.classification, created),
+    transcript: transcriptValue,
+    transcriptSource: transcriptSourceValue,
   };
 }
 
@@ -709,7 +856,10 @@ export interface UndoResult {
  *  - only within `UNDO_WINDOW_MS`;
  *  - only if the derived records have not been edited since creation;
  *  - the capture itself is soft-deleted (audit trail retained).
- * Anything outside those bounds must be deleted item by item, deliberately.
+ * Retained audio is intentionally kept: undo is reversible and the capture row
+ * (including `mediaRef`) remains for the audit trail. Permanent purge is the
+ * only operation that deletes the file. Anything outside those bounds must be
+ * deleted item by item, deliberately.
  */
 export async function undoCapture(
   ctx: AppContext,
@@ -761,9 +911,48 @@ export async function purgeCapture(ctx: AppContext, captureId: string): Promise<
       where: { OR: [{ fromCaptureId: captureId }, { toCaptureId: captureId }] },
     });
     await tx.capture.delete({ where: { id: captureId } });
+    // Keep the filesystem step inside the transaction: an unexpected unlink
+    // error rolls the database work back instead of purging the row and leaving
+    // an orphaned file. A file that is already gone is a successful no-op.
+    await deleteRetainedAudio(ctx, captureId, row.mediaRef);
     return removed;
   });
   return { captureId, removed: removal };
+}
+
+/**
+ * Deletes a retained audio file for a permanent purge.
+ *
+ * `mediaRef` is database-backed but still untrusted: it may be stale, absolute,
+ * relative to the process directory, or tampered with. It is resolved against
+ * `STT_AUDIO_DIR` and only a direct child is accepted. The file is removed with
+ * `unlink`, never recursively; a missing file is a no-op. Other filesystem
+ * errors are logged without a path and propagated so the purge transaction rolls
+ * back and can be retried.
+ */
+async function deleteRetainedAudio(
+  ctx: AppContext,
+  captureId: string,
+  mediaRef: string | null,
+): Promise<void> {
+  if (!mediaRef) return;
+
+  const file = resolveRetainedAudioPath(ctx.config.stt.audioDir, mediaRef);
+  if (!file) {
+    ctx.logger.error('refusing to delete retained audio outside storage directory', { captureId });
+    throw new ValidationError(
+      'Retained audio is outside the configured storage directory; the capture was not purged',
+    );
+  }
+
+  try {
+    await fs.unlink(file);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    ctx.logger.error('failed to delete retained audio', { captureId, code: code ?? 'unknown' });
+    throw error;
+  }
 }
 
 /** Records were created by this capture but changed by the user afterwards. */

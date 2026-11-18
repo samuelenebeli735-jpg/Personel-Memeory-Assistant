@@ -17,11 +17,13 @@
 ## Commands
 
 ```bash
-npm test                                        # everything
-npm run test --workspace @recall/server -- --project unit
-npm run test:unit --workspace @recall/server     # in a shell inside apps/server
+npm test                                        # server suite
+npm run test:unit --workspace @recall/server     # server unit tests
 npm run test:integration --workspace @recall/server
-npm run verify                                   # typecheck + tests (run before committing)
+npm run test --workspace @recall/web             # dashboard component/navigation tests
+npm run test:e2e                                 # Edge browser E2E + axe accessibility
+npm run verify                                   # shared/server typecheck + server tests
+npm run build:all                                # shared, server and web builds
 ```
 
 Inside `apps/server`:
@@ -32,6 +34,42 @@ npx vitest                                       # watch mode
 npx vitest run --coverage                        # with coverage
 ```
 
+Inside `apps/web`:
+
+```bash
+npx vitest run src/navigation.test.tsx           # route/link regression
+npx vitest                                       # watch mode
+```
+
+The web tests use Vitest's Node environment plus React server rendering. They do
+not add jsdom, Testing Library or a browser dependency. That keeps the suite light
+and still exercises the real row and detail components; it is not a browser-level
+end-to-end test.
+
+`npm run test:e2e` is the browser-level layer. It runs Microsoft Edge through
+Playwright's `msedge` channel (no Chromium download), builds the production
+dashboard bundle, starts the real Fastify API and serves the bundle with
+`vite preview`, then drives the real login and dashboard workflows. The run uses a
+disposable migrated SQLite database under the git-ignored `apps/web/e2e/.tmp`
+directory and random per-run credentials; it never reads or writes the owner's
+`apps/server/prisma/dev.db`. A setup project logs in through the real form and
+saves the session for the workflow project. Axe is run with the `wcag2a` and
+`wcag2aa` tags against the login screen and six authenticated pages in the default
+light color scheme.
+
+Useful focused commands:
+
+```bash
+node apps/web/e2e/prepare.mjs                         # reset DB + rebuild dashboard
+npx playwright test apps/web/e2e/auth.spec.ts --project=edge
+npx playwright test apps/web/e2e/accessibility.spec.ts --project=edge
+npx playwright test --ui                              # after prepare.mjs has run
+```
+
+The browser suite is not a substitute for the Docker/Caddy deployment check: it
+runs against a local production bundle and a local API, not against the public
+host or a publicly trusted TLS certificate.
+
 ## Layout
 
 ```
@@ -40,6 +78,7 @@ apps/server/tests/
 │   ├── global-setup.ts   builds a migrated template SQLite database once
 │   ├── db.ts             copies the template into an isolated database per file
 │   ├── app.ts            test configuration, context, logger, notifier, HTTP app
+│   ├── providers.ts      fake AI provider and fake transcriber (call-counting)
 │   └── telegram.ts       fake Bot API, update builders, adapter factory
 ├── unit/
 │   ├── config.test.ts              environment schema, hardening, failure messages
@@ -51,10 +90,19 @@ apps/server/tests/
 │   ├── telegram-format.test.ts     commands, confirmations, keyboards, callback data
 │   ├── telegram-notifier.test.ts   proactive delivery, failure classification
 │   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update
-│   └── library-format.test.ts      snippets, search type resolution, list formatting
+│   ├── telegram-client.test.ts     bounded file stream, Content-Length, cancel on cap
+│   ├── chat-providers.test.ts      provider request shape and response parsing
+│   ├── library-format.test.ts      snippets, search type resolution, list formatting
+│   ├── voice-text.test.ts          caption/transcript composition, audio guards, cache key
+│   ├── stt-transcriber.test.ts     multipart shape, 429/shape/timeout/empty, null factory
+│   ├── ask-service.test.ts         claim splitting, citation validation, per-claim support
+│   └── briefing-service.test.ts    section order, empty sections, date parsing, summary
 └── integration/
     ├── health-and-auth.test.ts     HTTP authorization, health, settings persistence
+    ├── http-hardening.test.ts      opt-in proxy trust, login/global/webhook limits and 429 mapping
     ├── telegram-capture.test.ts    owner gate, idempotency, correction, undo, webhook
+    ├── voice-capture.test.ts       voice lifecycle, concurrent coalescing, retention
+    ├── classification-cache.test.ts cache reuse/invalidation, failures, reprocess guard
     ├── capture-api.test.ts         ingest, pagination, filters, convert, undo, purge
     ├── capture-atomicity.test.ts   injected write failure rolls the derivation back
     ├── library-api.test.ts         task rules, entity separation, projects, tags
@@ -63,7 +111,38 @@ apps/server/tests/
     ├── export-restore.test.ts      bundle shape, round trip, dry run, identity reuse
     ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
     ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
-    └── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
+    ├── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
+    ├── detail-routes.test.ts       dashboard detail API: exact record, 401, non-leaking 404
+    ├── ask-api.test.ts             /api/ask: grounding, citations, validation, fallback
+    ├── briefing-api.test.ts        /api/briefing: sections, dates, config, disabled flag
+    └── briefing-delivery.test.ts   scheduled delivery: once a day, gates, retries, restart
+```
+
+```
+apps/web/src/
+├── lib/
+│   ├── capture-content.test.ts   transcript/caption/unavailable presentation
+│   ├── date.test.ts              local date and time formatting
+│   ├── search-filters.test.ts    search filter serialization
+│   └── ...                       (test fixtures live under src/test/)
+├── pages/
+│   └── RecordDetails.test.tsx    detail views, provenance, safe error states
+└── navigation.test.tsx           every visible record-row link vs registered routes
+```
+
+```
+apps/web/e2e/
+├── prepare.mjs          disposable DB, random credentials, production web build
+├── helpers.ts           env loading, unique labels, shared auth-state path
+├── auth-setup.ts        logs in through the real form and saves the session
+├── auth.spec.ts         unauthorised redirect, bad password, logout
+├── navigation.spec.ts   overview widgets, every sidebar destination, settings
+├── capture.spec.ts      capture → recent list → detail
+├── tasks.spec.ts        create task → status transition → detail
+├── reminders.spec.ts    create → detail → snooze
+├── library.spec.ts      note, idea, event and project create → detail
+├── search.spec.ts       create task → dashboard search → detail
+└── accessibility.spec.ts axe WCAG A/AA on login and authenticated pages
 ```
 
 ### How the database tests work
@@ -74,53 +153,169 @@ so tests exercise the actual version-controlled migrations while staying fast an
 independent. The template is rebuilt on every run, so a schema change cannot be
 silently ignored.
 
+The template is built under a **unique name per run** and published through a
+pointer file (`template.json` in the temp directory). A fixed name would have to
+be deleted before the build, and on Windows a file that is still open cannot be
+deleted — the build would fail, or a half-migrated template would be copied into
+every test file and reported as a confusing "table does not exist". The WAL side
+file is checkpointed before the template is published, so a plain copy is
+complete.
+
 ## Current results
 
-Executed 2026-10-19 on Node v24.17.0, npm 11.13.0, Windows (win32):
+Executed 2026-11-01 on Node v24.17.0, npm 11.13.0, Windows (win32).
+
+Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
- Test Files  22 passed (22)
-      Tests  361 passed (361)
-   Duration  41.47s
+ Test Files  37 passed (37)
+      Tests  590 passed (590)
+   Duration  100.72s
 ```
+
+Before the Windows worker cap, a default-worker run timed out in four setup hooks
+and one reminder setup; the same suites passed individually. A four-worker attempt
+then had five restore cases exceed the 30s per-test limit. The two-worker full suite
+passes with nothing skipped. On Linux the default worker count is unchanged.
+
+Dashboard suite (`npm run test --workspace @recall/web`):
+
+```
+ Test Files  6 passed (6)
+      Tests  40 passed (40)
+   Duration  5.57s
+```
+
+The server suite was re-run after the Milestone 7 and Milestone 8 work. It
+includes regression tests for captured-at anchoring, same-day reprocessing,
+duration/date/clock-time stability, separate same-day cache entries, bounded
+streaming, concurrent voice deduplication and failed-attempt retry, oversized
+transcripts, untranscribed-voice reprocessing, purge cleanup, detail-route
+authorization, opt-in proxy trust, login/global/webhook rate limiting, production
+secret validation, provider URL validation, every supported search type and the
+429 error mapping. The Milestone 7 suites add claim-level grounding (citation
+validation, per-statement support checks, the deterministic fallback), the
+briefing sections and their ordering, the briefing HTTP contract (including
+invalid dates and the disabled flag), and the scheduled delivery policy (one
+occurrence per local day, no double delivery across ticks or restarts, quiet
+hours, the daily cap, the retry budget and restart recovery). The dashboard suite
+covers transcript provenance, caption-only and untranscribed voice captures, safe
+error states, every visible record-row link against the registered route table,
+search-filter serialization, local date formatting, and session bootstrap behavior
+when only the health probe fails.
 
 | Suite | Tests | Result |
 | --- | --- | --- |
-| `unit/config.test.ts` | 23 | passed |
+| `unit/config.test.ts` | 30 | passed |
 | `unit/time.test.ts` | 16 | passed |
 | `unit/nlp.test.ts` | 19 | passed |
 | `unit/rules-classifier.test.ts` | 20 | passed |
 | `unit/retry.test.ts` | 8 | passed |
 | `unit/auth.test.ts` | 14 | passed |
-| `unit/telegram-format.test.ts` | 21 | passed |
+| `unit/telegram-format.test.ts` | 23 | passed |
 | `unit/telegram-notifier.test.ts` | 8 | passed |
 | `unit/telegram-polling.test.ts` | 6 | passed |
+| `unit/telegram-client.test.ts` | 3 | passed |
+| `unit/chat-providers.test.ts` | 2 | passed |
 | `unit/library-format.test.ts` | 24 | passed |
 | `unit/reminder-commands.test.ts` | 24 | passed |
+| `unit/voice-text.test.ts` | 24 | passed |
+| `unit/stt-transcriber.test.ts` | 9 | passed |
+| `unit/ask-service.test.ts` | 28 | passed |
+| `unit/briefing-service.test.ts` | 18 | passed |
 | `integration/health-and-auth.test.ts` | 17 | passed |
-| `integration/telegram-capture.test.ts` | 28 | passed |
+| `integration/telegram-capture.test.ts` | 31 | passed |
+| `integration/voice-capture.test.ts` | 32 | passed |
+| `integration/classification-cache.test.ts` | 11 | passed |
 | `integration/capture-api.test.ts` | 17 | passed |
 | `integration/capture-atomicity.test.ts` | 3 | passed |
 | `integration/library-api.test.ts` | 22 | passed |
-| `integration/search-api.test.ts` | 18 | passed |
+| `integration/search-api.test.ts` | 26 | passed |
 | `integration/telegram-library.test.ts` | 15 | passed |
 | `integration/export-restore.test.ts` | 13 | passed |
+| `integration/backup-service.test.ts` | 6 | passed |
 | `integration/reminder-scheduler.test.ts` | 16 | passed |
 | `integration/reminder-api.test.ts` | 10 | passed |
 | `integration/telegram-reminders.test.ts` | 19 | passed |
-| **Total** | **361** | **all passed** |
+| `integration/detail-routes.test.ts` | 3 | passed |
+| `integration/http-hardening.test.ts` | 5 | passed |
+| `integration/ask-api.test.ts` | 19 | passed |
+| `integration/briefing-api.test.ts` | 26 | passed |
+| `integration/briefing-delivery.test.ts` | 21 | passed |
+| `integration/dashboard-api.test.ts` | 2 | passed |
+| **Total** | **590** | **all passed** |
 
-`npm run typecheck` (shared + server, `--strict`, `noUncheckedIndexedAccess`)
-passes with no errors. `npm run build` (shared + server) also passes.
+Dashboard suite:
 
-`export-restore.test.ts` is the slowest file (~25s): each case seeds a database,
+| Suite | Tests | Result |
+| --- | --- | --- |
+| `lib/capture-content.test.ts` | 6 | passed |
+| `lib/search-filters.test.ts` | 7 | passed |
+| `lib/date.test.ts` | 8 | passed |
+| `hooks/session-bootstrap.test.ts` | 7 | passed |
+| `pages/RecordDetails.test.tsx` | 9 | passed |
+| `navigation.test.tsx` | 3 | passed |
+| **Total** | **40** | **all passed** |
+
+Browser E2E (`npm run test:e2e`, Microsoft Edge 156 headless):
+
+```
+ Running 71 tests using 1 worker
+ 71 passed (2.8m)
+```
+
+The 71 Playwright tests comprise 70 browser workflow/accessibility checks plus the
+login setup project. The run used a disposable database, the production dashboard
+bundle and the real Fastify API. It covered login/logout, bad-password rejection,
+session expiry, anonymous access, keyboard navigation, modal focus trapping,
+responsive desktop/tablet/mobile layouts, empty and failed-request states, missing
+records, task edit/delete, reminder snooze, library creation/detail flows, search,
+console errors, failed application requests, and axe WCAG 2.0/2.1 A/AA checks on
+the login page and six authenticated pages in both light and dark color schemes.
+No axe violations were reported in either color scheme. The browser suite found
+and the fixes closed these real defects:
+
+1. The Overview page called `/api/dashboard/overview`, which did not exist. The
+   route and its integration test were added.
+2. Bodyless POSTs (logout, reprocess, undo) sent `Content-Type: application/json`
+   with no body; Fastify rejected them with `400`. The API client now sets the JSON
+   content type only when a body is present.
+3. Creating a task with the default “None” priority sent `priority: ""`, which the
+   shared schema rejected. The form now sends `null`.
+4. Small badge text, muted text and the green status text failed WCAG AA contrast.
+   Dedicated badge foreground tokens and stronger muted/success colours were added
+   for both light and dark themes.
+5. Task-row status selects had no accessible name. Each now has
+   `aria-label="Status for <task title>"`.
+6. Task status-update failures were only logged to the console. The dashboard now
+   presents an accessible error toast.
+7. Project pagination ignored its offset, preventing reliable empty-page behavior.
+   The API and service now honor the offset.
+8. The JSON backup companion could describe a later live-database state than the
+   SQLite snapshot. JSON export now reads from the verified snapshot, with a
+   regression test covering a write after snapshot finalization.
+9. Empty-state titles were generic `div` elements. They are now semantic headings,
+   and task detail pages expose tested edit/delete confirmation workflows.
+
+These are automated browser and axe results. No manual screen-reader or assistive
+technology review was performed in this environment.
+
+`npm run typecheck` (shared + server, `--strict`, `noUncheckedIndexedAccess`) and
+`npm run typecheck --workspace @recall/web` pass with no errors. `npm run build`
+(shared + server) and `npm run build --workspace @recall/web` also pass.
+
+`export-restore.test.ts` is the slowest file (~30–120s depending on machine load): each case seeds a database,
 exports it, wipes it and restores it row by row through real Prisma calls. That is
 the cost of testing restore against real constraints rather than a mock, and it is
 kept because restore is the one operation that can bulk-write.
 
 The CLI was exercised against a throwaway migrated database (not the owner's):
 `doctor` reported the real configuration, `capture` stored a task with the correct
-local time, and `inbox` read it back.
+local time, and `inbox` read it back. The M8 backup drill then captured a task,
+created a `VACUUM INTO` snapshot and JSON export, copied the snapshot to a
+standalone restore file, and verified both the original backup and the restored
+copy: integrity `ok`, zero foreign-key violations, four applied migrations and
+matching row counts.
 
 ## What is covered
 
@@ -175,6 +370,20 @@ transient failure recovers and reports the attempt count; a total-time budget st
 the loop; each retry is reported through `onRetry`. The full DB-backed scheduler
 is covered by integration tests with an injectable clock (no real sleeps).
 
+**Voice text and speech transport** — caption + transcript composition keeps the
+caption first, collapses identical or contained content and never drops either
+source; the voice
+placeholder is ignored when a transcript exists; supported audio mime types are
+accepted and unsupported ones rejected before download; the AI cache key is stable
+for equal inputs (including project order) and changes with text, hint, zone,
+defaults, projects, provider, model and the exact reference instant (including
+within one local day); a transcript without provenance
+is rejected by `captureInputSchema`. The Whisper transport is exercised with an
+injected `fetch`: multipart shape and model field, trimmed output, empty output
+rejected without retry, 400 not retried, 429 retried then succeeds, 5xx retried to
+the limit, timeout reported as retryable, non-JSON rejected, and the factory
+returns `null` when unconfigured.
+
 **Authorization** — a signed session round-trips with the right expiry; a tampered
 payload is rejected; a token signed with another secret is rejected; malformed
 tokens never throw; expired sessions are rejected; tokens are non-deterministic;
@@ -195,6 +404,42 @@ unreachable** rather than a crash; structured `404`; the settings singleton is
 created from configuration on first read; settings update and persist; an invalid
 time zone produces a field-level `400`; a half-configured quiet-hours window is
 rejected; an unknown field never reaches the response.
+
+### Dashboard detail API
+
+The detail endpoints used by the dashboard return the exact record requested for
+captures, tasks, reminders, notes, ideas, events and projects. An anonymous request
+to any of them is a `401` and its body does not contain the seeded record text. An
+authenticated request for a missing id is a `404` with a generic error and no record
+content. The capture DTO reports `isVoice` for audio captures and `false` for a
+typed capture. Search result projection is covered too: a caption is used when
+present, otherwise the transcript, and a placeholder-only voice capture is titled
+"Voice capture — transcript unavailable"; neither its title nor snippet contains
+the internal marker.
+
+### Dashboard components and navigation
+
+The capture presentation helper is tested directly: provider speech output is
+labelled "Speech-to-text transcript", a manual transcript is labelled separately,
+a user caption is labelled "Caption", a caption-only voice note shows the caption
+plus "Transcript unavailable", and an untranscribed voice note never renders the
+stored `[voice message — not transcribed yet]` placeholder as content. A typed
+capture is labelled "Captured text", not as a caption.
+
+The detail views are rendered through React server rendering in Node. The capture
+view is checked with transcribed, caption-only and untranscribed fixtures; the task
+and reminder views are checked against their requested records. A capture fixture
+carrying extra `metadata`, `mediaRef`, `classificationCache`,
+`classificationCacheKey` and `sourceRef` values proves those private fields are not
+rendered. Error-state tests prove a `401` and a `404` produce generic messages, and
+children containing record contents are not rendered when loading fails.
+
+The navigation regression renders every visible row type (capture, task, reminder,
+note, idea, event, project), extracts the internal `href` values, and matches each
+against the same route patterns the app registers. It also checks that every
+top-level navigation path and every `detailPath` output is registered. This is a
+component/navigation test; the separate Playwright suite performs the real-browser
+click-throughs and accessibility audit.
 
 ### Atomicity of derivation
 
@@ -217,12 +462,12 @@ ignored so stored text cannot be rewritten.
 
 With an AI provider that throws, the capture is still stored, classified by the
 deterministic rules, and the reply is explicit that the provider was unavailable.
-Stickers/documents/photos are acknowledged and ignored. A voice message is stored
-with the `[voice message — not transcribed yet]` marker, `UNKNOWN` +
-`NEEDS_REVIEW`, provenance metadata, and no fabricated task; a caption is used as
-its text. A message with no text asks for words. `/help`, `/inbox`, `/undo`,
-`/settings` and unknown commands all answer without creating a capture; a planned
-command says which milestone will bring it.
+Stickers/documents/photos are acknowledged and ignored. With no transcriber
+configured, a voice message is stored with the `[voice message — not transcribed
+yet]` marker, `UNKNOWN` + `NEEDS_REVIEW`, provenance metadata, and no fabricated
+task; a caption is used as its text. A message with no text asks for words.
+`/help`, `/inbox`, `/undo`, `/settings` and unknown commands all answer without
+creating a capture; a planned command says which milestone will bring it.
 
 Correction buttons convert a capture's kind, keep `rawText`, and replace the derived
 record. `/undo` shows a confirmation and deletes nothing until `U:` is pressed; `K:`
@@ -232,6 +477,49 @@ correctly signed update, refuses to run with no secret (503), and still returns 
 for a non-owner so Telegram does not retry forever.
 
 Reminders are created only when the user asked; a plain deadline produces none.
+
+### Voice capture (real adapter, real database, fake Bot API, injected transcriber)
+
+A voice note is downloaded, transcribed and classified; `rawText` keeps the
+placeholder (or the caption verbatim), `transcript` holds the speech output and
+`transcriptSource` is `SPEECH_PROVIDER`; metadata records the provider, model and
+status. The transcript is shown in the confirmation and the derived task is built
+from the transcript, not the placeholder. With a caption, both sources are kept and
+the classifier sees caption + transcript (a date that exists only in the transcript
+is resolved).
+
+A replay returns "Already saved" with **no** `getFile` call and **no** second
+transcription. Concurrent duplicates are gated deterministically with a fake
+transcriber: the second delivery joins the first attempt, one `getFile` and one
+transcription occur, and only one confirmation is sent. A database trigger forces
+the first attempt to fail after transcription; both concurrent callers see the
+failure, the claim is released, and a later retry succeeds. Different message ids
+transcribe independently, and a direct concurrent `ingestCapture` check proves the
+unique `(source, externalId)` constraint still returns one capture.
+
+Disabled STT, provider failure, empty output, duration over the limit, unsupported
+mime and a download stopped at the streaming byte cap each store the capture with a
+specific reason; caption-only classification still works when the audio fails.
+Audio is not written to disk by default; with `STT_RETAIN_AUDIO=true` exactly one
+file lands in the configured directory and `mediaRef` points at it. Permanent purge
+unlinks that file, undo leaves it in place, a missing file is a no-op, and paths
+outside `STT_AUDIO_DIR` (including traversal) are rejected before deletion. Other
+filesystem errors roll the purge back.
+
+### AI classification cache
+
+A successful, validated classification is written to the capture and reused by a
+reprocess (provider call count stays at one). Relative dates are anchored to the
+capture's original `capturedAt`: a provider request and a rules classification
+both keep "in two hours", a date-only expression and a clock-time expression on
+the same instants after the wall clock advances, including a capture reprocessed
+more than 30 days later. The entry is invalidated by a
+different model, text, configuration or reference instant. Two captures made at
+different times on the same local day get different keys, so the second cannot
+inherit a relative time computed for the first. A transient failure writes no
+cache and the next attempt calls the provider again; malformed output is rejected
+at the service boundary, falls back to rules, and is not cached. Two concurrent
+reprocesses of the same capture: the second is refused while the first runs.
 
 ### Capture API
 
@@ -330,9 +618,37 @@ one due the next local day is not). `/overdue` shows only past-due open tasks an
 marks them `OVERDUE`. `/search` finds rows across kinds, names the matched field, and
 explains its usage when given no words; `/find` is an alias. `/ideas`, `/notes` and
 `/projects` list their own entities with their own details (a note's saved link, a
-project's open-task count) and never mix an idea into the task list. `/remind` and
-`/ask` still answer with the milestone that will bring them, and a non-owner sending
-`/tasks` gets the neutral refusal and creates nothing.
+project's open-task count) and never mix an idea into the task list. `/remind`
+creates a reminder only when it recognises an explicit time; `/ask` answers from
+stored records and lists its sources. A non-owner sending `/tasks` gets the
+neutral refusal and creates nothing.
+
+### Ask: `/api/ask` and Telegram `/ask`
+
+The HTTP and Telegram surfaces call the same service, so the tests cover the rules
+once at the service/API boundary and again through the Telegram adapter. Evidence
+is retrieved before any provider call, the response carries the exact evidence
+used, invented citations are dropped, unsupported statements are removed, and a
+question with no matching records returns the explicit no-evidence answer. A
+provider failure, an absent provider, and `settings.aiEnabled = false` all fall
+back to the deterministic cited summary; the disabled case also asserts that the
+provider was never called. A prompt-construction test proves that record text and
+the question are delimited and labelled as untrusted data, so an instruction
+stored in a record is not promoted to a system instruction.
+
+### Daily briefing: API and scheduled delivery
+
+`briefing-service.test.ts` pins section normalisation, owner-zone date resolution
+(including invalid and non-existent dates), summaries, and rendered text.
+`briefing-api.test.ts` drives the real HTTP routes: configured order, empty
+sections, owner-zone "today", completed-task exclusion, disabled delivery still
+allowing on-demand reads, and validation of times, sections and bodies.
+`briefing-delivery.test.ts` drives the real scheduler with an injectable clock and
+a scripted notifier: one delivery per local day, no second delivery after a
+restart, quiet-hours deferral, daily-cap deferral, missing-channel deferral,
+stale-day skipping, transient retry with backoff, permanent failure, exhausted
+attempt budget, interrupted-send recovery, disabled delivery, and configured
+sections.
 
 ## Failure tests
 
@@ -342,17 +658,37 @@ Deliberately included as first-class cases, not afterthoughts:
 | --- | --- |
 | Missing environment variables | `config.test.ts` — every required value, per environment |
 | Placeholder credentials | `config.test.ts` — placeholder tokens rejected per feature |
+| Unsafe provider endpoint | `config.test.ts` — non-HTTP(S), embedded credentials and fragments rejected |
+| Spoofed forwarded address | `http-hardening.test.ts` — `X-Forwarded-For` ignored unless `TRUST_PROXY` is set |
+| Webhook flood | `http-hardening.test.ts` — 121st request in a minute returns `429`, handler called 120 times |
 | Database unavailable | `health-and-auth.test.ts` — degraded report, no crash |
-| AI provider timeout / network error | `retry.test.ts` (policy); live provider in Milestone 6 |
-| Malformed AI output | `parseClassification` unit tests in Milestone 6 |
+| AI provider timeout / network error | `stt-transcriber.test.ts` and `classification-cache.test.ts` (mocked transport); `retry.test.ts` (policy) |
+| Malformed AI output | `classification-cache.test.ts` — rejected at the service boundary, rules used, nothing cached |
 | Provider unreachable during capture | `telegram-capture.test.ts` — capture stored, rules used, user told |
+| AI failure replay | `classification-cache.test.ts` — failures are not cached; retry asks again |
+| Speech provider failure / timeout / empty output | `voice-capture.test.ts`, `stt-transcriber.test.ts` — capture stored, reason reported |
+| Voice replay | `voice-capture.test.ts` — no second download or transcription |
+| Concurrent voice duplicate | `voice-capture.test.ts` — gated fake proves one download/STT/capture; webhook retries both return 200; failure releases the claim for a retry |
+| Cross-message concurrency | `voice-capture.test.ts` — different message ids transcribe in parallel without blocking each other |
+| Unsupported / oversized voice | `voice-capture.test.ts` — unsupported/duration cases refused before download; byte-cap download cancelled while streaming; capture kept. `telegram-client.test.ts` asserts early `Content-Length` rejection and no full-body drain. |
+| Retained audio cleanup | `voice-capture.test.ts` — purge unlinks inside the storage directory only; undo keeps it; missing files are a no-op; unsafe paths and unexpected filesystem errors roll the purge back |
+| Concurrent reprocess | `classification-cache.test.ts` — second request refused |
 | Telegram delivery failure | `telegram-notifier.test.ts` — 429 retryable, 4xx permanent, network error never throws |
 | Duplicate Telegram updates | `telegram-capture.test.ts` — replay stores one capture |
 | Telegram API failure while polling | `telegram-polling.test.ts` — backoff, `retry_after`, bad token stops |
 | One bad update in a batch | `telegram-polling.test.ts` — loop continues, offset advances |
-| Restart with pending reminders | Milestone 4 |
-| Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts` |
+| Restart with pending reminders | `reminder-scheduler.test.ts` and `briefing-delivery.test.ts` |
+| Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts`, `briefing-service.test.ts`, `briefing-api.test.ts` |
+| Unsupported answer claim | `ask-service.test.ts` and `ask-api.test.ts` — statement removed; deterministic fallback |
+| Ask with no evidence | `ask-api.test.ts` — explicit no-evidence answer, empty evidence |
+| AI disabled or unavailable for ask | `ask-api.test.ts`, `telegram-capture.test.ts` — provider not called; cited deterministic answer |
+| Prompt injection in a record or question | `chat-providers.test.ts` — delimited untrusted data and explicit no-follow rule |
+| Duplicate briefing delivery | `briefing-delivery.test.ts` — one send per local day, including across a restart |
+| Briefing provider failure | `briefing-delivery.test.ts` — bounded retry, permanent failure, interrupted-send recovery |
 | Unauthorized user access | `health-and-auth.test.ts`; `telegram-capture.test.ts` (message and callback) |
+| Anonymous detail request | `detail-routes.test.ts` — `401` without record content |
+| Missing detail record | `detail-routes.test.ts`; `RecordDetails.test.tsx` — non-leaking `404` state |
+| Detail link to an unregistered route | `navigation.test.tsx` — every visible row href must match a registered pattern |
 | Secret leakage into logs | `auth.test.ts`; webhook secret compared in constant time |
 | Destructive delete by mistake | `capture-api.test.ts` — purge refuses without `force` |
 | Invalid task state transition | `library-api.test.ts` — rejected with both states named |
@@ -374,11 +710,15 @@ Deliberately included as first-class cases, not afterthoughts:
 - **Real:** time-zone behaviour uses the platform's IANA database.
 - **Injected fakes, no external calls:** the clock (`advanceableClock`), the
   notifier (`recordingNotifier`), `sleep` (`withRetry` and polling), the Telegram
-  Bot API (`createFakeTelegram`), and the AI provider in the outage test.
+  Bot API (`createFakeTelegram`), the AI provider (`fakeAiProvider`) and the
+  transcriber (`fakeTranscriber`). The Whisper transport in
+  `stt-transcriber.test.ts` runs the real `OpenAiTranscriber` against a mocked
+  `fetch`, so multipart construction and retry policy are production code.
 - **Not yet exercised against a live service:** Telegram, any AI provider, any
   speech-to-text provider. No live call has been made and none is claimed. The
   adapter has been verified against the Bot API contract with a fake transport, not
-  against api.telegram.org.
+  against api.telegram.org; the speech and language providers likewise have no live
+  credential in this environment.
 
 ## Decisions forced by tests
 
@@ -476,9 +816,87 @@ Deliberately included as first-class cases, not afterthoughts:
   cap, snooze, recurrence bounds — all with an injected clock. Covered by
   `reminder-scheduler.test.ts` (16), `reminder-api.test.ts` (10), `telegram-reminders.test.ts` (19),
   and `reminder-commands.test.ts` (24) — 69 new tests with an injectable clock, no real sleeps.
-- Milestone 5: dashboard interaction tests proving every visible control acts.
-- Milestone 6: mocked-provider tests for timeout, 429, malformed JSON, empty
-  response, unsupported model and missing credentials.
-- Milestone 7: grounded-answer assertions, including an explicit no-evidence case.
-- Milestone 8: end-to-end acceptance run against a production-shaped configuration,
-  including a deliberate restart with pending reminders and a restore from backup.
+- Milestone 5: **done** — the dashboard builds and its API contract is covered by
+  the server suite. The real-browser Playwright suite now covers the login,
+  navigation, capture/task/reminder/library/search workflows and axe WCAG 2.0/2.1
+  A/AA checks in light and dark schemes, plus keyboard, responsive, error-state
+  and console/request checks; 71/71 passed on 2026-11-01.
+- Milestone 6: **done** — `voice-text.test.ts` (24), `stt-transcriber.test.ts` (9),
+  `telegram-client.test.ts` (3), `voice-capture.test.ts` (32) and
+  `classification-cache.test.ts` (11): composition, audio guards, bounded streaming
+  downloads with early `Content-Length` rejection, multipart transport,
+  429/5xx/timeout/empty/non-JSON, transcript provenance and retention, caption
+  fallback, concurrent voice-delivery coalescing and failure retry, cache
+  reuse/invalidation, capture-time anchoring for duration/date/clock expressions,
+  distinct same-day reference instants, uncached failures, malformed output, the
+  concurrent-reprocess guard, transcript-overflow handling and retained-audio
+  purge cleanup. All providers are mocked or injected; no live call is made.
+- Audit follow-up: HTTP boundary hardening is covered by `config.test.ts` (30) and
+  `http-hardening.test.ts` (5): provider URL validation, production secret
+  validation, opt-in proxy trust, login/global/webhook rate limiting and the `429`
+  error mapping.
+- Milestone 7: **done** — `ask-service.test.ts`, `ask-api.test.ts`,
+  `telegram-capture.test.ts` (`/ask` cases), `chat-providers.test.ts`,
+  `briefing-service.test.ts`, `briefing-api.test.ts` and
+  `briefing-delivery.test.ts`: citation and claim grounding, explicit
+  no-evidence handling, disabled/failed provider fallback, prompt-injection
+  delimiting, owner-zone dates (including a DST boundary) and invalid dates,
+  configured sections, quiet
+  hours, shared daily cap, bounded retries, stale-day skipping, duplicate
+  prevention and restart recovery.
+ - Milestone 8: **in progress** — `backup-service.test.ts` (6) covers a consistent
+   `VACUUM INTO` snapshot, JSON export, standalone restore verification, retention,
+   missing-file handling and foreign-key verification. A populated CLI drill against
+   a throwaway migrated database also snapshotted, copied and verified a capture and
+   task (`integrity ok`, 0 foreign-key violations, 4 migrations, matching rows).
+   `docker compose --env-file .env.production config --quiet` passed for the default
+   stack and the `backup` profile. The full server suite (590), dashboard suite
+   (40) and browser suite (71) pass, and `npm run build:all` succeeds.
+
+   The 2026-11-01 follow-up also verified disposable Prisma migration status and
+   added a regression test proving that the JSON companion is exported from the
+   verified SQLite snapshot, not from a later live-database state. The Docker daemon
+   was unavailable for a new stack run (`failed to connect to the docker API at
+   npipe:////./pipe/dockerDesktopLinuxEngine`), and no `.env.production` was
+   created. `docker compose --env-file .env.production.example config --quiet`
+   therefore stopped with `env file ...\.env.production not found`; a fresh
+   compose config check against production variables was not executed.
+
+  A disposable local Docker stack was then built and run with `RECALL_DOMAIN=localhost`,
+  generated secrets, and Telegram/AI/STT disabled. `migrate` exited 0 with four
+  migrations; `app` reached Docker health `healthy`; `recall-app:latest` was built
+  after removing the unused `# syntax=docker/dockerfile:1.7` directive that caused
+  BuildKit frontend failures on this host. Caddy served the dashboard and
+  `/api/health/live` over HTTPS, redirected plain HTTP with 308, proxied login
+  (200), session (200), captures (201) and reminders (201), and did not expose port
+  4000 on the host. Dashboard JS/CSS assets returned 200, the `/reminders` SPA
+  fallback returned the dashboard, and an unknown `/api/*` path returned 404 JSON.
+  Both services use `restart: unless-stopped`; the app has a Docker healthcheck. A
+  Caddy container restart returned 200 for the dashboard and health endpoint and
+  reused its persisted local CA certificate.
+  The `backup` profile reported integrity `ok`, zero foreign-key
+  violations, four migrations and matching counts; standalone `verify-backup`
+  agreed. The verified snapshot was restored onto the disposable deployment volume
+  after stopping `app` and clearing WAL/SHM files; restart preserved health, login
+  session, capture and reminder counts.
+
+  A due reminder was deferred as one `PENDING` delivery because the stack had no
+  notification channel. A deliberate `docker restart recall-app-1` preserved the
+  reminder and its single delivery row and created no duplicate. Actual delivery
+  could not be tested without a channel.
+
+  A migration rerun while `app` was live failed with `SQLite database error:
+  database is locked`. With `app` stopped, the same `migrate` run exited 0 and
+  reported no pending migrations; app health and row counts remained intact after
+  restart. This confirms the stop-before-migrate ordering in the restore runbook.
+
+  Browser/accessibility validation was then performed locally on 2026-10-29:
+  `npm run test:e2e` passed 17/17 in Edge, including axe WCAG 2.0/2.1 A/AA checks
+  on the login screen and six authenticated pages. That run used the production
+  dashboard bundle and a disposable database, not the Docker/Caddy stack.
+
+  **Not performed:** a remote always-on host, public DNS/publicly trusted TLS, live
+  Telegram/AI/STT calls, real notification delivery and exactly-once delivery with a
+  reachable channel, and restore of the owner's production backup. A fresh rebuild
+  from the edited repository Dockerfile had not finished its `npm prune` stage when
+  this record was written. These remain the M8 acceptance gaps.

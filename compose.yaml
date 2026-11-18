@@ -1,0 +1,94 @@
+# Recall production stack.
+#
+#   cp .env.production.example .env.production
+#   docker compose --env-file .env.production up -d --build
+#
+# Caddy terminates TLS and serves the static dashboard; the server container is
+# not published to the host. SQLite lives on the `recall_data` volume.
+name: recall
+
+services:
+  # Applies pending migrations once, before the server starts. If this fails the
+  # app is not started. Re-run it after every image upgrade.
+  migrate:
+    build:
+      context: .
+      target: build
+    command: ["npm", "run", "db:deploy"]
+    user: "1000:1000"
+    environment:
+      DATABASE_URL: file:/data/recall.db
+    volumes:
+      - recall_data:/data
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: file:/data/recall.db
+    volumes:
+      - recall_data:/data
+    expose:
+      - "4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/api/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    build:
+      context: .
+      target: web
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      RECALL_DOMAIN: ${RECALL_DOMAIN:?set RECALL_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  # One-shot backup runner with the host's ./backups directory mounted. Run with:
+  #   docker compose --env-file .env.production --profile backup run --rm backup
+  backup:
+    profiles: ["backup"]
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: file:/data/recall.db
+    user: "${RECALL_UID:-1000}:${RECALL_GID:-1000}"
+    volumes:
+      - recall_data:/data
+      - ./backups:/backups
+    command: ["node", "dist/cli.js", "backup", "--out", "/backups", "--keep", "14"]
+    restart: "no"
+
+volumes:
+  recall_data:
+  caddy_data:
+  caddy_config:

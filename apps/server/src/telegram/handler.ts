@@ -13,14 +13,20 @@
  *  4. `edited_message` updates are deliberately ignored — `rawText` is immutable
  *     once stored, so a later edit must not rewrite history.
  */
-import { CAPTURE_KINDS, type CaptureKind } from '@recall/shared';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+import { CAPTURE_KINDS, type CaptureDto, type CaptureKind } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
 import { ValidationError, toAppError } from '../lib/errors.js';
 import { timingSafeEqualStrings } from '../lib/crypto.js';
+import { audioFileExtension, isSupportedAudioMime } from '../lib/audio.js';
+import { composeVoiceText, normaliseTranscription, VOICE_PLACEHOLDER } from '../lib/voice.js';
 import { getSettings } from '../services/settings-service.js';
 import {
   convertCaptureKind,
+  findCaptureByExternalId,
   getCapture,
   ingestCapture,
   undoCapture,
@@ -46,10 +52,11 @@ import {
   formatVoiceStored,
   kindCorrectionButtons,
   undoConfirmButtons,
+  type VoiceStoreReason,
 } from './format.js';
 
 /** Stored as `rawText` when a voice message arrives without a caption. */
-export const VOICE_PLACEHOLDER = '[voice message — not transcribed yet]';
+export { VOICE_PLACEHOLDER };
 
 /** Telegram media the adapter acknowledges but does not store. */
 const UNSUPPORTED_MEDIA: [key: string, label: string][] = [
@@ -98,6 +105,17 @@ export function createTelegramAdapter(
   const ownerIds = new Set(ctx.config.telegram.ownerIds.map((id) => String(id)));
   const defaultChatId = ctx.config.telegram.ownerIds[0] ?? '';
   const maxVoiceSeconds = options.maxVoiceSeconds ?? ctx.config.stt.maxAudioSeconds;
+
+  /**
+   * Voice attempts currently running in this adapter.
+   *
+   * Keyed by the same `telegram:<chatId>:<messageId>` identity as the persistent
+   * uniqueness constraint. A duplicate delivery joins the running attempt instead
+   * of downloading and transcribing again. This is intentionally process-local:
+   * Recall is a single-server deployment and this does not provide distributed
+   * locking across processes.
+   */
+  const voiceInFlight = new Map<string, Promise<HandleResult>>();
 
   function isOwner(userId: number | undefined): boolean {
     if (userId === undefined) return false;
@@ -216,68 +234,238 @@ export function createTelegramAdapter(
   }
 
   /**
-   * Voice is stored, never silently dropped, but transcription is a Milestone 6
-   * feature. The capture is written in `captureOnly` mode so the placeholder text
-   * is never classified into a bogus task.
+   * Voice ingestion.
+   *
+   * A message is claimed by `telegram:<chatId>:<messageId>` before the replay
+   * check. A concurrent duplicate joins that promise, so only one download and
+   * one transcription can run. The claim is removed as soon as the attempt
+   * settles, whether it succeeds or fails, so a later retry can start cleanly.
+   *
+   * The attempt itself orders work as: replay check → duration/format checks →
+   * download → transcribe → store. A replayed update never downloads or
+   * transcribes again, and every failure after download still stores the capture.
+   * The audio bytes never touch the disk unless `STT_RETAIN_AUDIO=true`; the
+   * transcript is stored separately from the caption with explicit provenance.
    */
   async function ingestVoice(
     message: TelegramMessage,
     voice: NonNullable<TelegramMessage['voice']>,
   ): Promise<HandleResult> {
+    const externalId = externalIdFor(message);
+
+    const running = voiceInFlight.get(externalId);
+    if (running) {
+      ctx.logger.debug('joined in-flight voice delivery', {
+        chatId: message.chat.id,
+        messageId: message.message_id,
+      });
+      const shared = await running;
+      return { ...shared, duplicate: true };
+    }
+
+    const attempt = ingestVoiceAttempt(message, voice, externalId);
+    voiceInFlight.set(externalId, attempt);
+
+    // Remove the claim as soon as the attempt settles. Registering this before
+    // returning means a retry started from a failure handler sees a clean map.
+    const clear = () => {
+      if (voiceInFlight.get(externalId) === attempt) voiceInFlight.delete(externalId);
+    };
+    void attempt.then(clear, clear);
+    return attempt;
+  }
+
+  async function ingestVoiceAttempt(
+    message: TelegramMessage,
+    voice: NonNullable<TelegramMessage['voice']>,
+    externalId: string,
+  ): Promise<HandleResult> {
+    const chatId = message.chat.id;
     const caption = message.caption?.trim() ?? '';
+
+    // Cheapest possible replay handling: no Bot API call, no provider call.
+    const existing = await findCaptureByExternalId(ctx.db, 'TELEGRAM', externalId);
+    if (existing) {
+      ctx.logger.debug('duplicate voice capture ignored before download', { captureId: existing.id });
+      await sendText(
+        chatId,
+        formatCaptureConfirmation(outcomeForExistingCapture(existing), {
+          timeZone: await displayZone(),
+          referenceNow: ctx.clock.now(),
+        }),
+      );
+      return { handled: true, captureId: existing.id, duplicate: true };
+    }
+
     const tooLong = maxVoiceSeconds > 0 && voice.duration > maxVoiceSeconds;
-    const rawText = caption.length > 0 ? caption : VOICE_PLACEHOLDER;
+    const mimeType = voice.mime_type ?? 'audio/ogg';
+    const transcriber = ctx.stt;
+
+    let audio: Uint8Array | null = null;
+    let transcript: string | null = null;
+    let sttProvider: string | null = null;
+    let sttModel: string | null = null;
+    let voiceReason: VoiceStoreReason | null = null;
+
+    if (tooLong) {
+      voiceReason = 'too-long';
+    } else if (!transcriber) {
+      voiceReason = 'disabled';
+    } else if (!isSupportedAudioMime(voice.mime_type)) {
+      voiceReason = 'unsupported';
+    } else {
+      try {
+        const filePath = await client.getFilePath(voice.file_id);
+        audio = await client.downloadFile(filePath, ctx.config.stt.maxAudioBytes);
+        const result = await transcriber.transcribe({
+          audio,
+          fileName: `voice-${message.message_id}${audioFileExtension(voice.mime_type)}`,
+          mimeType,
+          durationSeconds: voice.duration,
+        });
+        // Overflow policy: reject an over-limit transcript rather than truncate
+        // it silently. The capture is still stored below with the caption or the
+        // voice placeholder; only the transcript is omitted.
+        const normalised = normaliseTranscription(result.text);
+        transcript = normalised.transcript;
+        sttProvider = result.provider;
+        sttModel = result.model;
+        if (normalised.overflow) voiceReason = 'transcript-too-long';
+        else if (!transcript) voiceReason = 'empty';
+      } catch (error) {
+        voiceReason = 'failed';
+        // Never log audio, file ids or provider credentials — only the reason.
+        ctx.logger.warn('voice transcription failed', {
+          chatId,
+          messageId: message.message_id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Caption first (the owner's own framing), transcript second (untrusted
+    // speech output). `composeVoiceText` removes exact duplication.
+    const classificationText = composeVoiceText(caption, transcript);
 
     const outcome = await ingestCapture(
       ctx,
       {
-        rawText,
+        rawText: caption || VOICE_PLACEHOLDER,
         source: 'TELEGRAM',
-        externalId: externalIdFor(message),
+        externalId,
         occurredAt: occurredAtFor(message),
-        sourceRef: String(message.chat.id),
+        sourceRef: String(chatId),
         metadata: {
           ...telegramMetadata(message),
           voice: {
             fileId: voice.file_id,
             durationSeconds: voice.duration,
             mimeType: voice.mime_type ?? null,
-            transcribed: false,
+            transcribed: transcript !== null,
+            transcriptSource: transcript ? 'SPEECH_PROVIDER' : null,
+            sttProvider,
+            sttModel,
+            status: transcript ? 'transcribed' : (voiceReason ?? 'disabled'),
           },
         },
+        transcript,
+        transcriptSource: transcript ? 'SPEECH_PROVIDER' : null,
       },
-      { captureOnly: true, skipAi: true },
+      // With no caption and no transcript there is nothing to interpret: the
+      // placeholder must never be classified into a bogus task.
+      classificationText ? { classificationText } : { captureOnly: true, skipAi: true },
     );
 
-    if (!outcome.duplicate) {
+    if (!classificationText && !outcome.duplicate) {
       await ctx.db.capture.update({
         where: { id: outcome.capture.id },
         data: {
           kind: 'UNKNOWN',
           status: 'NEEDS_REVIEW',
           needsReview: true,
-          classificationRationale:
-            'Voice message stored without a transcript (transcription arrives in a later milestone)',
+          classificationRationale: `Voice message stored without a transcript (${voiceReason ?? 'disabled'})`,
           processedAt: ctx.clock.now(),
         },
       });
     }
 
-    if (outcome.duplicate) {
-      await sendText(message.chat.id, formatCaptureConfirmation(outcome, {
-        timeZone: await displayZone(),
-        referenceNow: ctx.clock.now(),
-      }));
-    } else if (tooLong) {
-      await sendText(
-        message.chat.id,
-        `${formatVoiceStored(voice.duration)} It is longer than the configured transcription limit, so it will need a shorter re-send once transcription is available.`,
-      );
+    if (audio && ctx.config.stt.retainAudio) {
+      const mediaRef = await retainAudio(outcome.capture.id, audio, voice.mime_type);
+      if (mediaRef) {
+        try {
+          await ctx.db.capture.update({
+            where: { id: outcome.capture.id },
+            data: { mediaRef },
+          });
+        } catch (error) {
+          ctx.logger.warn('failed to record retained audio path', {
+            captureId: outcome.capture.id,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    if (classificationText) {
+      const note = transcript === null ? voiceCaptionNote(voiceReason) : null;
+      await sendConfirmation(chatId, outcome, note ?? undefined);
     } else {
-      await sendText(message.chat.id, formatVoiceStored(voice.duration));
+      await sendText(chatId, formatVoiceStored(voice.duration, voiceReason ?? 'disabled'));
     }
 
     return { handled: true, captureId: outcome.capture.id, duplicate: outcome.duplicate };
+  }
+
+  /**
+   * A caption can always be classified, but the owner should still know that the
+   * audio itself was not transcribed and why. The reply never pretends the text
+   * came from speech.
+   */
+  function voiceCaptionNote(reason: VoiceStoreReason | null): string | null {
+    switch (reason) {
+      case 'disabled':
+        return 'Transcription is not configured, so I organised your caption instead. Your audio message is stored, untranscribed.';
+      case 'too-long':
+        return 'The clip is longer than the transcription limit, so I organised your caption instead. Your audio message is stored, untranscribed.';
+      case 'unsupported':
+        return 'That audio format is not supported for transcription, so I organised your caption instead. Your audio message is stored.';
+      case 'failed':
+        return 'The audio could not be transcribed, so I organised your caption instead. Your audio message is still stored.';
+      case 'empty':
+        return 'The audio contained no recognisable speech, so I organised your caption instead.';
+      case 'transcript-too-long':
+        return 'The transcript was longer than the 8,000-character limit, so I did not store it. I organised your caption instead.';
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Persists audio only when the owner explicitly opted in.
+   *
+   * Returns the stored reference, or null when retention failed (which must not
+   * fail the capture). The path is relative to the working directory when
+   * possible so exports and logs do not leak absolute machine paths.
+   */
+  async function retainAudio(
+    captureId: string,
+    bytes: Uint8Array,
+    mimeType: string | null | undefined,
+  ): Promise<string | null> {
+    try {
+      const directory = path.resolve(ctx.config.stt.audioDir);
+      await fs.mkdir(directory, { recursive: true });
+      const file = path.join(directory, `${captureId}${audioFileExtension(mimeType)}`);
+      await fs.writeFile(file, bytes, { flag: 'wx' });
+      const relative = path.relative(process.cwd(), file);
+      return relative.startsWith('..') || path.isAbsolute(relative) ? file : relative;
+    } catch (error) {
+      ctx.logger.warn('failed to retain voice audio', {
+        captureId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   function telegramMetadata(message: TelegramMessage): Record<string, unknown> {
@@ -291,11 +479,38 @@ export function createTelegramAdapter(
     };
   }
 
-  async function sendConfirmation(chatId: number, outcome: IngestOutcome): Promise<void> {
-    const text = formatCaptureConfirmation(outcome, {
+  /**
+   * Builds a duplicate outcome for an already-stored capture, so replay replies
+   * use exactly the same confirmation format without re-running ingestion.
+   */
+  function outcomeForExistingCapture(capture: CaptureDto): IngestOutcome {
+    return {
+      capture,
+      created: capture.links,
+      duplicate: true,
+      classification: null,
+      provider: null,
+      aiError: null,
+      needsReview: capture.needsReview,
+      processingError: null,
+      remindersScheduled: 0,
+      dedupeSuspicion: null,
+      clarification: null,
+      transcript: capture.transcript,
+      transcriptSource: capture.transcriptSource,
+    };
+  }
+
+  async function sendConfirmation(
+    chatId: number,
+    outcome: IngestOutcome,
+    note?: string,
+  ): Promise<void> {
+    const confirmation = formatCaptureConfirmation(outcome, {
       timeZone: await displayZone(),
       referenceNow: ctx.clock.now(),
     });
+    const text = note ? `${confirmation}\n\n${note}` : confirmation;
     const markup = outcome.duplicate ? undefined : kindCorrectionButtons(outcome.capture.id);
     await sendText(chatId, text, markup);
   }

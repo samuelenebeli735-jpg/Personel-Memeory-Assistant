@@ -295,13 +295,31 @@ export class TelegramClient {
           retryable: response.status >= 500,
         });
       }
-      const buffer = new Uint8Array(await response.arrayBuffer());
-      if (buffer.byteLength > maxBytes) {
-        throw new TelegramApiError('Telegram file is larger than the configured limit', {
-          retryable: false,
-        });
+
+      // A declared length over the cap can be rejected before reading the body.
+      const contentLength = response.headers.get('content-length');
+      if (contentLength !== null) {
+        const declared = Number(contentLength);
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          await cancelBody(response.body);
+          throw new TelegramApiError('Telegram file is larger than the configured limit', {
+            retryable: false,
+          });
+        }
       }
-      return buffer;
+
+      // Read incrementally so an oversized or endless body never has to be
+      // buffered in full. The cap is enforced per chunk, not after the fact.
+      if (!response.body) {
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        if (buffer.byteLength > maxBytes) {
+          throw new TelegramApiError('Telegram file is larger than the configured limit', {
+            retryable: false,
+          });
+        }
+        return buffer;
+      }
+      return await readBodyWithLimit(response.body, maxBytes);
     } catch (error) {
       if (error instanceof TelegramApiError) throw error;
       throw new TelegramApiError('Telegram file download failed', { retryable: true, cause: error });
@@ -309,4 +327,51 @@ export class TelegramClient {
       clearTimeout(timer);
     }
   }
+}
+
+async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+  if (!body) return;
+  try {
+    await body.cancel();
+  } catch {
+    // The caller is already reporting the size failure; cancellation is cleanup.
+  }
+}
+
+async function readBodyWithLimit(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Cancellation is cleanup; the size failure remains the primary error.
+        }
+        throw new TelegramApiError('Telegram file is larger than the configured limit', {
+          retryable: false,
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }

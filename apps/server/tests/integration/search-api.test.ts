@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTestApp, type TestApp } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
+import { VOICE_PLACEHOLDER } from '../../src/lib/voice.js';
 import { createReminder } from '../../src/services/reminder-service.js';
 
 let testDb: TestDb;
@@ -73,6 +74,42 @@ async function seedBoilerData(): Promise<void> {
   });
 }
 
+/**
+ * One "tagged" row of every searchable type. Only tasks, notes, ideas and
+ * captures can own tags; events, projects and reminders deliberately match the
+ * text but have no tag relation.
+ */
+async function seedTagData(): Promise<void> {
+  await post('/api/tasks', { title: 'Tagged task', tags: ['home'] });
+  await post('/api/tasks', { title: 'Tagged task with another tag', tags: ['work'] });
+  await post('/api/tasks', { title: 'Tagged task without tags' });
+  await post('/api/notes', { body: 'Tagged note', tags: ['home'] });
+  await post('/api/notes', { body: 'Tagged note without tags' });
+  await post('/api/ideas', { title: 'Tagged idea', tags: ['home'] });
+  await post('/api/ideas', { title: 'Tagged idea without tags' });
+  await post('/api/events', {
+    title: 'Tagged event',
+    startsAt: '2026-11-05T09:30:00.000Z',
+  });
+  await post('/api/projects', { name: 'Tagged project' });
+  await createReminder(app.ctx, {
+    title: 'Tagged reminder',
+    remindAt: '2026-11-06T09:00:00.000Z',
+  });
+
+  const home = await testDb.db.tag.findUniqueOrThrow({ where: { name: 'home' } });
+  await testDb.db.capture.create({
+    data: {
+      source: 'API',
+      rawText: 'Tagged capture',
+      tags: { create: [{ tagId: home.id }] },
+    },
+  });
+  await testDb.db.capture.create({
+    data: { source: 'API', rawText: 'Tagged capture without tags' },
+  });
+}
+
 describe('matching', () => {
   it('finds one row of every type and says what matched', async () => {
     await seedBoilerData();
@@ -103,6 +140,39 @@ describe('matching', () => {
     const response = await search('?q=boiler');
     expect(response.total).toBe(1);
     expect(response.items[0]?.matchedOn).toEqual(['title']);
+  });
+
+  it('never exposes the internal voice placeholder as search content', async () => {
+    await app.ctx.db.capture.create({
+      data: { source: 'TELEGRAM', rawText: VOICE_PLACEHOLDER, metadata: '{"voice":{}}' },
+    });
+    await app.ctx.db.capture.create({
+      data: {
+        source: 'TELEGRAM',
+        rawText: VOICE_PLACEHOLDER,
+        transcript: 'Call the plumber tomorrow',
+        transcriptSource: 'SPEECH_PROVIDER',
+        metadata: '{"voice":{}}',
+      },
+    });
+    await app.ctx.db.capture.create({
+      data: { source: 'TELEGRAM', rawText: 'Call Ada tomorrow', metadata: '{"voice":{}}' },
+    });
+
+    const placeholderMatches = await search('?q=voice');
+    expect(placeholderMatches.total).toBe(2);
+    expect(placeholderMatches.items.map((item) => item.title)).not.toContain(VOICE_PLACEHOLDER);
+    expect(placeholderMatches.items.flatMap((item) => [item.title, item.snippet]).join('\n'))
+      .not.toContain(VOICE_PLACEHOLDER);
+    expect(placeholderMatches.items.map((item) => item.title)).toEqual(
+      expect.arrayContaining(['Voice capture — transcript unavailable', 'Call the plumber tomorrow']),
+    );
+
+    const transcriptMatch = await search('?q=plumber');
+    expect(transcriptMatch.items[0]?.title).toBe('Call the plumber tomorrow');
+
+    const captionMatch = await search('?q=Ada');
+    expect(captionMatch.items[0]?.title).toBe('Call Ada tomorrow');
   });
 
   it('returns an empty result set with a zero total rather than an error', async () => {
@@ -154,6 +224,38 @@ describe('filters', () => {
     expect(response.items.every((item) => item.status === 'COMPLETED')).toBe(true);
   });
 
+  it('keeps a status filter task-only when mixed types are selected', async () => {
+    await seedBoilerData();
+    await post('/api/tasks', { title: 'Old boiler task', status: 'COMPLETED' });
+
+    const response = await search(
+      '?q=boiler&types=TASK&types=NOTE&types=EVENT&status=COMPLETED',
+    );
+    expect(response.total).toBe(1);
+    expect(response.items).toEqual([
+      expect.objectContaining({ type: 'TASK', status: 'COMPLETED' }),
+    ]);
+  });
+
+  it('rejects reminder and delivery statuses as search statuses', async () => {
+    for (const status of ['SCHEDULED', 'SENT', 'FAILED', 'MISSED']) {
+      const response = await authed(`/api/search?q=boiler&status=${status}`);
+      expect(response.statusCode, status).toBe(400);
+      expect(response.json().error.code).toBe('VALIDATION_ERROR');
+    }
+  });
+
+  it('does not apply a status filter when none is supplied', async () => {
+    await seedBoilerData();
+    await post('/api/tasks', { title: 'Old boiler task', status: 'COMPLETED' });
+
+    const response = await search('?q=boiler');
+    expect(response.total).toBe(8);
+    expect(new Set(response.items.map((item) => item.type))).toEqual(
+      new Set(['TASK', 'NOTE', 'IDEA', 'EVENT', 'CAPTURE', 'PROJECT', 'REMINDER']),
+    );
+  });
+
   it('narrows to captures when a capture kind is given', async () => {
     await seedBoilerData();
     // The seeded capture was stored with `captureOnly: true`, so it was never
@@ -183,6 +285,33 @@ describe('filters', () => {
     expect(response.items.map((i) => i.type).sort()).toEqual(['NOTE', 'TASK']);
   });
 
+  it('accepts every entity type the search service supports', async () => {
+    await seedBoilerData();
+    const allTypes = 'TASK&types=NOTE&types=IDEA&types=EVENT&types=CAPTURE&types=PROJECT&types=REMINDER';
+    const response = await search(`?q=boiler&types=${allTypes}`);
+    expect(response.items.map((i) => i.type).sort()).toEqual([
+      'CAPTURE',
+      'EVENT',
+      'IDEA',
+      'NOTE',
+      'PROJECT',
+      'REMINDER',
+      'TASK',
+    ]);
+  });
+
+  it('accepts a capture, project, or reminder filter individually', async () => {
+    await seedBoilerData();
+    for (const [type, expected] of [
+      ['CAPTURE', ['CAPTURE']],
+      ['PROJECT', ['PROJECT']],
+      ['REMINDER', ['REMINDER']],
+    ] as const) {
+      const response = await search(`?q=boiler&types=${type}`);
+      expect(response.items.map((item) => item.type)).toEqual(expected);
+    }
+  });
+
   it('filters by project', async () => {
     const project = await post<{ id: string }>('/api/projects', { name: 'Boiler replacement' });
     await post('/api/tasks', { title: 'Boiler part', projectId: project.id });
@@ -192,12 +321,63 @@ describe('filters', () => {
     expect(response.items.map((item) => item.title)).toEqual(['Boiler part']);
   });
 
-  it('filters by tag', async () => {
-    await post('/api/tasks', { title: 'Boiler part', tags: ['home'] });
-    await post('/api/tasks', { title: 'Boiler part two', tags: ['work'] });
+  it('applies a tag filter to every type that can own tags', async () => {
+    await seedTagData();
 
-    const response = await search('?q=boiler&tag=home');
-    expect(response.items.map((item) => item.title)).toEqual(['Boiler part']);
+    const response = await search('?q=tagged&tag=home');
+    expect(response.total).toBe(4);
+    expect(response.items.map((item) => item.type).sort()).toEqual([
+      'CAPTURE',
+      'IDEA',
+      'NOTE',
+      'TASK',
+    ]);
+    expect(response.items.map((item) => item.title).sort()).toEqual([
+      'Tagged capture',
+      'Tagged idea',
+      'Tagged note',
+      'Tagged task',
+    ]);
+  });
+
+  it('excludes records without the requested tag and counts only matches', async () => {
+    await seedTagData();
+
+    const wrongTag = await search('?q=tagged&tag=work');
+    expect(wrongTag.total).toBe(1);
+    expect(wrongTag.items.map((item) => item.title)).toEqual([
+      'Tagged task with another tag',
+    ]);
+
+    const tagOnly = await search('?tag=home');
+    expect(tagOnly.total).toBe(4);
+  });
+
+  it('returns no events, projects or reminders for a tag filter', async () => {
+    await seedTagData();
+
+    const matchingText = await search('?q=tagged');
+    expect(matchingText.total).toBe(12);
+    expect(matchingText.items.map((item) => item.type).sort()).toEqual([
+      'CAPTURE',
+      'CAPTURE',
+      'EVENT',
+      'IDEA',
+      'IDEA',
+      'NOTE',
+      'NOTE',
+      'PROJECT',
+      'REMINDER',
+      'TASK',
+      'TASK',
+      'TASK',
+    ]);
+
+    for (const type of ['EVENT', 'PROJECT', 'REMINDER'] as const) {
+      const response = await search(`?q=tagged&tag=home&types=${type}`);
+      expect(response.total, type).toBe(0);
+      expect(response.items, type).toEqual([]);
+    }
   });
 
   it('applies the date range to each type own timestamp', async () => {

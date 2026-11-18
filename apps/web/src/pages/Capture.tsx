@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
-import { capturesApi, type CaptureInput } from '../lib/api'
-import { formatLocalDateTime, getTimeZone } from '../lib/date'
-import { Button, Textarea, Card, Badge, EmptyState } from '../components/ui'
+import { capturesApi, type CaptureDto, type CaptureInput } from '../lib/api'
+import { getTimeZone } from '../lib/date'
+import { Button, Textarea, Card, EmptyState } from '../components/ui'
+import { CaptureRow } from '../components/record-rows'
 import { CaptureIcon } from '../components/Layout'
 
 export function CapturePage() {
   const { showToast } = useToast()
   const [text, setText] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [recentCaptures, setRecentCaptures] = useState<Array<{ id: string; rawText: string; kind: string; capturedAt: string; needsReview: boolean }>>([])
+  const [recentCaptures, setRecentCaptures] = useState<CaptureDto[]>([])
   const [isLoadingCaptures, setIsLoadingCaptures] = useState(true)
 
   const timeZone = getTimeZone()
@@ -97,19 +97,7 @@ export function CapturePage() {
           ) : (
             <div className="list">
               {recentCaptures.map(capture => (
-                <Link key={capture.id} to={`/captures/${capture.id}`} className="list-item" style={{ textDecoration: 'none', color: 'inherit' }}>
-                  <div className="list-item-content" style={{ minWidth: 0 }}>
-                    <div className="list-item-title" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                      {capture.rawText.slice(0, 120)}
-                    </div>
-                    <div className="list-item-meta">
-                      <Badge variant="muted">{capture.kind}</Badge>
-                      <span>{formatLocalDateTime(capture.capturedAt, timeZone)}</span>
-                      {capture.needsReview && <Badge variant="warning">needs review</Badge>}
-                      <span style={{ fontFamily: 'monospace', fontSize: '11px', color: 'var(--color-text-muted)' }}>#{capture.id.slice(0, 6)}</span>
-                    </div>
-                  </div>
-                </Link>
+                <CaptureRow key={capture.id} capture={capture} timeZone={timeZone} />
               ))}
             </div>
           )}

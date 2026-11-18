@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createDb, applySqlitePragmas, type Db } from '../../src/db/client.js';
-import { TEMPLATE_DIR, TEMPLATE_DB } from './global-setup.js';
+import { TEMPLATE_DIR, readTemplatePointer } from './global-setup.js';
 
 export interface TestDb {
   db: Db;
@@ -16,6 +16,7 @@ export interface TestDb {
 }
 
 const TABLES_IN_DELETE_ORDER = [
+  'briefingDelivery',
   'reminderDelivery',
   'reminder',
   'captureRelation',
@@ -47,17 +48,19 @@ async function deleteAllRows(db: Db): Promise<void> {
 }
 
 export async function createTestDatabase(label = 'test'): Promise<TestDb> {
-  if (!fs.existsSync(TEMPLATE_DB)) {
+  const template = readTemplatePointer();
+  if (!template) {
     throw new Error(
-      `Test template database missing at ${TEMPLATE_DB}. The vitest globalSetup step should have created it.`,
+      'Test template database missing. The vitest globalSetup step should have created it.',
     );
   }
+
   const filePath = path.join(
     TEMPLATE_DIR,
     `${label}-${process.pid}-${crypto.randomBytes(4).toString('hex')}.db`,
   );
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.copyFileSync(TEMPLATE_DB, filePath);
+  fs.copyFileSync(template.path, filePath);
 
   const db = createDb({ url: `file:${filePath}` });
   await applySqlitePragmas(db);

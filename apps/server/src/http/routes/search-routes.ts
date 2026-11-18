@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
-import { STRUCTURED_TYPES, searchQuerySchema, type SearchResponse } from '@recall/shared';
+import { SEARCH_ENTITY_TYPES, searchQuerySchema, type SearchResponse } from '@recall/shared';
 
 import type { AppContext } from '../../context.js';
 import { enumListParam, parseQuery, validationError } from '../validation.js';
@@ -38,7 +38,7 @@ const searchParamsSchema = z.object({
 export async function registerSearchRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/search', async (request): Promise<SearchResponse> => {
     const params = parseQuery(searchParamsSchema, request.query, 'Invalid search query');
-    const types = enumListParam(params.types, STRUCTURED_TYPES, 'search type');
+    const types = enumListParam(params.types, SEARCH_ENTITY_TYPES, 'search type');
 
     const parsed = searchQuerySchema.safeParse({
       ...(params.q === undefined ? {} : { q: params.q }),

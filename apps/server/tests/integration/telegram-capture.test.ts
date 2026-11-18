@@ -7,8 +7,10 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import type { AiProvider } from '../../src/ai/types.js';
 import { testConfig, testLogger } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
+import { fakeAiProvider } from '../helpers/providers.js';
 import {
   callbackUpdate,
   createFakeTelegram,
@@ -22,6 +24,7 @@ import {
 import type { AppContext } from '../../src/context.js';
 import { createAppContext } from '../../src/context.js';
 import { advanceableClock } from '../../src/ports.js';
+import { updateSettings } from '../../src/services/settings-service.js';
 import { VOICE_PLACEHOLDER } from '../../src/telegram/handler.js';
 
 let testDb: TestDb;
@@ -299,11 +302,67 @@ describe('commands', () => {
     expect(fake.sent[0]).toMatch(/Inbox/);
   });
 
-  it('is honest that a planned command is not wired up yet', async () => {
+  it('asks for a question instead of storing /ask', async () => {
     const { ctx, adapter, fake } = setup();
-    await adapter.handleUpdate(textUpdate('/ask me at 4pm'));
-    expect(fake.sent[0]).toMatch(/not available yet/);
-    expect(fake.sent[0]).toMatch(/Milestone 7/);
+    await adapter.handleUpdate(textUpdate('/ask'));
+    expect(fake.sent[0]).toMatch(/What would you like to ask/);
+    expect(await ctx.db.capture.count()).toBe(0);
+  });
+
+  it('answers /ask from stored records without an AI provider', async () => {
+    const { ctx, adapter, fake } = setup();
+    await ctx.db.task.create({
+      data: {
+        title: 'Call the plumber',
+        description: 'the plumber is booked for tomorrow morning',
+      },
+    });
+
+    await adapter.handleUpdate(textUpdate('/ask plumber', { messageId: 32 }));
+
+    expect(fake.sent[0]).toContain('Call the plumber');
+    expect(fake.sent[0]).toContain('Based on:');
+    expect(await ctx.db.capture.count()).toBe(0);
+  });
+
+  it('answers /ask through the configured AI provider', async () => {
+    const ai = fakeAiProvider();
+    const { ctx, adapter, fake } = setup({ ai });
+    const task = await ctx.db.task.create({
+      data: {
+        title: 'Call the plumber',
+        description: 'the plumber is booked for tomorrow morning',
+      },
+    });
+    ai.setAnswer({
+      answer: 'The plumber is booked for tomorrow morning.',
+      citedIds: [task.id],
+    });
+
+    await adapter.handleUpdate(textUpdate('/ask plumber', { messageId: 33 }));
+
+    expect(ai.answerCalls).toHaveLength(1);
+    expect(fake.sent[0]).toContain('The plumber is booked for tomorrow morning.');
+    expect(fake.sent[0]).toContain(`#${task.id.slice(0, 6)}`);
+    expect(await ctx.db.capture.count()).toBe(0);
+  });
+
+  it('does not call the AI provider when the owner disabled AI', async () => {
+    const ai = fakeAiProvider();
+    const { ctx, adapter, fake } = setup({ ai });
+    await ctx.db.task.create({
+      data: {
+        title: 'Call the plumber',
+        description: 'the plumber is booked for tomorrow morning',
+      },
+    });
+    await updateSettings(ctx.db, { aiEnabled: false }, ctx.defaults);
+
+    await adapter.handleUpdate(textUpdate('/ask plumber', { messageId: 34 }));
+
+    expect(ai.answerCalls).toHaveLength(0);
+    expect(fake.sent[0]).toContain('Call the plumber');
+    expect(fake.sent[0]).toContain('Based on:');
     expect(await ctx.db.capture.count()).toBe(0);
   });
 
@@ -389,7 +448,7 @@ describe('reminders', () => {
 function setup(
   options: {
     overrides?: Record<string, string | undefined>;
-    ai?: ReturnType<typeof failingAiProvider> | null;
+    ai?: AiProvider | null;
   } = {},
 ): { ctx: AppContext; adapter: TestTelegramAdapter['adapter']; client: TestTelegramAdapter['client']; fake: FakeTelegram } {
   const clock = advanceableClock('2026-10-17T10:00:00.000Z');

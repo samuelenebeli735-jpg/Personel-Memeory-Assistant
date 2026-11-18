@@ -1,20 +1,34 @@
-import { forwardRef, type ReactNode } from 'react'
+import { forwardRef, type ReactNode, useEffect, useRef } from "react";
 
-export const Button = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
-  size?: 'sm' | 'md' | 'lg' | 'icon'
-  loading?: boolean
-}>(
-  ({ className = '', variant = 'primary', size = 'md', loading = false, disabled, children, ...props }, ref) => {
+export const Button = forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: "primary" | "secondary" | "ghost" | "danger";
+    size?: "sm" | "md" | "lg" | "icon";
+    loading?: boolean;
+  }
+>(
+  (
+    {
+      className = "",
+      variant = "primary",
+      size = "md",
+      loading = false,
+      disabled,
+      children,
+      ...props
+    },
+    ref,
+  ) => {
     const classNames = [
-      'btn',
+      "btn",
       `btn-${variant}`,
-      size !== 'md' ? `btn-${size}` : '',
-      loading ? 'loading' : '',
+      size !== "md" ? `btn-${size}` : "",
+      loading ? "loading" : "",
       className,
     ]
       .filter(Boolean)
-      .join(' ')
+      .join(" ");
 
     return (
       <button
@@ -26,122 +40,180 @@ export const Button = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<H
         {loading && <span className="loading-spinner" aria-hidden="true" />}
         {children}
       </button>
-    )
+    );
+  },
+);
+
+Button.displayName = "Button";
+
+export const Input = forwardRef<
+  HTMLInputElement,
+  React.InputHTMLAttributes<HTMLInputElement> & {
+    label?: string;
+    error?: string;
+    hint?: string;
   }
-)
+>(({ className = "", label, error, hint, id, ...props }, ref) => {
+  const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
 
-Button.displayName = 'Button'
+  return (
+    <div className="form-group">
+      {label && (
+        <label htmlFor={inputId} className="form-label">
+          {label}
+        </label>
+      )}
+      <input
+        ref={ref}
+        id={inputId}
+        className={className}
+        aria-invalid={error ? "true" : "false"}
+        aria-describedby={
+          error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined
+        }
+        {...props}
+      />
+      {error && (
+        <div id={`${inputId}-error`} className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      {hint && !error && (
+        <div id={`${inputId}-hint`} className="form-hint">
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+});
 
-export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & {
-  label?: string
-  error?: string
-  hint?: string
-}>(
-  ({ className = '', label, error, hint, id, ...props }, ref) => {
-    const inputId = id || label?.toLowerCase().replace(/\s+/g, '-')
+Input.displayName = "Input";
 
-    return (
-      <div className="form-group">
-        {label && <label htmlFor={inputId} className="form-label">{label}</label>}
-        <input
-          ref={ref}
-          id={inputId}
-          className={className}
-          aria-invalid={error ? 'true' : 'false'}
-          aria-describedby={error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined}
-          {...props}
-        />
-        {error && <div id={`${inputId}-error`} className="form-error" role="alert">{error}</div>}
-        {hint && !error && <div id={`${inputId}-hint`} className="form-hint">{hint}</div>}
-      </div>
-    )
+export const Textarea = forwardRef<
+  HTMLTextAreaElement,
+  React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+    label?: string;
+    error?: string;
+    hint?: string;
   }
-)
+>(({ className = "", label, error, hint, id, ...props }, ref) => {
+  const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
 
-Input.displayName = 'Input'
+  return (
+    <div className="form-group">
+      {label && (
+        <label htmlFor={inputId} className="form-label">
+          {label}
+        </label>
+      )}
+      <textarea
+        ref={ref}
+        id={inputId}
+        className={`form-textarea ${className}`}
+        aria-invalid={error ? "true" : "false"}
+        aria-describedby={
+          error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined
+        }
+        {...props}
+      />
+      {error && (
+        <div id={`${inputId}-error`} className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      {hint && !error && (
+        <div id={`${inputId}-hint`} className="form-hint">
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+});
 
-export const Textarea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
-  label?: string
-  error?: string
-  hint?: string
-}>(
-  ({ className = '', label, error, hint, id, ...props }, ref) => {
-    const inputId = id || label?.toLowerCase().replace(/\s+/g, '-')
+Textarea.displayName = "Textarea";
 
-    return (
-      <div className="form-group">
-        {label && <label htmlFor={inputId} className="form-label">{label}</label>}
-        <textarea
-          ref={ref}
-          id={inputId}
-          className={`form-textarea ${className}`}
-          aria-invalid={error ? 'true' : 'false'}
-          aria-describedby={error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined}
-          {...props}
-        />
-        {error && <div id={`${inputId}-error`} className="form-error" role="alert">{error}</div>}
-        {hint && !error && <div id={`${inputId}-hint`} className="form-hint">{hint}</div>}
-      </div>
-    )
+export const Select = forwardRef<
+  HTMLSelectElement,
+  React.SelectHTMLAttributes<HTMLSelectElement> & {
+    label?: string;
+    error?: string;
+    hint?: string;
+    options: { value: string; label: string }[];
   }
-)
+>(({ className = "", label, error, hint, options, id, ...props }, ref) => {
+  const selectId = id || label?.toLowerCase().replace(/\s+/g, "-");
 
-Textarea.displayName = 'Textarea'
+  return (
+    <div className="form-group">
+      {label && (
+        <label htmlFor={selectId} className="form-label">
+          {label}
+        </label>
+      )}
+      <select
+        ref={ref}
+        id={selectId}
+        className={`form-select ${className}`}
+        aria-invalid={error ? "true" : "false"}
+        aria-describedby={
+          error ? `${selectId}-error` : hint ? `${selectId}-hint` : undefined
+        }
+        {...props}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <div id={`${selectId}-error`} className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      {hint && !error && (
+        <div id={`${selectId}-hint`} className="form-hint">
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+});
 
-export const Select = forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement> & {
-  label?: string
-  error?: string
-  hint?: string
-  options: { value: string; label: string }[]
-}>(
-  ({ className = '', label, error, hint, options, id, ...props }, ref) => {
-    const selectId = id || label?.toLowerCase().replace(/\s+/g, '-')
+Select.displayName = "Select";
 
-    return (
-      <div className="form-group">
-        {label && <label htmlFor={selectId} className="form-label">{label}</label>}
-        <select
-          ref={ref}
-          id={selectId}
-          className={`form-select ${className}`}
-          aria-invalid={error ? 'true' : 'false'}
-          aria-describedby={error ? `${selectId}-error` : hint ? `${selectId}-hint` : undefined}
-          {...props}
-        >
-          {options.map(opt => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        {error && <div id={`${selectId}-error`} className="form-error" role="alert">{error}</div>}
-        {hint && !error && <div id={`${selectId}-hint`} className="form-hint">{hint}</div>}
-      </div>
-    )
-  }
-)
-
-Select.displayName = 'Select'
-
-export const Card = ({ children, className = '', header, style }: { children: ReactNode; className?: string; header?: ReactNode; style?: React.CSSProperties }) => (
+export const Card = ({
+  children,
+  className = "",
+  header,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  header?: ReactNode;
+  style?: React.CSSProperties;
+}) => (
   <div className={`card ${className}`} style={style}>
-    {header && (
-      <div className="card-header">
-        {header}
-      </div>
-    )}
+    {header && <div className="card-header">{header}</div>}
     <div className="card-content">{children}</div>
   </div>
-)
+);
 
 export const Badge = ({
   children,
-  variant = 'primary',
-  className = '',
+  variant = "primary",
+  className = "",
   style,
-}: { children: ReactNode; variant?: 'primary' | 'success' | 'warning' | 'danger' | 'muted'; className?: string; style?: React.CSSProperties }) => (
-  <span className={`badge badge-${variant} ${className}`} style={style}>{children}</span>
-)
+}: {
+  children: ReactNode;
+  variant?: "primary" | "success" | "warning" | "danger" | "muted";
+  className?: string;
+  style?: React.CSSProperties;
+}) => (
+  <span className={`badge badge-${variant} ${className}`} style={style}>
+    {children}
+  </span>
+);
 
 export const EmptyState = ({
   icon,
@@ -149,18 +221,20 @@ export const EmptyState = ({
   text,
   action,
 }: {
-  icon: ReactNode
-  title: string
-  text: string
-  action?: ReactNode
+  icon: ReactNode;
+  title: string;
+  text: string;
+  action?: ReactNode;
 }) => (
-  <div className="empty-state">
-    <div className="empty-state-icon" aria-hidden="true">{icon}</div>
-    <div className="empty-state-title">{title}</div>
+    <div className="empty-state">
+    <div className="empty-state-icon" aria-hidden="true">
+      {icon}
+    </div>
+    <h2 className="empty-state-title">{title}</h2>
     <div className="empty-state-text">{text}</div>
     {action && <div>{action}</div>}
   </div>
-)
+);
 
 export const Modal = ({
   isOpen,
@@ -169,21 +243,112 @@ export const Modal = ({
   children,
   footer,
 }: {
-  isOpen: boolean
-  onClose: () => void
-  title: string
-  children: ReactNode
-  footer?: ReactNode
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  footer?: ReactNode;
 }) => {
-  if (!isOpen) return null
+  const modalRef = useRef<HTMLDivElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !modalRef.current) return;
+
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+
+    // Prefer the first form control so keyboard users land on the content they
+    // came to edit; fall back to any focusable element (e.g. a close button).
+    const firstField = modalRef.current.querySelector(
+      'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled])',
+    ) as HTMLElement | null;
+    const firstFocusable =
+      firstField ??
+      (modalRef.current.querySelector(
+        'button, [href], [tabindex]:not([tabindex="-1"])',
+      ) as HTMLElement | null);
+    if (firstFocusable) {
+      firstFocusable.focus();
+    }
+
+    return () => {
+      // Restore focus to the element that opened the dialog.
+      previouslyFocused.current?.focus?.();
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+
+      if (event.key !== "Tab" || !modalRef.current) return;
+
+      const focusable = Array.from(
+        modalRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter(
+        (element) =>
+          element.offsetParent !== null || element === document.activeElement,
+      );
+
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+
+      const active = document.activeElement;
+
+      if (event.shiftKey) {
+        if (active === first || !modalRef.current.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !modalRef.current.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div className="modal" onClick={e => e.stopPropagation()}>
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+    >
+      <div
+        className="modal"
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
-          <h2 id="modal-title" className="modal-title">{title}</h2>
+          <h2 id="modal-title" className="modal-title">
+            {title}
+          </h2>
           <button className="modal-close" onClick={onClose} aria-label="Close">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -193,5 +358,5 @@ export const Modal = ({
         {footer && <div className="modal-footer">{footer}</div>}
       </div>
     </div>
-  )
-}
+  );
+};
