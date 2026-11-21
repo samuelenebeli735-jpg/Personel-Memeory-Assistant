@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
+import { useTimeZone } from '../hooks/useTimeZone'
 import { settingsApi, type SettingsDto } from '../lib/api'
 import { Button, Input, Select, Card } from '../components/ui'
 import {
@@ -158,6 +159,7 @@ function BriefingSectionsEditor({
 export function SettingsPage() {
   const { health, refreshHealth } = useAuth()
   const { showToast } = useToast()
+  const { setTimeZone } = useTimeZone()
   const [settings, setSettings] = useState<SettingsDto | null>(null)
   const [form, setForm] = useState<SettingsFormState | null>(null)
   const [errors, setErrors] = useState<SettingsFormErrors>({})
@@ -211,6 +213,9 @@ export function SettingsPage() {
       // Show exactly what the server stored, not what was sent.
       setSettings(saved)
       setForm(formFromSettings(saved))
+      // Every page reads the zone from the provider, so the dashboard switches
+      // to the saved zone immediately, without a reload.
+      setTimeZone(saved.timeZone)
       setErrors({})
       showToast('success', 'Settings saved')
       void refreshHealth()

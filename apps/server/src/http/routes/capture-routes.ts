@@ -33,6 +33,7 @@ import {
   reprocessCapture,
   undoCapture,
 } from '../../services/capture-service.js';
+import { getSettings } from '../../services/settings-service.js';
 import { formatCaptureConfirmation } from '../../telegram/format.js';
 import type { IngestOutcome } from '../../services/capture-service.js';
 
@@ -104,14 +105,17 @@ function statusList(value: string | string[] | undefined): string[] | undefined 
 }
 
 export async function registerCaptureRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
-  function ack(outcome: IngestOutcome): CaptureAckDto {
+  async function ack(outcome: IngestOutcome): Promise<CaptureAckDto> {
+    // The confirmation describes dates in the owner's Settings zone, the same
+    // zone the reminder will fire in and the dashboard displays.
+    const settings = await getSettings(ctx.db, ctx.defaults);
     return {
       capture: outcome.capture,
       created: outcome.created,
       duplicate: outcome.duplicate,
       needsReview: outcome.needsReview,
       message: formatCaptureConfirmation(outcome, {
-        timeZone: ctx.defaults.timeZone,
+        timeZone: settings.timeZone,
         referenceNow: ctx.clock.now(),
       }),
     };

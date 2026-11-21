@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { dashboardApi, type DashboardOverviewDto } from '../lib/api'
-import { getTimeZone } from '../lib/date'
+import { useTimeZone } from '../hooks/useTimeZone'
 import { Card, Button, EmptyState } from '../components/ui'
 import { CaptureRow, ReminderRow, TaskRow } from '../components/record-rows'
 import { TasksIcon, RemindersIcon, CaptureIcon, SearchIcon } from '../components/Layout'
@@ -64,7 +64,9 @@ export function OverviewPage() {
     load()
   }, [showToast])
 
-  const timeZone = overview?.timeZone || getTimeZone()
+  // The provider holds the Settings zone (updated as soon as Settings are
+  // saved); the overview's own `timeZone` comes from the same setting.
+  const timeZone = useTimeZone().timeZone
 
   if (isLoading) {
     return (

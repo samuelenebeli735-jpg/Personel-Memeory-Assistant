@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { ideasApi, type IdeaDto } from '../lib/api'
-import { getTimeZone } from '../lib/date'
+import { useTimeZone } from '../hooks/useTimeZone'
 import { Button, Input, Textarea, Card, EmptyState, Modal } from '../components/ui'
 import { IdeaRow } from '../components/record-rows'
 import { IdeasIcon } from '../components/Layout'
@@ -18,7 +18,7 @@ export function IdeasPage() {
   const [createForm, setCreateForm] = useState<{ title: string; body: string }>({ title: '', body: '' })
   const [createLoading, setCreateLoading] = useState(false)
 
-  const timeZone = getTimeZone()
+  const timeZone = useTimeZone().timeZone
   const page = parseInt(searchParams.get('page') || '1', 10)
   const limit = 25
 

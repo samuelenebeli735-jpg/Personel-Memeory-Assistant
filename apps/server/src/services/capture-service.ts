@@ -34,6 +34,7 @@ import { createIdea } from './idea-service.js';
 import { createNote } from './note-service.js';
 import { findProjectByName } from './project-service.js';
 import { createReminder } from './reminder-service.js';
+import { getSettings } from './settings-service.js';
 import { ensureTagIds, replaceTags } from './tag-service.js';
 import { createTask } from './task-service.js';
 
@@ -633,13 +634,16 @@ export async function convertCaptureKind(
   };
 
   const contentText = contentTextForCapture({ rawText: row.rawText, transcript: row.transcript });
+  // Dates in the text are read in the owner's Settings zone and default times,
+  // the same values the original classification used.
+  const settings = await getSettings(db, ctx.defaults);
   const classification = ctx.rules.classify({
     text: contentText,
     capturedAt: row.capturedAt,
     referenceNow: ctx.clock.now(),
-    timeZone: ctx.defaults.timeZone,
-    morningDefaultTime: ctx.defaults.morningDefaultTime,
-    eveningDefaultTime: ctx.defaults.eveningDefaultTime,
+    timeZone: settings.timeZone,
+    morningDefaultTime: settings.morningDefaultTime,
+    eveningDefaultTime: settings.eveningDefaultTime,
     hintKind: kind,
     knownProjects: await currentProjects(db),
   });

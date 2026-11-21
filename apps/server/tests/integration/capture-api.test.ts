@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createTestApp, type TestApp } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
+import { formatLocalHuman } from '../../src/lib/time.js';
 
 let testDb: TestDb;
 let app: TestApp;
@@ -289,5 +290,48 @@ describe('removing', () => {
     });
     expect(purged.statusCode).toBe(200);
     expect(await testDb.db.capture.count()).toBe(0);
+  });
+});
+
+describe('the owner Settings time zone', () => {
+  // The test clock reads 2026-10-17T10:00Z: Saturday 11:00 in Africa/Lagos
+  // (UTC+1) and Saturday 06:00 in America/New_York (UTC-4, daylight time).
+  async function useZone(timeZone: string) {
+    const response = await authed('/api/settings', { method: 'PATCH', payload: { timeZone } });
+    expect(response.statusCode, response.body).toBe(200);
+  }
+
+  for (const timeZone of ['Africa/Lagos', 'America/New_York'] as const) {
+    it(`describes a captured date in the Settings zone (${timeZone}), not the server default`, async () => {
+      await useZone(timeZone);
+      const ack = await capture('Call the dentist tomorrow at 9am');
+
+      const task = await testDb.db.task.findFirstOrThrow({ where: { captureId: ack.capture.id } });
+      expect(task.dueAt).not.toBeNull();
+      // The confirmation renders the stored instant in the owner's zone. (How
+      // the phrase itself is parsed is a separate concern of lib/nlp.ts.)
+      expect(ack.message).toContain(formatLocalHuman(task.dueAt!, timeZone));
+      if (timeZone !== 'Africa/Lagos') {
+        expect(ack.message).not.toContain(formatLocalHuman(task.dueAt!, 'Africa/Lagos'));
+      }
+    });
+  }
+
+  it('converts a capture using the Settings zone, not the server default', async () => {
+    // UTC is used here because it differs from the server default
+    // (Africa/Lagos) and the date parser resolves it independently of the
+    // host machine's zone.
+    await useZone('UTC');
+    const ack = await capture('dentist tomorrow at 9am', { forcedKind: 'NOTE' });
+
+    const response = await authed(`/api/captures/${ack.capture.id}/convert`, {
+      method: 'POST',
+      payload: { kind: 'EVENT' },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+
+    const event = await testDb.db.event.findFirstOrThrow({ where: { captureId: ack.capture.id } });
+    // 09:00 in the Settings zone (UTC); the server default would give 08:00Z.
+    expect(event.startsAt.toISOString()).toBe('2026-10-18T09:00:00.000Z');
   });
 });

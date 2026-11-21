@@ -3,7 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
 import { remindersApi, type ReminderDto, type SnoozeInput } from "../lib/api";
-import { getTimeZone } from "../lib/date";
+import { useTimeZone } from "../hooks/useTimeZone";
+import { localDateTimeToUtcIso, localDayAtTime } from "../lib/date";
 import {
   Button,
   Input,
@@ -48,7 +49,7 @@ export function RemindersPage() {
   const [snoozeReminderId, setSnoozeReminderId] = useState<string | null>(null);
   const [snoozeForm, setSnoozeForm] = useState<SnoozeInput>({ minutes: 10 });
 
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   const status = searchParams.get("status") || "";
   const page = parseInt(searchParams.get("page") || "1", 10);
   const limit = 25;
@@ -81,12 +82,15 @@ export function RemindersPage() {
     if (!createForm.title.trim()) {
       nextErrors.title = "Title is required";
     }
+    // The wall-clock time is read in the owner's Settings zone, never the
+    // browser's, so the reminder fires at the time the owner typed.
+    const remindAt = localDateTimeToUtcIso(createForm.remindAt, timeZone);
     if (!createForm.remindAt.trim()) {
       nextErrors.remindAt = "Remind At is required";
-    } else if (Number.isNaN(new Date(createForm.remindAt).getTime())) {
-      nextErrors.remindAt = "Invalid date";
+    } else if (!remindAt.ok) {
+      nextErrors.remindAt = remindAt.error;
     }
-    if (Object.keys(nextErrors).length > 0) {
+    if (Object.keys(nextErrors).length > 0 || !remindAt.ok || !remindAt.value) {
       setCreateErrors(nextErrors);
       return;
     }
@@ -97,7 +101,7 @@ export function RemindersPage() {
       await remindersApi.create({
         title: createForm.title.trim(),
         body: createForm.body.trim() || null,
-        remindAt: new Date(createForm.remindAt).toISOString(),
+        remindAt: remindAt.value,
         recurrence: createForm.recurrence
           ? JSON.parse(createForm.recurrence)
           : null,
@@ -308,6 +312,7 @@ export function RemindersPage() {
               }
             }}
             error={createErrors.remindAt}
+            hint={`Time zone: ${timeZone}`}
             required
           />
           <Select
@@ -372,20 +377,21 @@ export function RemindersPage() {
             label="Snooze for"
             options={SNOOZE_OPTIONS}
             value={
-              snoozeForm.minutes
-                ? `${snoozeForm.minutes}m`
-                : snoozeForm.until || ""
+              snoozeForm.until
+                ? "tomorrow 9am"
+                : snoozeForm.minutes === 60
+                  ? "1h"
+                  : "10m"
             }
             onChange={(e) => {
               const val = e.target.value;
               if (val === "10m") setSnoozeForm({ minutes: 10 });
               else if (val === "1h") setSnoozeForm({ minutes: 60 });
-              else if (val === "tomorrow 9am")
-                setSnoozeForm({
-                  until: new Date(
-                    new Date().getTime() + 24 * 60 * 60 * 1000,
-                  ).toISOString(),
-                });
+              else if (val === "tomorrow 9am") {
+                // 09:00 tomorrow in the owner's Settings zone, not "24 hours from now".
+                const until = localDayAtTime(new Date(), timeZone, 1, "09:00");
+                if (until) setSnoozeForm({ until });
+              }
             }}
           />
           <div className="modal-footer">

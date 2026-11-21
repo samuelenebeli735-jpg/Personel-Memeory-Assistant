@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { SearchEntityType, TaskStatus } from "@recall/shared";
 import { useToast } from "../hooks/useToast";
+import { useTimeZone } from "../hooks/useTimeZone";
 import {
   searchApi,
   type SearchResponse,
@@ -10,7 +11,6 @@ import {
 } from "../lib/api";
 import {
   formatRelative,
-  getTimeZone,
   localDateTimeToUtcIso,
 } from "../lib/date";
 import {
@@ -134,7 +134,7 @@ export function SearchPage() {
   const [to, setTo] = useState(searchParams.get("to") || "");
   const [queryError, setQueryError] = useState("");
 
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   const statusAvailable = canFilterByStatus(types);
 
   const handleSearch = async (e: FormEvent) => {

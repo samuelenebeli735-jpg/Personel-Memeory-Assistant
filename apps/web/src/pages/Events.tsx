@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { eventsApi, type EventDto } from '../lib/api'
-import { getTimeZone } from '../lib/date'
+import { useTimeZone } from '../hooks/useTimeZone'
+import { localDateTimeToUtcIso } from '../lib/date'
 import { Button, Input, Textarea, Card, EmptyState, Modal } from '../components/ui'
 import { EventRow } from '../components/record-rows'
 import { EventsIcon } from '../components/Layout'
@@ -19,8 +20,9 @@ export function EventsPage() {
     title: '', description: '', startsAt: '', endsAt: ''
   })
   const [createLoading, setCreateLoading] = useState(false)
+  const [createErrors, setCreateErrors] = useState<{ startsAt?: string; endsAt?: string }>({})
 
-  const timeZone = getTimeZone()
+  const timeZone = useTimeZone().timeZone
   const page = parseInt(searchParams.get('page') || '1', 10)
   const limit = 25
 
@@ -43,13 +45,24 @@ export function EventsPage() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!createForm.title.trim() || !createForm.startsAt) return
+    // Start and end are wall-clock times in the owner's Settings zone.
+    const startsAt = localDateTimeToUtcIso(createForm.startsAt, timeZone)
+    const endsAt = localDateTimeToUtcIso(createForm.endsAt, timeZone)
+    const nextErrors: { startsAt?: string; endsAt?: string } = {}
+    if (!startsAt.ok) nextErrors.startsAt = startsAt.error
+    if (!endsAt.ok) nextErrors.endsAt = endsAt.error
+    if (Object.keys(nextErrors).length > 0 || !startsAt.ok || !startsAt.value || !endsAt.ok) {
+      setCreateErrors(nextErrors)
+      return
+    }
+    setCreateErrors({})
     setCreateLoading(true)
     try {
       await eventsApi.create({
         title: createForm.title.trim(),
         description: createForm.description.trim() || null,
-        startsAt: new Date(createForm.startsAt).toISOString(),
-        endsAt: createForm.endsAt ? new Date(createForm.endsAt).toISOString() : null,
+        startsAt: startsAt.value,
+        endsAt: endsAt.value,
         projectId: null,
         captureId: null,
       })
@@ -99,34 +112,35 @@ export function EventsPage() {
       </Card>
 
       <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Create Event">
-        <form onSubmit={async (e) => {
-          e.preventDefault()
-          try {
-            await eventsApi.create({
-              title: createForm.title.trim(),
-              description: createForm.description.trim() || null,
-              startsAt: new Date(createForm.startsAt).toISOString(),
-              endsAt: createForm.endsAt ? new Date(createForm.endsAt).toISOString() : null,
-              projectId: null,
-              captureId: null,
-            })
-            showToast('success', 'Event created')
-            setShowCreateModal(false)
-            setCreateForm({ title: '', description: '', startsAt: '', endsAt: '' })
-            const data = await eventsApi.list({ limit: 25, offset: 0, sort: 'startsAt', order: 'asc' })
-            setEvents(data.items)
-            setTotal(data.total)
-          } catch (err) {
-            console.error(err)
-          }
-        }}>
+        {/* One submit path: `handleCreate` converts the times in the Settings zone. */}
+        <form onSubmit={handleCreate}>
           <Input label="Title" placeholder="Event title" value={createForm.title} onChange={e => setCreateForm({ ...createForm, title: e.target.value })} required />
           <Textarea label="Description (optional)" placeholder="Details..." value={createForm.description} onChange={e => setCreateForm({ ...createForm, description: e.target.value })} rows={3} />
-          <Input label="Starts At" type="datetime-local" value={createForm.startsAt} onChange={e => setCreateForm({ ...createForm, startsAt: e.target.value })} required />
-          <Input label="Ends At (optional)" type="datetime-local" value={createForm.endsAt} onChange={e => setCreateForm({ ...createForm, endsAt: e.target.value })} />
+          <Input
+            label="Starts At"
+            type="datetime-local"
+            value={createForm.startsAt}
+            onChange={e => {
+              setCreateForm({ ...createForm, startsAt: e.target.value })
+              if (createErrors.startsAt) setCreateErrors(prev => ({ ...prev, startsAt: undefined }))
+            }}
+            error={createErrors.startsAt}
+            hint={`Time zone: ${timeZone}`}
+            required
+          />
+          <Input
+            label="Ends At (optional)"
+            type="datetime-local"
+            value={createForm.endsAt}
+            onChange={e => {
+              setCreateForm({ ...createForm, endsAt: e.target.value })
+              if (createErrors.endsAt) setCreateErrors(prev => ({ ...prev, endsAt: undefined }))
+            }}
+            error={createErrors.endsAt}
+          />
           <div className="modal-footer">
             <Button variant="secondary" type="button" onClick={() => setShowCreateModal(false)}>Cancel</Button>
-            <Button type="submit">Create Event</Button>
+            <Button type="submit" loading={createLoading}>Create Event</Button>
           </div>
         </form>
       </Modal>

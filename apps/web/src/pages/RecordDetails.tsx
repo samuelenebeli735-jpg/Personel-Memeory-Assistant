@@ -26,7 +26,8 @@ import {
   type TaskDto,
 } from "../lib/api";
 import { captureContent, captureDisplayTitle } from "../lib/capture-content";
-import { formatLocalDateTime, getTimeZone } from "../lib/date";
+import { formatLocalDateTime } from "../lib/date";
+import { useTimeZone } from "../hooks/useTimeZone";
 import {
   DETAIL_BACK_LINKS,
   detailPath,
@@ -729,7 +730,7 @@ function LoadedOrEmpty<T>({
 
 export function CaptureDetailPage() {
   const record = useRecordDetail(capturesApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="capture"
@@ -743,7 +744,7 @@ export function CaptureDetailPage() {
 
 export function TaskDetailPage() {
   const record = useRecordDetail(tasksApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="task"
@@ -755,7 +756,7 @@ export function TaskDetailPage() {
 
 export function ReminderDetailPage() {
   const record = useRecordDetail(remindersApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="reminder"
@@ -769,7 +770,7 @@ export function ReminderDetailPage() {
 
 export function NoteDetailPage() {
   const record = useRecordDetail(notesApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="note"
@@ -781,7 +782,7 @@ export function NoteDetailPage() {
 
 export function IdeaDetailPage() {
   const record = useRecordDetail(ideasApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="idea"
@@ -793,7 +794,7 @@ export function IdeaDetailPage() {
 
 export function EventDetailPage() {
   const record = useRecordDetail(eventsApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="event"
@@ -805,7 +806,7 @@ export function EventDetailPage() {
 
 export function ProjectDetailPage() {
   const record = useRecordDetail(projectsApi.get);
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   return (
     <LoadedOrEmpty
       type="project"

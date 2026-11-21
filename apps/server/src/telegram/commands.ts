@@ -116,7 +116,7 @@ const settings: CommandHandler = async ({ ctx }) => {
 
 const inbox: CommandHandler = async ({ ctx }) => {
   const captures = await listInbox(ctx.db, 25);
-  return { text: formatCaptureList(captures, ctx.defaults.timeZone, 'Inbox — waiting for review') };
+  return { text: formatCaptureList(captures, await timeZoneOf(ctx), 'Inbox — waiting for review') };
 };
 
 /**
