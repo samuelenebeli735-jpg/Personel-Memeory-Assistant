@@ -20,6 +20,7 @@ import { updateSettings } from '../../src/services/settings-service.js';
 import { createTestApp, testConfig } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
 import { fakeAiProvider, type FakeAiProvider } from '../helpers/providers.js';
+import { createFakeTelegram, createTestTelegramAdapter, textUpdate } from '../helpers/telegram.js';
 
 let testDb: TestDb;
 
@@ -98,6 +99,37 @@ describe('both switches must allow it before personal text reaches the provider'
         expect(result.answer).toContain('Call the plumber');
       }
       expect(warnings).toEqual([]);
+    });
+  }
+
+  for (const { allowRawText, aiEnabled, providerUsed } of combinations) {
+    it(`Telegram /settings tells the truth: AI_ALLOW_RAW_TEXT=${allowRawText}, aiEnabled=${aiEnabled}`, async () => {
+      const ctx = createAppContext({
+        config: testConfig({
+          AI_PROVIDER: 'openai',
+          AI_API_KEY: 'sk-test-not-real',
+          AI_MODEL: 'fake-model',
+          AI_ALLOW_RAW_TEXT: allowRawText ? 'true' : 'false',
+        }),
+        db: testDb.db,
+        clock: advanceableClock('2026-10-17T10:00:00.000Z'),
+        logger: createLogger({ level: 'silent', sink: () => undefined }),
+        ai: fakeAiProvider(),
+      });
+      await updateSettings(ctx.db, { aiEnabled }, ctx.defaults);
+      const fake = createFakeTelegram();
+      const { adapter } = createTestTelegramAdapter(ctx, { fake });
+
+      await adapter.handleUpdate(textUpdate('/settings'));
+
+      const aiLine = (fake.sent[0] ?? '').split('\n').find((line) => line.startsWith('AI classification:'));
+      if (providerUsed) {
+        expect(aiLine).toBe('AI classification: openai');
+      } else {
+        expect(aiLine).toContain('built-in parsing');
+        // The rule checks the Settings switch before the server switch.
+        expect(aiLine).toContain(aiEnabled ? 'AI_ALLOW_RAW_TEXT is off' : 'switched off in Settings');
+      }
     });
   }
 

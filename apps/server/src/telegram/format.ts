@@ -18,6 +18,7 @@ import type {
   TranscriptSource,
 } from '@recall/shared';
 
+import type { AiBlockReason } from '../ai/access.js';
 import { describeRelative, formatLocalCompact, formatLocalHuman } from '../lib/time.js';
 import { truncate } from '../lib/text.js';
 import type { ReplyMarkup } from './client.js';
@@ -465,6 +466,21 @@ export function formatHelp(ownerConfigured: boolean): string {
   return lines.join('\n');
 }
 
+/** The AI line of `/settings`: the provider only when it really receives text. */
+function formatAiStatus(provider: string, reason: AiBlockReason | null): string {
+  if (provider === 'none') return 'not configured (built-in parsing)';
+  switch (reason) {
+    case null:
+      return provider;
+    case 'not_configured':
+      return `${provider} not available (built-in parsing)`;
+    case 'disabled_in_settings':
+      return `${provider} switched off in Settings (built-in parsing)`;
+    case 'raw_text_not_allowed':
+      return `${provider} not used: the server does not send your text (AI_ALLOW_RAW_TEXT is off; built-in parsing)`;
+  }
+}
+
 export function formatSettingsSummary(input: {
   displayName: string | null;
   timeZone: string;
@@ -476,7 +492,11 @@ export function formatSettingsSummary(input: {
   briefingEnabled: boolean;
   briefingTime: string;
   aiProvider: string;
-  aiEnabled: boolean;
+  /**
+   * Why AI is not used for personal text, from `aiForPersonalText`, or null
+   * when it is. The line must never suggest AI is active when that rule says no.
+   */
+  aiBlockReason: AiBlockReason | null;
   sttProvider: string;
   ownerIds: readonly string[];
 }): string {
@@ -488,7 +508,7 @@ export function formatSettingsSummary(input: {
     `Quiet hours: ${input.quietHoursStart && input.quietHoursEnd ? `${input.quietHoursStart}–${input.quietHoursEnd}` : 'not set'}`,
     `Daily notification cap: ${input.maxNotificationsPerDay === 0 ? 'unlimited' : input.maxNotificationsPerDay}`,
     `Daily briefing: ${input.briefingEnabled ? `on at ${input.briefingTime}` : 'off'}`,
-    `AI classification: ${input.aiProvider === 'none' ? 'not configured (built-in parsing)' : input.aiProvider + (input.aiEnabled ? '' : ' (disabled)')}`,
+    `AI classification: ${formatAiStatus(input.aiProvider, input.aiBlockReason)}`,
     `Voice transcription: ${input.sttProvider === 'none' ? 'not configured' : input.sttProvider}`,
     `Owner ids: ${input.ownerIds.length > 0 ? input.ownerIds.join(', ') : 'NONE — the bot is closed'}`,
     '',

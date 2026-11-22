@@ -181,14 +181,19 @@ complete.
 
 ## Current results
 
-Executed 2026-11-01 on Node v24.17.0, npm 11.13.0, Windows (win32).
+Executed 2026-11-22 on Node v24.17.0, npm 11.13.0, Windows (win32), for the
+Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
+`75ccb0e` with **738 server, 67 dashboard and 80 browser tests** passing; the
+follow-up that makes Telegram `/settings` report the AI privacy rule adds 8
+server tests, giving the 746 below. The server suite passes both with the test
+host pinned to `Pacific/Kiritimati` (UTC+14, the default) and with
+`RECALL_TEST_HOST_TZ=UTC`.
 
 Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
- Test Files  37 passed (37)
-      Tests  590 passed (590)
-   Duration  100.72s
+ Test Files  42 passed (42)
+      Tests  746 passed (746)
 ```
 
 Before the Windows worker cap, a default-worker run timed out in four setup hooks
@@ -199,9 +204,8 @@ passes with nothing skipped. On Linux the default worker count is unchanged.
 Dashboard suite (`npm run test --workspace @recall/web`):
 
 ```
- Test Files  6 passed (6)
-      Tests  40 passed (40)
-   Duration  5.57s
+ Test Files  7 passed (7)
+      Tests  67 passed (67)
 ```
 
 The server suite was re-run after the Milestone 7 and Milestone 8 work. It
@@ -222,46 +226,58 @@ error states, every visible record-row link against the registered route table,
 search-filter serialization, local date formatting, and session bootstrap behavior
 when only the health probe fails.
 
+Round 1 adds: the Settings form contract (R1-01); one owner time zone, including
+the host-zone pin and DST cases (R1-02, R1-02b); date and time questions answered
+from timestamps (R1-03, `ask-temporal`); AI transport, configuration and privacy
+(R1-04, `ai-transport`, `ai-privacy`); Telegram polling recovery and the
+reminder/briefing sound split (R1-05, `telegram-polling`, `telegram-bridge`); and
+the 2-hour briefing deadline (R1-06, `briefing-delivery`).
+
 | Suite | Tests | Result |
 | --- | --- | --- |
-| `unit/config.test.ts` | 30 | passed |
+| `unit/config.test.ts` | 33 | passed |
 | `unit/time.test.ts` | 16 | passed |
-| `unit/nlp.test.ts` | 19 | passed |
+| `unit/nlp.test.ts` | 40 | passed |
 | `unit/rules-classifier.test.ts` | 20 | passed |
 | `unit/retry.test.ts` | 8 | passed |
 | `unit/auth.test.ts` | 14 | passed |
-| `unit/telegram-format.test.ts` | 23 | passed |
-| `unit/telegram-notifier.test.ts` | 8 | passed |
-| `unit/telegram-polling.test.ts` | 6 | passed |
+| `unit/telegram-format.test.ts` | 27 | passed |
+| `unit/telegram-notifier.test.ts` | 9 | passed |
+| `unit/telegram-polling.test.ts` | 17 | passed |
 | `unit/telegram-client.test.ts` | 3 | passed |
 | `unit/chat-providers.test.ts` | 2 | passed |
+| `unit/ai-transport.test.ts` | 25 | passed |
 | `unit/library-format.test.ts` | 24 | passed |
 | `unit/reminder-commands.test.ts` | 24 | passed |
 | `unit/voice-text.test.ts` | 24 | passed |
 | `unit/stt-transcriber.test.ts` | 9 | passed |
-| `unit/ask-service.test.ts` | 28 | passed |
+| `unit/ask-service.test.ts` | 35 | passed |
+| `unit/ask-temporal.test.ts` | 17 | passed |
 | `unit/briefing-service.test.ts` | 18 | passed |
-| `integration/health-and-auth.test.ts` | 17 | passed |
+| `integration/health-and-auth.test.ts` | 18 | passed |
 | `integration/telegram-capture.test.ts` | 31 | passed |
 | `integration/voice-capture.test.ts` | 32 | passed |
 | `integration/classification-cache.test.ts` | 11 | passed |
-| `integration/capture-api.test.ts` | 17 | passed |
+| `integration/capture-api.test.ts` | 20 | passed |
 | `integration/capture-atomicity.test.ts` | 3 | passed |
 | `integration/library-api.test.ts` | 22 | passed |
 | `integration/search-api.test.ts` | 26 | passed |
-| `integration/telegram-library.test.ts` | 15 | passed |
+| `integration/telegram-library.test.ts` | 16 | passed |
 | `integration/export-restore.test.ts` | 13 | passed |
 | `integration/backup-service.test.ts` | 6 | passed |
 | `integration/reminder-scheduler.test.ts` | 16 | passed |
 | `integration/reminder-api.test.ts` | 10 | passed |
 | `integration/telegram-reminders.test.ts` | 19 | passed |
+| `integration/telegram-bridge.test.ts` | 3 | passed |
 | `integration/detail-routes.test.ts` | 3 | passed |
 | `integration/http-hardening.test.ts` | 5 | passed |
 | `integration/ask-api.test.ts` | 19 | passed |
+| `integration/ask-temporal.test.ts` | 21 | passed |
+| `integration/ai-privacy.test.ts` | 15 | passed |
 | `integration/briefing-api.test.ts` | 26 | passed |
-| `integration/briefing-delivery.test.ts` | 21 | passed |
+| `integration/briefing-delivery.test.ts` | 44 | passed |
 | `integration/dashboard-api.test.ts` | 2 | passed |
-| **Total** | **590** | **all passed** |
+| **Total** | **746** | **all passed** |
 
 Dashboard suite:
 
@@ -269,21 +285,22 @@ Dashboard suite:
 | --- | --- | --- |
 | `lib/capture-content.test.ts` | 6 | passed |
 | `lib/search-filters.test.ts` | 7 | passed |
-| `lib/date.test.ts` | 8 | passed |
+| `lib/date.test.ts` | 18 | passed |
+| `lib/settings-form.test.ts` | 17 | passed |
 | `hooks/session-bootstrap.test.ts` | 7 | passed |
 | `pages/RecordDetails.test.tsx` | 9 | passed |
 | `navigation.test.tsx` | 3 | passed |
-| **Total** | **40** | **all passed** |
+| **Total** | **67** | **all passed** |
 
-Browser E2E (`npm run test:e2e`, Microsoft Edge 156 headless):
+Browser E2E (`npm run test:e2e`, Microsoft Edge 156 headless), run at `75ccb0e`:
 
 ```
- Running 71 tests using 1 worker
- 71 passed (2.8m)
+ 80 passed (5.1m)
 ```
 
-The 71 Playwright tests comprise 70 browser workflow/accessibility checks plus the
-login setup project. The run used a disposable database, the production dashboard
+The 80 Playwright tests comprise 79 browser workflow/accessibility checks plus the
+login setup project: the 71 of Milestone 8 plus the Settings specs (R1-01) and
+the time-zone specs (R1-02). The run used a disposable database, the production dashboard
 bundle and the real Fastify API. It covered login/logout, bad-password rejection,
 session expiry, anonymous access, keyboard navigation, modal focus trapping,
 responsive desktop/tablet/mobile layouts, empty and failed-request states, missing
