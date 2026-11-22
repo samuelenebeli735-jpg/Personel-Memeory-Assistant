@@ -12,11 +12,20 @@
  *    the briefing covers (`YYYY-MM-DD` in the owner's configured zone).
  *  - **Disabled means no scheduled delivery.** `briefingEnabled` is false by
  *    default. Reading a briefing over HTTP still works either way.
- *  - **Deferred, never dropped.** Quiet hours and the daily cap push an
+ *  - **Deferred, within a deadline.** Quiet hours and the daily cap push an
  *    attempt to a later time; the pending row survives a restart.
- *  - **A briefing belongs to its own day.** A briefing that could not be
- *    delivered before midnight is skipped rather than delivered the next
- *    morning: a stale briefing is worse than no briefing.
+ *  - **Sent within 2 hours, or not at all (D59).** The window opens at the
+ *    briefing time — or, when that time falls inside quiet hours, when those
+ *    quiet hours end — and closes 2 hours later (`BRIEFING_LATE_LIMIT_MS`, real
+ *    time, so DST cannot stretch or shrink it). Only that first quiet-hours
+ *    delay moves the window; a missing channel, the daily cap, a failed send or
+ *    the server being offline never extend it. A briefing still unsent at the
+ *    deadline is recorded as `SKIPPED` ("more than 2 hours late"), logged once,
+ *    and never sent later by a retry or a restart.
+ *  - **A briefing belongs to its own day.** Midnight is a hard stop: the
+ *    deadline is the earlier of the 2-hour mark and the end of the briefing's
+ *    local day, and a row left from an earlier day is skipped rather than
+ *    delivered the next morning: a stale briefing is worse than no briefing.
  *  - **At-least-once, with bounded retries.** A transient failure is retried
  *    with exponential backoff; a permanent failure stops retrying and is
  *    recorded.
@@ -24,7 +33,12 @@
 import type { AppContext } from '../context.js';
 import type { Notifier } from '../ports.js';
 import { backoffDelay } from '../lib/retry.js';
-import { localDateKey, localDateTimeToUtc } from '../lib/time.js';
+import {
+  localDateKey,
+  localDateTimeToUtc,
+  nextQuietHoursEnd,
+  startOfNextLocalDay,
+} from '../lib/time.js';
 import { formatBriefingText, generateBriefing } from './briefing-service.js';
 import { gateDelivery, NO_CHANNEL_DEFER_MS } from './delivery-gate.js';
 import { getSettings, parseBriefingSections, type SettingsRow } from './settings-service.js';
@@ -35,6 +49,34 @@ export const BRIEFING_MAX_ATTEMPTS = 3;
 export const BRIEFING_RETRY_BASE_MS = 30_000;
 /** Ceiling for a single retry delay. */
 export const BRIEFING_MAX_BACKOFF_MS = 30 * 60_000;
+/** A briefing is sent at most this long after its window opens (D59). Fixed by design. */
+export const BRIEFING_LATE_LIMIT_MS = 2 * 60 * 60_000;
+/** Recorded on a briefing that missed its deadline. */
+export const BRIEFING_LATE_REASON = 'more than 2 hours late';
+
+/**
+ * The last instant a briefing may still be sent (inclusive).
+ *
+ * The window opens at `scheduledFor`, or at the end of the quiet hours that
+ * contain it, and lasts `BRIEFING_LATE_LIMIT_MS`; it never extends past the end
+ * of the briefing's own local day. Quiet hours are those currently configured.
+ */
+export function briefingDeadline(
+  scheduledFor: Date,
+  settings: Pick<SettingsRow, 'quietHoursStart' | 'quietHoursEnd'>,
+  timeZone: string,
+): Date {
+  const quietEnd = nextQuietHoursEnd(scheduledFor, timeZone, settings.quietHoursStart, settings.quietHoursEnd);
+  const opensAt = quietEnd && quietEnd.getTime() > scheduledFor.getTime() ? quietEnd : scheduledFor;
+  const lateLimit = opensAt.getTime() + BRIEFING_LATE_LIMIT_MS;
+  const endOfDay = startOfNextLocalDay(scheduledFor, timeZone).getTime();
+  // Midnight itself belongs to the next day, so the last valid instant is just before it.
+  return new Date(Math.min(lateLimit, endOfDay - 1));
+}
+
+function isPastDeadline(now: Date, deadline: Date): boolean {
+  return now.getTime() > deadline.getTime();
+}
 
 export interface BriefingDeliveryOptions {
   /** Attempts allowed per occurrence, including the first. */
@@ -125,6 +167,30 @@ export async function deliverDueBriefing(
       // Not due yet.
       return report;
     }
+    if (isPastDeadline(now, briefingDeadline(scheduledFor, settings, timeZone))) {
+      // The server was off, or the briefing was switched on, too long after its
+      // time. The SKIPPED row takes today's unique key (`<date>:1`), so nothing
+      // can send today's briefing afterwards.
+      try {
+        await ctx.db.briefingDelivery.create({
+          data: {
+            occurrenceKey: localDate,
+            attempt: 1,
+            status: 'SKIPPED',
+            channel: notifier.channel,
+            scheduledFor,
+            nextRetryAt: null,
+            error: BRIEFING_LATE_REASON,
+            idempotencyKey: `${localDate}:1`,
+          },
+        });
+        report.skipped += 1;
+        logLateSkip(ctx, localDate, scheduledFor, now);
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+      }
+      return report;
+    }
     try {
       await ctx.db.briefingDelivery.create({
         data: {
@@ -145,11 +211,31 @@ export async function deliverDueBriefing(
     report.due += 1;
   }
 
-  const ready = await ctx.db.briefingDelivery.findMany({
-    where: { status: 'PENDING', occurrenceKey: localDate, nextRetryAt: { lte: now } },
+  // Every waiting row of today, due or not: a row deferred past the deadline
+  // (daily cap, missing channel, retry backoff, recovered send) is skipped as
+  // soon as the deadline passes, not when its own retry time comes.
+  const pending = await ctx.db.briefingDelivery.findMany({
+    where: { status: 'PENDING', occurrenceKey: localDate },
     orderBy: { nextRetryAt: 'asc' },
     take: 10,
   });
+
+  const ready: typeof pending = [];
+  for (const row of pending) {
+    if (isPastDeadline(now, briefingDeadline(row.scheduledFor, settings, timeZone))) {
+      // Conditional on PENDING: a row another process has already claimed is left alone.
+      const skipped = await ctx.db.briefingDelivery.updateMany({
+        where: { id: row.id, status: 'PENDING' },
+        data: { status: 'SKIPPED', nextRetryAt: null, attemptedAt: null, error: BRIEFING_LATE_REASON },
+      });
+      if (skipped.count > 0) {
+        report.skipped += 1;
+        logLateSkip(ctx, row.occurrenceKey, row.scheduledFor, now);
+      }
+    } else if (row.nextRetryAt !== null && row.nextRetryAt.getTime() <= now.getTime()) {
+      ready.push(row);
+    }
+  }
 
   for (const attempt of ready) {
     try {
@@ -170,6 +256,14 @@ export async function deliverDueBriefing(
   }
 
   return report;
+}
+
+function logLateSkip(ctx: AppContext, occurrenceKey: string, scheduledFor: Date, now: Date): void {
+  ctx.logger.info('daily briefing skipped: more than 2 hours late', {
+    occurrenceKey,
+    scheduledFor: scheduledFor.toISOString(),
+    lateByMinutes: Math.round((now.getTime() - scheduledFor.getTime()) / 60_000),
+  });
 }
 
 interface AttemptContext {

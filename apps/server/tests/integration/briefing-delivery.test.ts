@@ -10,7 +10,14 @@ import type { SettingsUpdateInput } from '@recall/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AppContext } from '../../src/context.js';
+import { createLogger, type Logger } from '../../src/lib/logger.js';
+import { localDateTimeToUtc } from '../../src/lib/time.js';
 import { advanceableClock, type AdvanceableClock } from '../../src/ports.js';
+import {
+  BRIEFING_LATE_LIMIT_MS,
+  BRIEFING_LATE_REASON,
+  briefingDeadline,
+} from '../../src/services/briefing-delivery.js';
 import { createReminderScheduler, type ReminderScheduler } from '../../src/services/reminder-scheduler.js';
 import { createReminder } from '../../src/services/reminder-service.js';
 import { updateSettings } from '../../src/services/settings-service.js';
@@ -422,5 +429,370 @@ describe('scheduled briefing delivery — configuration', () => {
     expect(text).toContain('Ideas');
     expect(text).toContain('Build a rocket');
     expect(text).not.toContain('Overdue');
+  });
+});
+
+// --- R1-06 / D59: a briefing is sent within 2 hours of its window, or skipped ---
+//
+// The default rig clock is 2026-10-17T10:00Z = 11:00 in Lagos (UTC+1, no DST).
+
+const MINUTE = 60_000;
+const TWO_HOURS = 2 * 60 * MINUTE;
+
+async function rowsOf(ctx: AppContext) {
+  return ctx.db.briefingDelivery.findMany({ orderBy: [{ occurrenceKey: 'asc' }, { attempt: 'asc' }] });
+}
+
+function recordInfoLogs(ctx: AppContext): string[] {
+  const lines: string[] = [];
+  (ctx as unknown as { logger: Logger }).logger = createLogger({
+    level: 'info',
+    sink: (line) => lines.push(line),
+  });
+  return lines;
+}
+
+describe('briefing deadline (D59) — the rule itself', () => {
+  const noQuiet = { quietHoursStart: null, quietHoursEnd: null };
+
+  it('is exactly 2 hours after the briefing time', () => {
+    const at = new Date('2026-10-17T06:30:00.000Z'); // 07:30 Lagos
+    expect(BRIEFING_LATE_LIMIT_MS).toBe(TWO_HOURS);
+    expect(briefingDeadline(at, noQuiet, 'Africa/Lagos').toISOString()).toBe('2026-10-17T08:30:00.000Z');
+  });
+
+  it('opens at the end of quiet hours that contain the briefing time', () => {
+    const at = new Date('2026-10-17T05:00:00.000Z'); // 06:00 Lagos, quiet until 09:00
+    const deadline = briefingDeadline(at, { quietHoursStart: '22:00', quietHoursEnd: '09:00' }, 'Africa/Lagos');
+    expect(deadline.toISOString()).toBe('2026-10-17T10:00:00.000Z'); // 11:00 Lagos
+  });
+
+  it('ignores quiet hours that do not contain the briefing time', () => {
+    const at = new Date('2026-10-17T06:30:00.000Z'); // 07:30 Lagos; quiet ended at 07:00
+    const deadline = briefingDeadline(at, { quietHoursStart: '22:00', quietHoursEnd: '07:00' }, 'Africa/Lagos');
+    expect(deadline.toISOString()).toBe('2026-10-17T08:30:00.000Z');
+  });
+
+  it('never passes midnight of the briefing day', () => {
+    const at = new Date('2026-10-17T22:00:00.000Z'); // 23:00 Lagos
+    expect(briefingDeadline(at, noQuiet, 'Africa/Lagos').toISOString()).toBe('2026-10-17T22:59:59.999Z');
+    // Quiet hours that end tomorrow cannot reopen today's briefing tomorrow.
+    const quiet = { quietHoursStart: '22:00', quietHoursEnd: '07:00' };
+    expect(briefingDeadline(at, quiet, 'Africa/Lagos').toISOString()).toBe('2026-10-17T22:59:59.999Z');
+  });
+
+  it('measures real time across a DST change (London, clocks back on 25 October 2026)', () => {
+    // 01:30 happens twice that night; whichever instant is chosen, the limit is
+    // two real hours after it, even though the wall clock moves three.
+    const at = localDateTimeToUtc('2026-10-25', '01:30', 'Europe/London')!;
+    const deadline = briefingDeadline(at, noQuiet, 'Europe/London');
+    expect(deadline.getTime() - at.getTime()).toBe(TWO_HOURS);
+  });
+
+  it('uses the DST-correct end of quiet hours (London, clocks forward on 29 March 2026)', () => {
+    // Quiet hours 23:00-07:00 start in GMT and end in BST: 07:00 BST = 06:00Z.
+    const at = localDateTimeToUtc('2026-03-29', '06:00', 'Europe/London')!; // 05:00Z
+    const deadline = briefingDeadline(at, { quietHoursStart: '23:00', quietHoursEnd: '07:00' }, 'Europe/London');
+    expect(at.toISOString()).toBe('2026-03-29T05:00:00.000Z');
+    expect(deadline.toISOString()).toBe('2026-03-29T08:00:00.000Z');
+  });
+});
+
+describe('scheduled briefing delivery — 2-hour limit (D59)', () => {
+  let h: Harness;
+
+  beforeEach(async () => {
+    h = await harness();
+  });
+
+  afterEach(async () => {
+    await h.testDb.cleanup();
+  });
+
+  it('sends a briefing exactly 2 hours late, once', async () => {
+    await enableBriefing(h.ctx, { briefingTime: '09:00' }); // 08:00Z; the clock is at 10:00Z
+
+    const report = await h.scheduler.tick();
+    await h.scheduler.tick();
+
+    expect(report.briefings.delivered).toBe(1);
+    expect(h.notifier.sent).toHaveLength(1);
+  });
+
+  it('skips a briefing 2 hours and 1 minute late, records why and logs once', async () => {
+    const logs = recordInfoLogs(h.ctx);
+    await enableBriefing(h.ctx, { briefingTime: '08:59' }); // 07:59Z
+
+    const report = await h.scheduler.tick();
+    await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(report.briefings.delivered).toBe(0);
+    expect(h.notifier.sent).toHaveLength(0);
+    const rows = await rowsOf(h.ctx);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      occurrenceKey: '2026-10-17',
+      attempt: 1,
+      status: 'SKIPPED',
+      error: BRIEFING_LATE_REASON,
+      idempotencyKey: '2026-10-17:1',
+      nextRetryAt: null,
+    });
+    expect(logs.filter((line) => line.includes('more than 2 hours late'))).toHaveLength(1);
+  });
+
+  it('never sends a skipped briefing later: ticks, restart, or a new briefing time', async () => {
+    await enableBriefing(h.ctx, { briefingTime: '07:30' }); // 3.5 hours late
+    await h.scheduler.tick();
+
+    await h.scheduler.tick();
+    const restarted = attach(h.testDb, '2026-10-17T10:05:00.000Z');
+    await restarted.scheduler.recover();
+    await restarted.scheduler.tick();
+    // Moving today's time to "now" does not reopen today's briefing.
+    await configure(restarted.ctx, { briefingTime: '11:05' });
+    await restarted.scheduler.tick();
+
+    expect(h.notifier.sent).toHaveLength(0);
+    expect(restarted.notifier.sent).toHaveLength(0);
+    const rows = await rowsOf(h.ctx);
+    expect(rows.map((row) => row.status)).toEqual(['SKIPPED']);
+  });
+
+  it('switched on too late: skips today and delivers tomorrow as normal', async () => {
+    await enableBriefing(h.ctx, { briefingTime: '07:30' });
+    const today = await h.scheduler.tick();
+    expect(today.briefings.skipped).toBe(1);
+
+    h.clock.set(new Date('2026-10-18T06:30:00.000Z')); // 07:30 Lagos, next day
+    const tomorrow = await h.scheduler.tick();
+
+    expect(tomorrow.briefings.delivered).toBe(1);
+    expect(h.notifier.sent).toHaveLength(1);
+    expect(h.notifier.sent[0]!.text).toContain('2026-10-18');
+  });
+
+  it('server back within 2 hours: sends once', async () => {
+    await enableBriefing(h.ctx, { briefingTime: '09:30' }); // the server "was off" since 08:30Z
+
+    await h.scheduler.tick();
+    await h.scheduler.tick();
+
+    expect(h.notifier.sent).toHaveLength(1);
+  });
+
+  it('a missing channel resolved inside the window still delivers', async () => {
+    await enableBriefing(h.ctx);
+    h.notifier.setAvailable(false);
+    await h.scheduler.tick();
+
+    h.notifier.setAvailable(true);
+    h.clock.advanceMs(110 * MINUTE);
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.delivered).toBe(1);
+  });
+
+  it('a missing channel does not extend the deadline', async () => {
+    await enableBriefing(h.ctx);
+    h.notifier.setAvailable(false);
+    await h.scheduler.tick();
+
+    h.clock.advanceMs(TWO_HOURS + MINUTE);
+    h.notifier.setAvailable(true);
+    const report = await h.scheduler.tick();
+    await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(0);
+    const rows = await rowsOf(h.ctx);
+    expect(rows[0]).toMatchObject({ status: 'SKIPPED', error: BRIEFING_LATE_REASON });
+  });
+
+  it('the daily cap does not extend the deadline: skipped at the deadline, not at midnight', async () => {
+    await enableBriefing(h.ctx, { maxNotificationsPerDay: 1 });
+    await createReminder(h.ctx, {
+      title: 'Call Ada',
+      remindAt: new Date(h.clock.now().getTime() - MINUTE).toISOString(),
+    });
+    const first = await h.scheduler.tick();
+    expect(first.briefings.deferred).toBe(1);
+
+    h.clock.advanceMs(TWO_HOURS + MINUTE); // still the same local day
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    const rows = await rowsOf(h.ctx);
+    expect(rows[0]).toMatchObject({ status: 'SKIPPED', error: BRIEFING_LATE_REASON });
+    // Only the reminder was ever sent.
+    expect(h.notifier.sent.map((message) => message.text)).toHaveLength(1);
+  });
+
+  it('a retry due after the deadline is skipped, not sent', async () => {
+    await enableBriefing(h.ctx);
+    h.notifier.setNext(
+      { ok: false, retryable: true, error: 'rate limited', retryAfterMs: 3 * 60 * MINUTE },
+      { ok: true },
+    );
+    await h.scheduler.tick(); // attempt 1 fails; attempt 2 waits 3 hours
+
+    h.clock.advanceMs(TWO_HOURS + MINUTE);
+    const report = await h.scheduler.tick();
+    h.clock.advanceMs(60 * MINUTE); // the retry's own time
+    await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(1); // the failed first attempt only
+    const rows = await rowsOf(h.ctx);
+    expect(rows.map((row) => row.status)).toEqual(['FAILED', 'SKIPPED']);
+  });
+
+  it('an interrupted send recovered after the deadline is skipped, not resent', async () => {
+    await enableBriefing(h.ctx);
+    await h.ctx.db.briefingDelivery.create({
+      data: {
+        occurrenceKey: '2026-10-17',
+        attempt: 1,
+        status: 'SENDING',
+        channel: 'test',
+        scheduledFor: new Date('2026-10-17T07:00:00.000Z'), // 3 hours ago
+        nextRetryAt: new Date('2026-10-17T07:00:00.000Z'),
+        attemptedAt: new Date('2026-10-17T07:00:00.000Z'),
+        idempotencyKey: '2026-10-17:1',
+      },
+    });
+
+    const recovery = await h.scheduler.recover();
+    const report = await h.scheduler.tick();
+
+    expect(recovery.briefingsRequeued).toBe(1);
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(0);
+  });
+});
+
+describe('scheduled briefing delivery — quiet hours and the 2-hour limit (D59)', () => {
+  let h: Harness;
+
+  afterEach(async () => {
+    await h.testDb.cleanup();
+  });
+
+  // Briefing 06:00 Lagos (05:00Z), quiet hours 22:00-09:00: the window opens at
+  // 09:00 Lagos (08:00Z) and closes at 11:00 Lagos (10:00Z).
+  const QUIET = { briefingTime: '06:00', quietHoursStart: '22:00', quietHoursEnd: '09:00' };
+
+  it('is sent when quiet hours end', async () => {
+    h = await harness('2026-10-17T05:00:00.000Z');
+    await enableBriefing(h.ctx, QUIET);
+    const early = await h.scheduler.tick();
+    expect(early.briefings.deferred).toBe(1);
+
+    h.clock.set(new Date('2026-10-17T08:00:00.000Z'));
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.delivered).toBe(1);
+  });
+
+  it('first available at 10:59 Lagos: sent', async () => {
+    h = await harness('2026-10-17T09:59:00.000Z');
+    await enableBriefing(h.ctx, QUIET);
+
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.delivered).toBe(1);
+  });
+
+  it('first available at 11:01 Lagos: skipped', async () => {
+    h = await harness('2026-10-17T10:01:00.000Z');
+    await enableBriefing(h.ctx, QUIET);
+
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(0);
+  });
+
+  it('a missing channel after quiet hours does not extend the adjusted deadline', async () => {
+    h = await harness('2026-10-17T05:00:00.000Z');
+    await enableBriefing(h.ctx, QUIET);
+    await h.scheduler.tick(); // deferred by quiet hours
+
+    h.notifier.setAvailable(false);
+    h.clock.set(new Date('2026-10-17T08:00:00.000Z'));
+    await h.scheduler.tick(); // deferred: no channel
+
+    h.notifier.setAvailable(true);
+    h.clock.set(new Date('2026-10-17T10:01:00.000Z'));
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(0);
+  });
+
+  it('UTC+14 (Kiritimati), quiet hours crossing midnight: window measured on the owner day', async () => {
+    // 06:30 on 18 Oct in Kiritimati = 16:30Z on 17 Oct; quiet 22:00-07:00 ends
+    // at 07:00 local = 17:00Z, so the deadline is 19:00Z.
+    const settings = {
+      timeZone: 'Pacific/Kiritimati',
+      briefingTime: '06:30',
+      quietHoursStart: '22:00',
+      quietHoursEnd: '07:00',
+    };
+
+    h = await harness('2026-10-17T18:59:00.000Z');
+    await enableBriefing(h.ctx, settings);
+    const inTime = await h.scheduler.tick();
+    expect(inTime.briefings.delivered).toBe(1);
+    expect(h.notifier.sent[0]!.text).toContain('2026-10-18');
+    await h.testDb.cleanup();
+
+    h = await harness('2026-10-17T19:01:00.000Z');
+    await enableBriefing(h.ctx, settings);
+    const late = await h.scheduler.tick();
+    expect(late.briefings.skipped).toBe(1);
+    expect((await rowsOf(h.ctx))[0]).toMatchObject({ occurrenceKey: '2026-10-18', status: 'SKIPPED' });
+  });
+
+  it('DST: London on 29 March 2026, quiet hours end in summer time', async () => {
+    // Briefing 06:00 BST = 05:00Z; quiet 23:00 GMT - 07:00 BST ends at 06:00Z;
+    // deadline 08:00Z. An offset taken before the change would say 09:00Z.
+    const settings = {
+      timeZone: 'Europe/London',
+      briefingTime: '06:00',
+      quietHoursStart: '23:00',
+      quietHoursEnd: '07:00',
+    };
+
+    h = await harness('2026-03-29T07:59:00.000Z');
+    await enableBriefing(h.ctx, settings);
+    expect((await h.scheduler.tick()).briefings.delivered).toBe(1);
+    await h.testDb.cleanup();
+
+    h = await harness('2026-03-29T08:01:00.000Z');
+    await enableBriefing(h.ctx, settings);
+    expect((await h.scheduler.tick()).briefings.skipped).toBe(1);
+  });
+
+  it('midnight is the hard stop for a late-evening briefing', async () => {
+    // 23:00 Lagos; the server is back at 23:30 Lagos: sent.
+    h = await harness('2026-10-17T22:30:00.000Z');
+    await enableBriefing(h.ctx, { briefingTime: '23:00' });
+    expect((await h.scheduler.tick()).briefings.delivered).toBe(1);
+    await h.testDb.cleanup();
+
+    // Same briefing waiting on a missing channel: at 00:01 it belongs to a day
+    // that has passed and is skipped, even though 2 hours have not elapsed.
+    h = await harness('2026-10-17T22:00:00.000Z');
+    await enableBriefing(h.ctx, { briefingTime: '23:00' });
+    h.notifier.setAvailable(false);
+    await h.scheduler.tick();
+    h.notifier.setAvailable(true);
+    h.clock.set(new Date('2026-10-17T23:01:00.000Z'));
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(h.notifier.sent).toHaveLength(0);
   });
 });

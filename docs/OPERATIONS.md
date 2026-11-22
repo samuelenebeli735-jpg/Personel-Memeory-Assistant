@@ -356,13 +356,26 @@ same values.
 - **Off by default.** With the daily delivery disabled nothing is sent, but
   `GET /api/briefing` still returns a briefing on demand — the switch governs
   *scheduled delivery only*.
-- **Quiet hours and the daily cap defer, never drop.** A deferred attempt stays
-  `PENDING` with a future `nextRetryAt`; the row survives a restart. The daily
-  cap counts reminder and briefing deliveries together, because that is what the
-  owner experiences.
-- **A briefing belongs to its own day.** If it could not be delivered before
-  midnight it is skipped rather than delivered the next morning: a stale
-  briefing is worse than no briefing. The attempt is recorded as `SKIPPED`.
+- **Quiet hours and the daily cap defer, within a deadline.** A deferred attempt
+  stays `PENDING` with a future `nextRetryAt`; the row survives a restart. The
+  daily cap counts reminder and briefing deliveries together, because that is
+  what the owner experiences.
+- **Sent within 2 hours, or skipped (D59).** The window opens at the briefing
+  time. If that time falls inside quiet hours, it opens when those quiet hours
+  end instead (briefing 06:00, quiet hours until 09:00: sendable until 11:00).
+  It closes 2 real hours later; DST changes do not stretch it. Nothing else
+  moves the deadline: a server that was off, a missing channel, the daily cap or
+  a failed send only use up the same window. A briefing still unsent at the
+  deadline is recorded as `SKIPPED` with the reason `more than 2 hours late`,
+  logged once (`daily briefing skipped: more than 2 hours late`), and never sent
+  later by a retry, a restart or a change of briefing time that day. Switching
+  the briefing on more than 2 hours after its time therefore starts it
+  tomorrow. The 2 hours are fixed in code (`BRIEFING_LATE_LIMIT_MS`); there is no
+  setting. Reminders keep their own rule (`REMINDER_OVERDUE_GRACE_HOURS`).
+- **A briefing belongs to its own day.** Midnight is a hard stop: a 23:00
+  briefing can be sent until 23:59 at the latest. A row still waiting from an
+  earlier day is skipped rather than delivered the next morning (reason `the
+  briefing day had passed`). Missed days are never caught up or combined.
 - **At-least-once with a bounded retry.** A transient failure is retried with
   exponential backoff (30 s base, 30-minute ceiling, 3 attempts in total). A
   permanent failure is recorded as `FAILED` and is not retried.
