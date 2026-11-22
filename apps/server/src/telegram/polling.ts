@@ -48,11 +48,12 @@
  *   transcribed again (which also happens on each in-process retry when the
  *   failure came after transcription).
  *
- * The offset is kept in memory. A restart therefore re-fetches the last few
- * updates from Telegram, which is safe because ingestion is idempotent on
- * `telegram:<chatId>:<messageId>` — the replay finds the existing capture instead
- * of storing a second one. The same idempotency makes retrying a failed update
- * safe.
+ * The offset is kept in memory. A restart therefore re-fetches the updates not
+ * yet acknowledged. Capture ingestion is idempotent on
+ * `telegram:<chatId>:<messageId>`: a replayed or retried capture finds the
+ * existing one instead of storing a second. That protection covers captures
+ * only — commands are not de-duplicated and can run twice, and voice notes can
+ * be transcribed again, as listed above.
  */
 import type { TelegramPollingStatusDto } from '@recall/shared';
 

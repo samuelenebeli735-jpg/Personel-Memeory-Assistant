@@ -571,7 +571,7 @@ substitute for exercising the owner's real backup on the deployment host.
 | `telegram webhook is set - removing it so polling can start` | The bot was last used in webhook mode. Expected once after switching to polling. |
 | `telegram webhook keeps returning - another deployment may be using this bot token in webhook mode` | Another deployment re-registers its webhook. Give each deployment its own bot token. |
 | `another copy of Recall is polling with this bot token` | Two processes poll with the same token. Stop one; the other recovers by itself. |
-| Duplicate-looking behaviour after a restart | A restart re-fetches the last few updates because the polling offset is in memory. Idempotency means no second capture is stored; the reply is simply "Already saved". |
+| Duplicate-looking behaviour after a restart | A restart re-fetches the updates not yet acknowledged because the polling offset is in memory. For a capture, idempotency means no second capture is stored; the reply is simply "Already saved". A command (for example `/remind`) is not de-duplicated and can genuinely have run twice; check and remove the duplicate. A voice note may have been transcribed again. See "Retry and dead-letter state is not durable" in the Telegram bot runtime section. |
 | Webhook returns 401 | `TELEGRAM_WEBHOOK_SECRET` on the server does not match the `secret_token` Telegram sends. Re-register by restarting the server. |
 | Webhook returns 503 | `TELEGRAM_WEBHOOK_SECRET` is not set. Webhook mode will not accept unsigned updates. |
 | `A reminder is set.` never appears | A reminder is only created when you asked for one ("remind me …") *and* a time was recognised. Tasks with a deadline get a `dueAt`, not a reminder. |
