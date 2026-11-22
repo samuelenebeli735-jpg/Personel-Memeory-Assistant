@@ -18,7 +18,8 @@ import { createTelegramNotifier } from '../../src/telegram/notifier.js';
 import { startTelegramPolling, type PollingController } from '../../src/telegram/polling.js';
 import { createTestApp, createTestContext } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
-import { createFakeTelegram, type FakeTelegram } from '../helpers/telegram.js';
+import { createFakeTelegram, createTestTelegramAdapter, textUpdate, type FakeTelegram } from '../helpers/telegram.js';
+import type { Db } from '../../src/db/client.js';
 
 const OTHER_POLLER =
   'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running';
@@ -178,5 +179,91 @@ describe('telegram bridge: health', () => {
     } finally {
       await test.close();
     }
+  });
+});
+
+describe('telegram bridge: a dead-lettered message is never shown as captured', () => {
+  let testDb: TestDb;
+
+  beforeEach(async () => {
+    testDb = await createTestDatabase('telegram-bridge-dead-letter');
+  });
+
+  afterEach(async () => {
+    await testDb.cleanup();
+  });
+
+  /** The real database, except that creating a capture always fails. */
+  function dbWhereCaptureCreateFails(db: Db): Db {
+    const capture = new Proxy(db.capture, {
+      get(target, prop) {
+        if (prop === 'create') {
+          return async () => {
+            throw new Error('database is locked');
+          };
+        }
+        const value = Reflect.get(target, prop) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    return new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'capture') return capture;
+        const value = Reflect.get(target, prop) as unknown;
+        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+  }
+
+  /** Real adapter, real client, fake Bot API that serves one text update until acknowledged. */
+  async function run(options: { noticeFails: boolean }) {
+    const { ctx } = createTestContext({ db: dbWhereCaptureCreateFails(testDb.db) });
+    const update = textUpdate('Buy milk tomorrow at 9am');
+    let controller!: PollingController;
+    const fake = createFakeTelegram({
+      onCall: (method, payload) => {
+        if (method === 'getUpdates') {
+          const offset = typeof payload.offset === 'number' ? payload.offset : undefined;
+          if (offset !== undefined && offset > update.update_id) {
+            controller.stop();
+            return { status: 200, body: { ok: true, result: [] } };
+          }
+          return { status: 200, body: { ok: true, result: [update] } };
+        }
+        if (method === 'sendMessage' && options.noticeFails) {
+          return { status: 502, body: { ok: false, error_code: 502, description: 'Bad Gateway' } };
+        }
+        return undefined;
+      },
+    });
+    const { adapter, client } = createTestTelegramAdapter(ctx, { fake });
+    controller = startTelegramPolling(ctx, client, adapter, {
+      sleep: async () => undefined,
+      maxUpdateAttempts: 2,
+    });
+    await controller.done;
+    return { controller, fake };
+  }
+
+  it('the owner is told it may not have been saved; no confirmation, no capture', async () => {
+    const { controller, fake } = await run({ noticeFails: false });
+
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]).toContain('could not process your message "Buy milk tomorrow at 9am"');
+    expect(fake.sent[0]).toContain('may not have been saved');
+    expect(fake.sent.join('\n')).not.toMatch(/Saved (this|as)/);
+    expect(await testDb.db.capture.count()).toBe(0);
+    expect(controller.status()).toMatchObject({ deadLetteredUpdates: 1, deadLetterNoticesFailed: 0 });
+  });
+
+  it('when the notice itself fails, the dead letter still stands and is counted', async () => {
+    const { controller, fake } = await run({ noticeFails: true });
+
+    expect(fake.callsTo('sendMessage')).toHaveLength(1); // attempted once, not retried
+    expect(fake.sent.join('\n')).not.toMatch(/Saved (this|as)/);
+    expect(await testDb.db.capture.count()).toBe(0);
+    expect(controller.status()).toMatchObject({ deadLetteredUpdates: 1, deadLetterNoticesFailed: 1 });
+    // Acknowledged after the dead letter completed: the final poll asked past it.
+    expect(controller.currentOffset()).toBe(textUpdate('x').update_id + 1);
   });
 });

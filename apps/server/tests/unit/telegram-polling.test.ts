@@ -15,6 +15,8 @@ import { TelegramApiError, TelegramClient, type TelegramUpdate } from '../../src
 import type { TelegramAdapter } from '../../src/telegram/handler.js';
 import { NotFoundError, ProviderError, RateLimitError, ValidationError } from '../../src/lib/errors.js';
 import {
+  DEAD_LETTER_BUTTON_NOTICE,
+  DEAD_LETTER_BUTTON_TOAST,
   deadLetterNotice,
   isPermanentFailure,
   pollingErrorCode,
@@ -50,6 +52,8 @@ function stubClient(overrides: Record<string, unknown>): TelegramClient {
     getMe: async () => ({ id: 1 }),
     getWebhookInfo: async () => ({ url: '' }),
     deleteWebhook: async () => undefined,
+    sendMessage: async () => ({ message_id: 1 }),
+    answerCallbackQuery: async () => undefined,
     ...overrides,
   } as unknown as TelegramClient;
 }
@@ -589,9 +593,6 @@ describe('telegram polling recovery', () => {
         handled.push(item.update_id);
         return { handled: true };
       },
-      sendText: async (chatId: number | string, text: string) => {
-        notices.push({ chatId, text });
-      },
     } as unknown as TelegramAdapter;
 
     const queue = [failing, update(6)];
@@ -601,6 +602,10 @@ describe('telegram polling recovery', () => {
         const pending = queue.filter((item) => offset === undefined || item.update_id >= offset);
         if (pending.length === 0) controller.stop();
         return pending;
+      },
+      sendMessage: async ({ chatId, text }: { chatId: number | string; text: string }) => {
+        notices.push({ chatId, text });
+        return { message_id: 1 };
       },
     });
     const { ctx, at } = recordingContext();
@@ -673,6 +678,146 @@ describe('telegram polling recovery', () => {
     expect(isPermanentFailure(new RateLimitError('slow down'))).toBe(false);
     expect(isPermanentFailure(new ProviderError('ai', 'down'))).toBe(false);
     expect(isPermanentFailure(new Error('database is locked'))).toBe(false);
+  });
+
+  it('a failed notice neither undoes the dead letter nor acknowledges the update early, and is logged', async () => {
+    const handled: number[] = [];
+    const offsets: (number | undefined)[] = [];
+    let offsetDuringNotice: number | undefined;
+    let controller!: PollingController;
+    const bad = {
+      update_id: 5,
+      message: { message_id: 50, date: 0, chat: { id: 777, type: 'private' }, text: 'Buy milk tomorrow' },
+    } as unknown as TelegramUpdate;
+    const adapter = {
+      handleUpdate: async (item: TelegramUpdate) => {
+        if (item.update_id === 5) throw new ValidationError('Capture text is invalid');
+        handled.push(item.update_id);
+        return { handled: true };
+      },
+    } as unknown as TelegramAdapter;
+    const queue = [update(4), bad, update(6)];
+    const client = stubClient({
+      getUpdates: async ({ offset }: { offset?: number }) => {
+        offsets.push(offset);
+        const pending = queue.filter((item) => offset === undefined || item.update_id >= offset);
+        if (pending.length === 0) controller.stop();
+        return pending;
+      },
+      sendMessage: async () => {
+        offsetDuringNotice = controller.currentOffset();
+        throw new TelegramApiError('Telegram sendMessage failed: Bad Gateway', { status: 502 });
+      },
+    });
+    const { ctx, at } = recordingContext();
+
+    controller = startTelegramPolling(ctx, client, adapter, { sleep: async () => undefined });
+    await controller.done;
+
+    // While the notice was being sent, update 5 was not acknowledged: the
+    // offset still pointed at it (4 had been handled).
+    expect(offsetDuringNotice).toBe(5);
+    // The dead letter stands; the next poll acknowledges 5 and 6 together.
+    expect(handled).toEqual([4, 6]);
+    expect(offsets).toEqual([undefined, 7]);
+    expect(controller.status()).toMatchObject({
+      deadLetteredUpdates: 1,
+      deadLetterNoticesFailed: 1,
+      lastErrorCode: 'update_dead_lettered',
+    });
+    const errors = at('error');
+    expect(errors.filter((line) => line.includes('dead-lettered: not processed'))).toHaveLength(1);
+    const noticeFailure = errors.find((line) => line.includes('could not tell the owner'));
+    expect(noticeFailure).toContain('"updateId":5');
+    expect(errors.join('\n')).not.toContain('Buy milk');
+  });
+
+  it('a dead-lettered button press tells the owner, without implying the action happened', async () => {
+    const toasts: { id: string; text?: string }[] = [];
+    const notices: { chatId: number | string; text: string }[] = [];
+    let polls = 0;
+    let controller!: PollingController;
+    const press = {
+      update_id: 9,
+      callback_query: {
+        id: 'cb-1',
+        from: { id: 555000111 },
+        message: { message_id: 3, date: 0, chat: { id: 777, type: 'private' } },
+        data: 'k:capture-1:TASK',
+      },
+    } as unknown as TelegramUpdate;
+    const adapter = {
+      handleUpdate: async () => {
+        throw new Error('database is locked');
+      },
+    } as unknown as TelegramAdapter;
+    const client = stubClient({
+      getUpdates: async () => {
+        polls += 1;
+        if (polls <= 2) return [press];
+        controller.stop();
+        return [];
+      },
+      answerCallbackQuery: async (input: { id: string; text?: string }) => {
+        toasts.push(input);
+      },
+      sendMessage: async ({ chatId, text }: { chatId: number | string; text: string }) => {
+        notices.push({ chatId, text });
+        return { message_id: 1 };
+      },
+    });
+
+    controller = startTelegramPolling(recordingContext().ctx, client, adapter, {
+      sleep: async () => undefined,
+      maxUpdateAttempts: 2,
+    });
+    await controller.done;
+
+    expect(toasts).toEqual([{ id: 'cb-1', text: DEAD_LETTER_BUTTON_TOAST }]);
+    expect(notices).toEqual([{ chatId: 777, text: DEAD_LETTER_BUTTON_NOTICE }]);
+    const text = notices[0]!.text;
+    expect(text).toContain('could not process a button');
+    expect(text).toContain('may not have taken effect');
+    expect(text).not.toMatch(/database|locked|error/i); // no internal details
+    expect(controller.status()).toMatchObject({ deadLetteredUpdates: 1, deadLetterNoticesFailed: 0 });
+    expect(controller.currentOffset()).toBe(10);
+  });
+
+  it('a dead-lettered button press whose notice fails is still dead-lettered, and the failure is logged', async () => {
+    let polls = 0;
+    let notifiedChat: number | string | undefined;
+    let controller!: PollingController;
+    const press = {
+      update_id: 11,
+      // No message attached (an old inline message): the notice goes to the presser's chat.
+      callback_query: { id: 'cb-2', from: { id: 555000111 }, data: 'U:capture-1' },
+    } as unknown as TelegramUpdate;
+    const adapter = {
+      handleUpdate: async () => {
+        throw new NotFoundError('Capture', 'capture-1');
+      },
+    } as unknown as TelegramAdapter;
+    const client = stubClient({
+      getUpdates: async () => {
+        polls += 1;
+        if (polls === 1) return [press];
+        controller.stop();
+        return [];
+      },
+      sendMessage: async ({ chatId }: { chatId: number | string }) => {
+        notifiedChat = chatId;
+        throw new TelegramApiError('Telegram sendMessage timed out', { timedOut: true });
+      },
+    });
+    const { ctx, at } = recordingContext();
+
+    controller = startTelegramPolling(ctx, client, adapter, { sleep: async () => undefined });
+    await controller.done;
+
+    expect(notifiedChat).toBe(555000111);
+    expect(controller.status()).toMatchObject({ deadLetteredUpdates: 1, deadLetterNoticesFailed: 1 });
+    expect(controller.currentOffset()).toBe(12);
+    expect(at('error').join('\n')).toContain('could not tell the owner');
   });
 
   it('names the failed message in the notice so the owner can resend it', () => {

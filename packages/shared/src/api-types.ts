@@ -187,6 +187,8 @@ export interface TelegramPollingStatusDto {
   /** Updates given up on since start-up; each one was logged and the owner was asked to resend. */
   deadLetteredUpdates: number;
   lastDeadLetterAt: string | null;
+  /** Dead-letter notices that could not be delivered to the owner (each one is also logged as an error). */
+  deadLetterNoticesFailed: number;
 }
 
 export interface HealthDto {

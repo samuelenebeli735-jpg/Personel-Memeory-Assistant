@@ -128,10 +128,14 @@ give each deployment its own bot token.
 
 Operational notes:
 
-- **Polling offset lives in memory.** A restart re-fetches the last few updates.
-  The `(source, externalId)` idempotency key means each one is recognised and no
-  second capture is stored — the bot simply replies "Already saved". Persistent
-  offsets may be added later; the current behaviour is intentional and safe.
+- **Polling offset lives in memory.** A restart re-fetches every update Telegram
+  has not yet seen acknowledged. For captures the `(source, externalId)`
+  idempotency key means each one is recognised and no second capture is stored —
+  the bot simply replies "Already saved". Commands are not de-duplicated: a
+  command handled just before the process stopped, but not yet acknowledged, can
+  run a second time (for example `/remind` creating a second reminder). The
+  window is the time between handling and the next poll, normally a fraction of
+  a second. Persistent offsets may be added later.
 - **The poll loop backs off.** Transient failures retry with exponential backoff
   (capped at 30 seconds) and honour Telegram's `retry_after`. The start-up token
   check retries the same way, so a server that starts before the network is
@@ -142,13 +146,36 @@ Operational notes:
   update fails (for example the database is briefly unavailable), Recall does
   not move past it: later updates wait, and the same update is fetched again
   after the normal backoff (`failed to handle telegram update N (attempt k of
-  10) - it will be retried`). Replaying is safe because each message is
-  de-duplicated by its Telegram id. An update that cannot succeed is
-  dead-lettered so it cannot block the bot forever: immediately when the input
-  is invalid, otherwise after 10 attempts (about 4 minutes). A dead letter is
-  logged as an error (ids and reason only, never the text), counted in health
-  (`deadLetteredUpdates`, `lastDeadLetterAt`), and the bot tells you which
-  message it could not process so you can send it again.
+  10) - it will be retried`). A capture is de-duplicated by its Telegram
+  message id, so a retry cannot store it twice; a voice note can be downloaded
+  and transcribed again on a retry if the failure came after transcription. An
+  update that cannot succeed is dead-lettered so it cannot block the bot
+  forever: immediately when the input is invalid, otherwise after 10 attempts.
+  The nine waits before the tenth attempt are 1 + 2 + 4 + 8 + 16 + 30 + 30 + 30
+  + 30 = 151 seconds, about 2.5 minutes (longer if an earlier poll failure had
+  already raised the backoff). A dead letter is logged as an error (ids and
+  reason only, never the text), counted in health (`deadLetteredUpdates`,
+  `lastDeadLetterAt`), and the bot tells you: for a message, which one it could
+  not process and that it may not have been saved; for a button press, that its
+  action may not have taken effect. If that notice cannot be delivered, the
+  dead letter still stands; the failure is logged as an error (`could not tell
+  the owner about a dead-lettered telegram update`) and counted in
+  `deadLetterNoticesFailed`.
+- **Retry and dead-letter state is not durable.** All of it is held in process
+  memory: attempt counts, retry timing, the offset and the health counters. A
+  restart resets them; there is no dead-letter record in the database. In
+  practice:
+  - An update not yet acknowledged when the process stops (one being retried,
+    or one handled but not yet acknowledged) is delivered again after the
+    restart and starts again at attempt 1. Captures are recognised by message
+    id; commands can run twice; voice notes can be downloaded and transcribed
+    again.
+  - A dead-lettered update that was already acknowledged is not replayed after a
+    restart; Telegram does not redeliver it and Recall keeps no copy.
+  - The error log (if your process manager keeps it) and your Telegram chat
+    history may still show what happened, but they are evidence, not a Recall
+    dead-letter record, and nothing recovers the message automatically. If in
+    doubt, check the dashboard and resend.
 - **Two copies polling with one token.** Telegram allows one poller per bot. The
   second gets a 409 and logs `another copy of Recall is polling with this bot
   token`; Recall deletes nothing and keeps retrying, so it takes over by itself
@@ -159,7 +186,8 @@ Operational notes:
   (`webhook_conflict`, `poller_conflict`, `update_failed`,
   `update_dead_lettered`, `http_<status>`, `timeout`, `network`),
   `stoppedReason` (`token_rejected`, `shutdown`), `retryingUpdateId` (an update
-  being retried) and `deadLetteredUpdates` / `lastDeadLetterAt`. It never contains messages
+  being retried), `deadLetteredUpdates` / `lastDeadLetterAt` and
+  `deadLetterNoticesFailed`. It never contains messages
   or the token, is kept in memory and resets on restart. It is `null` in webhook
   mode or when the bot is off.
 - **Shutdown.** `SIGINT`/`SIGTERM` stops polling (with a 2-second cap on the

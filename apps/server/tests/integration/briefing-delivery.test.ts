@@ -692,6 +692,42 @@ describe('scheduled briefing delivery — 2-hour limit (D59)', () => {
     expect(rows[0]).toMatchObject({ status: 'SKIPPED', error: BRIEFING_LATE_REASON, attemptedAt: null });
   });
 
+  it('a send that starts before the deadline and finishes after it is delivered, not skipped', async () => {
+    // Briefing 09:00 Lagos = 08:00Z, deadline 10:00:00Z. The tick starts at
+    // 09:59:59Z; Telegram holds the request open until 10:00:04Z, then succeeds.
+    h.clock.set(new Date('2026-10-17T09:59:59.000Z'));
+    await enableBriefing(h.ctx, { briefingTime: '09:00' });
+    let releaseSend!: () => void;
+    const sendHeld = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let sendStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    const send = h.notifier.send.bind(h.notifier);
+    h.notifier.send = async (message) => {
+      sendStarted();
+      await sendHeld; // the request is in flight while the deadline passes
+      return send(message);
+    };
+
+    const tick = h.scheduler.tick();
+    await started;
+    expect(h.clock.now().toISOString()).toBe('2026-10-17T09:59:59.000Z'); // started in time
+    h.clock.set(new Date('2026-10-17T10:00:04.000Z')); // past the deadline
+    releaseSend();
+    const report = await tick;
+
+    expect(report.briefings.delivered).toBe(1);
+    expect(report.briefings.skipped).toBe(0);
+    expect(h.notifier.sent).toHaveLength(1);
+    const rows = await rowsOf(h.ctx);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('DELIVERED');
+    expect(rows[0]!.deliveredAt!.toISOString()).toBe('2026-10-17T10:00:04.000Z');
+  });
+
   it('records the time the send finished, and schedules a retry from it', async () => {
     await enableBriefing(h.ctx);
     const send = h.notifier.send.bind(h.notifier);

@@ -188,7 +188,9 @@ Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
 follow-up that makes Telegram `/settings` report the AI privacy rule adds 8
 server tests (746), and the PR #2 review fixes (Telegram acknowledges an update
 only after handling it; the briefing deadline is rechecked before sending) add
-6 more, giving the 752 below. The server suite passes both with the test
+6 more (752), and the verification follow-up (dead-letter notice failures,
+dead-lettered button presses, a slow briefing send) adds 6 more, giving the 758
+below. The server suite passes both with the test
 host pinned to `Pacific/Kiritimati` (UTC+14, the default) and with
 `RECALL_TEST_HOST_TZ=UTC`.
 
@@ -196,7 +198,7 @@ Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
  Test Files  42 passed (42)
-      Tests  752 passed (752)
+      Tests  758 passed (758)
 ```
 
 Before the Windows worker cap, a default-worker run timed out in four setup hooks
@@ -246,7 +248,7 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 | `unit/auth.test.ts` | 14 | passed |
 | `unit/telegram-format.test.ts` | 27 | passed |
 | `unit/telegram-notifier.test.ts` | 9 | passed |
-| `unit/telegram-polling.test.ts` | 21 | passed |
+| `unit/telegram-polling.test.ts` | 24 | passed |
 | `unit/telegram-client.test.ts` | 3 | passed |
 | `unit/chat-providers.test.ts` | 2 | passed |
 | `unit/ai-transport.test.ts` | 25 | passed |
@@ -271,16 +273,16 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 | `integration/reminder-scheduler.test.ts` | 16 | passed |
 | `integration/reminder-api.test.ts` | 10 | passed |
 | `integration/telegram-reminders.test.ts` | 19 | passed |
-| `integration/telegram-bridge.test.ts` | 3 | passed |
+| `integration/telegram-bridge.test.ts` | 5 | passed |
 | `integration/detail-routes.test.ts` | 3 | passed |
 | `integration/http-hardening.test.ts` | 5 | passed |
 | `integration/ask-api.test.ts` | 19 | passed |
 | `integration/ask-temporal.test.ts` | 21 | passed |
 | `integration/ai-privacy.test.ts` | 15 | passed |
 | `integration/briefing-api.test.ts` | 26 | passed |
-| `integration/briefing-delivery.test.ts` | 46 | passed |
+| `integration/briefing-delivery.test.ts` | 47 | passed |
 | `integration/dashboard-api.test.ts` | 2 | passed |
-| **Total** | **752** | **all passed** |
+| **Total** | **758** | **all passed** |
 
 Dashboard suite:
 
@@ -719,7 +721,8 @@ Deliberately included as first-class cases, not afterthoughts:
 | Network not ready at start-up | `telegram-polling.test.ts` — token check retries, then polling starts |
 | Polling down while reminders are due | `telegram-bridge.test.ts` — reminder and briefing still delivered |
 | One bad update in a batch | `telegram-polling.test.ts` — the failed update is fetched again and later updates are not acknowledged ahead of it; one that keeps failing (or is invalid) is dead-lettered visibly and the owner is asked to resend |
-| Briefing send starting after its deadline | `briefing-delivery.test.ts` — the deadline is rechecked on the live clock before sending; `deliveredAt` is when the send finished |
+| Dead-letter notice fails, or a button press is dead-lettered | `telegram-polling.test.ts` — the dead letter stands, the update is acknowledged only after it completes, the failure is logged and counted; a button press gets a notice that never claims the action happened. `telegram-bridge.test.ts` — with the real adapter and a failing capture write: no "Saved" confirmation, no capture row, the owner is told it may not have been saved |
+| Briefing send starting after its deadline | `briefing-delivery.test.ts` — the deadline is rechecked on the live clock before sending; a send that started in time but finished after the deadline is delivered; `deliveredAt` is when the send finished |
 | Restart with pending reminders | `reminder-scheduler.test.ts` and `briefing-delivery.test.ts` |
 | Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts`, `briefing-service.test.ts`, `briefing-api.test.ts` |
 | Unsupported answer claim | `ask-service.test.ts` and `ask-api.test.ts` — statement removed; deterministic fallback |

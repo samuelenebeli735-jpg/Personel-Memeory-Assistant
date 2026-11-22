@@ -33,7 +33,20 @@
  * that cannot succeed is dead-lettered instead of blocking the bot forever:
  * at once for a permanent failure (invalid input), otherwise after
  * `TELEGRAM_UPDATE_MAX_ATTEMPTS`. Dead-lettering is visible: an error log, a
- * health counter, and a message asking the owner to resend.
+ * health counter, and a message to the owner (for a message or a button press).
+ *
+ * Limits — none of this is durable:
+ * - Attempt counts, retry timing (an in-process sleep), the offset and every
+ *   health counter live in process memory. A restart resets them all.
+ * - There is no database record of a dead letter. Once it is acknowledged,
+ *   Telegram will not redeliver it, so nothing replays it after a restart; the
+ *   error log and the owner's chat history are evidence, not a Recall record.
+ * - An update not yet acknowledged when the process stops (one being retried,
+ *   or one handled but not yet acknowledged by the next poll) is delivered
+ *   again after a restart and handled from attempt 1. Captures recognise it by
+ *   message id; a command can run twice; a voice note can be downloaded and
+ *   transcribed again (which also happens on each in-process retry when the
+ *   failure came after transcription).
  *
  * The offset is kept in memory. A restart therefore re-fetches the last few
  * updates from Telegram, which is safe because ingestion is idempotent on
@@ -49,8 +62,10 @@ import { TelegramApiError, type TelegramClient, type TelegramUpdate } from './cl
 import type { TelegramAdapter } from './handler.js';
 
 /**
- * Attempts for one update before it is dead-lettered. With the capped backoff
- * this is roughly four minutes, enough to ride out a short database outage.
+ * Attempts for one update before it is dead-lettered. The nine waits before the
+ * tenth attempt follow the capped backoff: 1 + 2 + 4 + 8 + 16 + 30 + 30 + 30 + 30
+ * = 151 seconds, about 2.5 minutes (longer if the backoff was already raised by
+ * an earlier poll failure). Counted in process memory only; a restart resets it.
  */
 export const TELEGRAM_UPDATE_MAX_ATTEMPTS = 10;
 
@@ -124,6 +139,13 @@ export function isPermanentFailure(error: unknown): boolean {
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
+/** Short answer shown on a dead-lettered button, if Telegram still accepts one. */
+export const DEAD_LETTER_BUTTON_TOAST = 'Sorry, that button could not be processed.';
+
+/** Chat message for a dead-lettered button press. Never implies the action happened. */
+export const DEAD_LETTER_BUTTON_NOTICE =
+  'Sorry, I could not process a button you pressed, even after retrying. Its action may not have taken effect. Please check the dashboard before trying again.';
+
 /** Tells the owner which message was not processed, so they can send it again. */
 export function deadLetterNotice(message: NonNullable<TelegramUpdate['message']>): string {
   const what =
@@ -184,11 +206,19 @@ export function startTelegramPolling(
     retryingUpdateId: null,
     deadLetteredUpdates: 0,
     lastDeadLetterAt: null,
+    deadLetterNoticesFailed: 0,
   };
 
   /**
    * Gives up on one update, visibly: an error log (ids and the reason, never
-   * the text), a health counter, and a message asking the owner to resend.
+   * the text), health counters, and a message telling the owner it was not
+   * processed. The outcome is recorded before the owner is told, and a failed
+   * notice is itself logged and counted; it never undoes the dead letter.
+   * The caller acknowledges the update only after this returns.
+   *
+   * The notice goes through the client directly (which throws on failure)
+   * rather than the adapter's `sendText` (which swallows failures), so a
+   * notice that did not arrive is observable here.
    */
   async function deadLetter(update: TelegramUpdate, error: unknown, attempts: number): Promise<void> {
     state.deadLetteredUpdates += 1;
@@ -202,12 +232,23 @@ export function startTelegramPolling(
       permanent: isPermanentFailure(error),
       reason: reasonOf(error),
     });
-    const message = update.message;
-    if (!message) return;
+
+    const query = update.callback_query;
+    let notice: { chatId: number | string; text: string } | null = null;
+    if (update.message) {
+      notice = { chatId: update.message.chat.id, text: deadLetterNotice(update.message) };
+    } else if (query) {
+      // Stops the button's spinner if Telegram still accepts the answer; the
+      // client never throws here (an expired query is only logged).
+      await client.answerCallbackQuery({ id: query.id, text: DEAD_LETTER_BUTTON_TOAST });
+      notice = { chatId: query.message?.chat.id ?? query.from.id, text: DEAD_LETTER_BUTTON_NOTICE };
+    }
+    if (!notice) return;
     try {
-      await adapter.sendText(message.chat.id, deadLetterNotice(message));
+      await client.sendMessage({ chatId: notice.chatId, text: notice.text });
     } catch (notifyError) {
-      ctx.logger.warn('could not tell the owner about a dead-lettered update', {
+      state.deadLetterNoticesFailed += 1;
+      ctx.logger.error('could not tell the owner about a dead-lettered telegram update', {
         updateId: update.update_id,
         reason: reasonOf(notifyError),
       });
