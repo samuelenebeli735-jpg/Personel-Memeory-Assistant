@@ -228,6 +228,21 @@ export interface SearchResponse {
   query: Record<string, unknown>;
 }
 
+/**
+ * The period a time question was answered for ("tomorrow", "this week").
+ * Clients display it without parsing the answer text.
+ */
+export interface AskPeriod {
+  /** Inclusive start, UTC ISO-8601. */
+  start: string;
+  /** Exclusive end, UTC ISO-8601. */
+  end: string;
+  /** Human-readable label in the owner's zone, e.g. "Tomorrow, Sun 18 Oct". */
+  label: string;
+  /** IANA zone the period was interpreted in (the owner's Settings zone). */
+  timeZone: string;
+}
+
 export interface AskResponse {
   grounded: boolean;
   answer: string;
@@ -236,6 +251,8 @@ export interface AskResponse {
   provider: string;
   /** True when the answer came from deterministic retrieval, not a model. */
   deterministic: boolean;
+  /** Present when the question was about a period of time. Optional and additive. */
+  period?: AskPeriod;
 }
 
 export interface CaptureAckDto {

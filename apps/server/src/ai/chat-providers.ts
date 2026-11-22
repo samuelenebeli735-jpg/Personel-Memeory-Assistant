@@ -93,7 +93,9 @@ function answerUserPrompt(request: AnswerRequest): string {
   const records = request.evidence
     .map(
       (item: EvidenceRecord) =>
-        `- id=${item.id} type=${item.type} when=${item.timestamp}${item.status ? ` status=${item.status}` : ''}\n  title: ${item.title}\n  snippet: ${item.snippet}`,
+        // The owner-local time (same zone as "Local now" above), so the model
+        // never converts UTC itself; UTC only when no zone was supplied.
+        `- id=${item.id} type=${item.type} when=${item.localTime ?? item.timestamp}${item.status ? ` status=${item.status}` : ''}\n  title: ${item.title}\n  snippet: ${item.snippet}`,
     )
     .join('\n');
   return [

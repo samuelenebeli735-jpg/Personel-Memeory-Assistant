@@ -23,12 +23,14 @@
  * the failure mode of a too-strict filter is a less useful answer, while the
  * failure mode of a too-lenient one is a fabricated memory.
  */
-import type { SearchEntityType, SearchResultItem } from '@recall/shared';
+import type { AskPeriod, SearchEntityType, SearchResultItem } from '@recall/shared';
+import { DateTime } from 'luxon';
 
 import type { EvidenceRecord } from '../ai/types.js';
 import type { AppContext } from '../context.js';
 import type { Db } from '../db/client.js';
 import { normalizeWhitespace, truncate } from '../lib/text.js';
+import { answerTemporalQuestion } from './ask-temporal.js';
 import { getSettings } from './settings-service.js';
 import { searchAll, visibleCaptureText } from './search-service.js';
 
@@ -57,6 +59,53 @@ export interface AskOutcome {
   provider: string;
   /** True when the answer came from deterministic retrieval, not a model. */
   deterministic: boolean;
+  /** The period a time question was answered for, when it named one. */
+  period?: AskPeriod;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Local dates and times                                                       */
+/* -------------------------------------------------------------------------- */
+
+/** A record's timestamp as the owner reads it, e.g. "Sun 18 Oct 2026, 09:00". */
+export function localWhen(timestamp: string, timeZone: string): string {
+  const local = DateTime.fromISO(timestamp, { zone: timeZone });
+  return local.isValid ? local.toFormat('ccc d LLL yyyy, HH:mm') : timestamp;
+}
+
+/**
+ * Every way an answer may legitimately write a record's date and time, in the
+ * owner's zone: weekday and month names, day numbers (also "18th"), the ISO
+ * date, 24-hour and 12-hour clock forms ("13:00", "1:00 pm", "1pm"), and the
+ * relative day ("today", "tomorrow", "yesterday") when it applies. A date in an
+ * answer is supported only when it is one of these renderings of a cited
+ * record's own timestamp.
+ */
+export function dateVocabulary(timestamp: string, timeZone: string, now?: Date): string {
+  const local = DateTime.fromISO(timestamp, { zone: timeZone });
+  if (!local.isValid) return '';
+  const day = local.day;
+  const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+  const hour12 = local.toFormat('h');
+  const minute = local.toFormat('mm');
+  const meridiem = local.toFormat('a').toLowerCase();
+  const parts = [
+    local.toFormat('cccc ccc LLLL LLL'),
+    `${day} ${day}${suffix}`,
+    local.toFormat('yyyy yyyy-MM-dd'),
+    local.toFormat('HH:mm'),
+    `${hour12}:${minute} ${meridiem} ${hour12}${meridiem}`,
+    minute === '00' ? `${hour12} ${meridiem}` : '',
+  ];
+  if (now) {
+    // Local midnights differ by 23-25 hours across DST; rounding gives the day count.
+    const today = DateTime.fromJSDate(now, { zone: timeZone }).startOf('day');
+    const days = Math.round(local.startOf('day').diff(today, 'days').days);
+    if (days === 0) parts.push('today tonight');
+    if (days === 1) parts.push('tomorrow');
+    if (days === -1) parts.push('yesterday');
+  }
+  return parts.join(' ');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -141,18 +190,57 @@ interface EvidenceHaystack {
   words: Set<string>;
   /** Digits and words, with punctuation replaced by spaces. */
   text: string;
+  /** Every clock time in the evidence, normalised to 24-hour "HH:MM". */
+  clocks: Set<string>;
 }
 
-function buildHaystack(evidence: EvidenceRecord[]): EvidenceHaystack {
+const CLOCK_PATTERN = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b/gi;
+
+/**
+ * Clock times in a text, normalised to "HH:MM" ("9am", "9:00 am", "09:00"
+ * all become "09:00"). A time is checked as one value: checking "10" and "00"
+ * separately would accept "10:00" against a record dated 2026-10-21 at 09:00.
+ */
+export function clocksIn(text: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(CLOCK_PATTERN)) {
+    let hour: number;
+    let minute: number;
+    if (match[3]) {
+      hour = Number(match[1]) % 12 + (match[3].toLowerCase() === 'pm' ? 12 : 0);
+      minute = Number(match[2] ?? '0');
+    } else {
+      hour = Number(match[4]);
+      minute = Number(match[5]);
+    }
+    if (hour > 23 || minute > 59) continue;
+    found.push(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+  }
+  return found;
+}
+
+export interface GroundingOptions {
+  /** Owner zone: when given, each record's own date and time count as evidence. */
+  timeZone?: string;
+  /** Reference for "today"/"tomorrow"/"yesterday". */
+  now?: Date;
+}
+
+function buildHaystack(evidence: EvidenceRecord[], options: GroundingOptions = {}): EvidenceHaystack {
   const parts: string[] = [];
   for (const item of evidence) {
     parts.push(item.title ?? '');
     parts.push(item.snippet ?? '');
     parts.push(item.status ?? '');
+    // A record's date is part of what it says. Only this record's own
+    // timestamp is added, so a date that belongs to no cited record still fails.
+    if (options.timeZone && item.timestamp) {
+      parts.push(dateVocabulary(item.timestamp, options.timeZone, options.now));
+    }
   }
   const raw = parts.join(' \n ');
   const text = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
-  return { words: new Set(tokenize(raw)), text };
+  return { words: new Set(tokenize(raw)), text, clocks: new Set(clocksIn(raw)) };
 }
 
 /**
@@ -208,11 +296,15 @@ export interface GroundingResult {
  * A statement is supported when every content token in it appears in the
  * evidence and it does not assert a negation the evidence does not contain.
  */
-export function groundAnswer(answer: string, cited: EvidenceRecord[]): GroundingResult {
+export function groundAnswer(
+  answer: string,
+  cited: EvidenceRecord[],
+  options: GroundingOptions = {},
+): GroundingResult {
   const claims = splitClaims(answer);
   if (claims.length === 0) return { supported: [], dropped: [], answer: '' };
 
-  const haystack = buildHaystack(cited);
+  const haystack = buildHaystack(cited, options);
   const supported: string[] = [];
   const dropped: string[] = [];
 
@@ -226,7 +318,9 @@ export function groundAnswer(answer: string, cited: EvidenceRecord[]): Grounding
     const isSupported = content.every((token) =>
       /\d/.test(token) ? containsNumber(haystack, token) : containsWord(haystack, token),
     );
-    if (!isSupported || unsupportedNegation(claim, haystack)) {
+    // A clock time must match a time the evidence actually states, as a whole.
+    const timesSupported = clocksIn(claim).every((clock) => haystack.clocks.has(clock));
+    if (!isSupported || !timesSupported || unsupportedNegation(claim, haystack)) {
       dropped.push(claim);
       continue;
     }
@@ -409,8 +503,12 @@ export async function enrichEvidence(
   });
 }
 
-/** Projects search results into the shape the AI provider receives. */
-export function buildEvidenceRecords(items: SearchResultItem[]): EvidenceRecord[] {
+/**
+ * Projects search results into the shape the AI provider receives. With a
+ * zone, each record also carries its owner-local date and time, so the model
+ * never has to convert UTC itself.
+ */
+export function buildEvidenceRecords(items: SearchResultItem[], timeZone?: string): EvidenceRecord[] {
   return items.map((item) => ({
     type: item.type,
     id: item.id,
@@ -418,6 +516,7 @@ export function buildEvidenceRecords(items: SearchResultItem[]): EvidenceRecord[
     snippet: item.snippet,
     timestamp: item.timestamp,
     status: item.status ?? null,
+    ...(timeZone ? { localTime: localWhen(item.timestamp, timeZone) } : {}),
   }));
 }
 
@@ -442,12 +541,14 @@ export function validateCitations(citedIds: unknown, evidence: SearchResultItem[
  * It is built from the evidence itself, so it is grounded by construction: it
  * names the records that were found and nothing else.
  */
-export function deterministicAnswer(evidence: SearchResultItem[]): string {
+export function deterministicAnswer(evidence: SearchResultItem[], timeZone?: string): string {
   if (evidence.length === 0) return 'I could not find anything about that.';
   const byType = new Map<string, string[]>();
   for (const item of evidence) {
     const list = byType.get(item.type) ?? [];
-    list.push(item.title);
+    // With a zone, each record carries its own local date and time, so "when
+    // is my dentist appointment?" is answered even without a model.
+    list.push(timeZone ? `${item.title} (${localWhen(item.timestamp, timeZone)})` : item.title);
     byType.set(item.type, list);
   }
   const parts = [...byType.entries()].map(([type, titles]) => `${type}: ${titles.join('; ')}`);
@@ -476,6 +577,30 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
     throw new Error(`Question too long (max ${MAX_QUESTION_LENGTH} characters)`);
   }
 
+  // The owner's configured zone decides what "today", "tomorrow" and every
+  // displayed time mean — never the host's zone.
+  const settings = await getSettings(ctx.db, ctx.defaults);
+  const timeZone = settings.timeZone;
+  const referenceNow = ctx.clock.now();
+
+  // Questions about time are answered from the records' own timestamps,
+  // by code, without a model (owner decision, R1-03).
+  const temporal = await answerTemporalQuestion(ctx.db, question, {
+    timeZone,
+    now: referenceNow,
+    ...(request.types ? { types: request.types } : {}),
+  });
+  if (temporal) {
+    return {
+      grounded: temporal.grounded,
+      answer: temporal.answer,
+      evidence: temporal.evidence,
+      provider: 'deterministic',
+      deterministic: true,
+      ...(temporal.period ? { period: temporal.period } : {}),
+    };
+  }
+
   const evidenceItems = await retrieveEvidence(ctx, question, {
     types: request.types,
     limit: request.limit,
@@ -491,11 +616,6 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
     };
   }
 
-  // The owner's configured zone decides what "now" means for the model.
-  const settings = await getSettings(ctx.db, ctx.defaults);
-  const timeZone = settings.timeZone;
-  const referenceNow = ctx.clock.now();
-
   // `aiEnabled` is the owner's switch, not a capability flag: a configured
   // provider must never be called while the owner has disabled AI.
   const ai = settings.aiEnabled ? ctx.ai : null;
@@ -505,7 +625,7 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
         question,
         timeZone,
         referenceNow,
-        evidence: buildEvidenceRecords(evidenceItems),
+        evidence: buildEvidenceRecords(evidenceItems, timeZone),
       });
 
       const citedIds = validateCitations(aiAnswer?.citedIds, evidenceItems);
@@ -513,7 +633,8 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
         const citedItems = evidenceItems.filter((item) => citedIds.includes(item.id));
         const grounding = groundAnswer(
           typeof aiAnswer.answer === 'string' ? aiAnswer.answer : '',
-          buildEvidenceRecords(citedItems),
+          buildEvidenceRecords(citedItems, timeZone),
+          { timeZone, now: referenceNow },
         );
 
         if (grounding.supported.length > 0) {
@@ -549,7 +670,7 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
 
   return {
     grounded: true,
-    answer: deterministicAnswer(evidenceItems),
+    answer: deterministicAnswer(evidenceItems, timeZone),
     evidence: evidenceItems,
     provider: 'deterministic',
     deterministic: true,

@@ -33,6 +33,8 @@ export interface EvidenceRecord {
   snippet: string;
   timestamp: string;
   status?: string | null;
+  /** The timestamp in the owner's zone, e.g. "Sun 18 Oct 2026, 09:00". */
+  localTime?: string;
 }
 
 export interface AnswerRequest {
