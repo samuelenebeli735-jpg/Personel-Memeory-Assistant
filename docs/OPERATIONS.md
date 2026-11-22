@@ -103,6 +103,29 @@ Polling and webhook mode are mutually exclusive; there is no fallback from one t
 the other, so a misconfigured deployment fails loudly instead of silently dropping
 messages.
 
+**Telegram is a temporary bridge (D58).** It delivers reminders and the daily
+briefing, and accepts captures and commands, until ALIVE's native Windows and
+Android notifications exist. It is kept reliable but not extended, and it will be
+retired only after native notifications are implemented, tested and confirmed
+reliable.
+
+**What depends on polling.** Polling (or the webhook) carries only what you send
+*to* the bot: captures, voice notes, `/snooze`, `/cancel`, `/ask` and the
+correction buttons. Reminders and briefings are sent with `sendMessage` to the
+first `TELEGRAM_OWNER_IDS` entry and keep working while polling is down.
+
+**Sound.** Reminders arrive with the normal Telegram alert (sound or vibration,
+as set on the phone). The daily briefing arrives silently. Quiet hours and the
+daily cap still apply to both.
+
+**Switching from webhook to polling.** Telegram refuses `getUpdates` while a
+webhook is set (HTTP 409). In polling mode Recall checks for a webhook before the
+first poll and removes it, keeping pending updates (`drop_pending_updates:
+false`); the log names the old webhook's host only. If the webhook comes back
+mid-run, it is removed again at most once every 10 minutes. A webhook that keeps
+returning means another deployment is using the same bot token in webhook mode:
+give each deployment its own bot token.
+
 Operational notes:
 
 - **Polling offset lives in memory.** A restart re-fetches the last few updates.
@@ -110,9 +133,22 @@ Operational notes:
   second capture is stored — the bot simply replies "Already saved". Persistent
   offsets may be added later; the current behaviour is intentional and safe.
 - **The poll loop backs off.** Transient failures retry with exponential backoff
-  and honour Telegram's `retry_after`. An invalid token aborts polling with
-  `telegram getMe failed` but never stops the HTTP API — captures via the web or
-  CLI keep working, so a bot outage cannot lose data.
+  (capped at 30 seconds) and honour Telegram's `retry_after`. The start-up token
+  check retries the same way, so a server that starts before the network is
+  ready begins polling once it is. Only a rejected token (401/403/404) stops
+  polling, with `telegram rejected the bot token`; it never stops the HTTP API —
+  captures via the web or CLI keep working, so a bot outage cannot lose data.
+- **Two copies polling with one token.** Telegram allows one poller per bot. The
+  second gets a 409 and logs `another copy of Recall is polling with this bot
+  token`; Recall deletes nothing and keeps retrying, so it takes over by itself
+  once the other copy stops. Stop one of them.
+- **Health shows the polling state.** `GET /api/health` reports
+  `providers.telegram.polling`: `state` (`starting`, `running`, `retrying`,
+  `stopped`), `lastPollAt`, `lastErrorAt`, a short `lastErrorCode`
+  (`webhook_conflict`, `poller_conflict`, `http_<status>`, `timeout`, `network`)
+  and `stoppedReason` (`token_rejected`, `shutdown`). It never contains messages
+  or the token, is kept in memory and resets on restart. It is `null` in webhook
+  mode or when the bot is off.
 - **Shutdown.** `SIGINT`/`SIGTERM` stops polling (with a 2-second cap on the
   in-flight long poll) before the HTTP server closes.
 - **Webhook registration is done for you.** On boot in webhook mode the process
@@ -255,7 +291,9 @@ AI classification and cache:
 `GET /api/health` returns HTTP 200 with `status: "degraded"` when a dependency is
 down, and includes the database latency, scheduler state (last tick, due count)
 and whether AI/STT/Telegram are configured and enabled. This distinguishes
-"process down" from "dependency down".
+"process down" from "dependency down". In polling mode it also shows whether
+Telegram polling is actually working (`providers.telegram.polling`, see
+"Telegram bot runtime").
 
 ## 6a. Reminder scheduler configuration and behavior
 
@@ -468,8 +506,12 @@ substitute for exercising the owner's real backup on the deployment host.
 | Port already in use | Change `PORT`, or stop the other process. |
 | Bot ignores your messages | `TELEGRAM_OWNER_IDS` does not contain your Telegram user id (not your username). Check with `npm run recall -- doctor` and the startup log line. |
 | Bot replies "This bot is private" | You are messaging from an id that is not in `TELEGRAM_OWNER_IDS`. |
-| `telegram getMe failed - polling not started` | The bot token is wrong or revoked. Nothing else is affected; capture via the API/CLI still works. |
+| `telegram rejected the bot token ... - polling stopped` | The bot token is wrong or revoked. Nothing else is affected; capture via the API/CLI still works. Fix the token and restart. |
+| `telegram getMe failed - retrying before polling starts` | Telegram is unreachable at start-up (often the network is not up yet). Recall keeps retrying and starts polling once it can. |
 | `telegram polling failed - retrying` | A transient network or Telegram error. Recall backs off (and honours `retry_after`) and recovers on its own. |
+| `telegram webhook is set - removing it so polling can start` | The bot was last used in webhook mode. Expected once after switching to polling. |
+| `telegram webhook keeps returning - another deployment may be using this bot token in webhook mode` | Another deployment re-registers its webhook. Give each deployment its own bot token. |
+| `another copy of Recall is polling with this bot token` | Two processes poll with the same token. Stop one; the other recovers by itself. |
 | Duplicate-looking behaviour after a restart | A restart re-fetches the last few updates because the polling offset is in memory. Idempotency means no second capture is stored; the reply is simply "Already saved". |
 | Webhook returns 401 | `TELEGRAM_WEBHOOK_SECRET` on the server does not match the `secret_token` Telegram sends. Re-register by restarting the server. |
 | Webhook returns 503 | `TELEGRAM_WEBHOOK_SECRET` is not set. Webhook mode will not accept unsigned updates. |

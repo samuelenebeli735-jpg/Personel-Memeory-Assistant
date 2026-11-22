@@ -172,6 +172,18 @@ export interface SettingsDto {
   updatedAt: string;
 }
 
+/** Telegram polling state for health. Times and a short code only — never messages or tokens. */
+export interface TelegramPollingStatusDto {
+  /** starting: token check / webhook removal; retrying: last poll failed. */
+  state: 'starting' | 'running' | 'retrying' | 'stopped';
+  /** Last successful `getUpdates` (ISO). */
+  lastPollAt: string | null;
+  lastErrorAt: string | null;
+  /** e.g. `webhook_conflict`, `poller_conflict`, `http_502`, `timeout`, `network`. */
+  lastErrorCode: string | null;
+  stoppedReason: 'token_rejected' | 'shutdown' | null;
+}
+
 export interface HealthDto {
   status: 'ok' | 'degraded';
   version: string;
@@ -200,7 +212,14 @@ export interface HealthDto {
       lastFailureCode?: string | null;
     };
     stt: { provider: string; configured: boolean; enabled: boolean };
-    telegram: { enabled: boolean; mode: string; configured: boolean; ownerConfigured: boolean };
+    telegram: {
+      enabled: boolean;
+      mode: string;
+      configured: boolean;
+      ownerConfigured: boolean;
+      /** Present while the bot runs in polling mode; null otherwise. */
+      polling?: TelegramPollingStatusDto | null;
+    };
   };
   counts: { captures: number; tasks: number; reminders: number; pendingDeliveries: number };
 }

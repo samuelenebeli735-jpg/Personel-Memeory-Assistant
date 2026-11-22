@@ -45,6 +45,11 @@ export interface OutboundMessage {
   text: string;
   /** When true the message is a proactive notification, not a reply. */
   proactive?: boolean;
+  /**
+   * Deliver without sound or vibration. Reminders leave this off so the phone
+   * alerts; the daily briefing sets it (quiet hours still gate both).
+   */
+  silent?: boolean;
   /** Correlation id so a duplicate send can be detected by the channel. */
   idempotencyKey?: string;
   /** Optional inline keyboard rows of [label, callbackData]. */

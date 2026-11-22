@@ -242,6 +242,8 @@ async function attemptDelivery(
   const outcome = await attempt.notifier.send({
     text,
     proactive: true,
+    // A digest, not an alarm: arrives without sound. Reminders stay audible.
+    silent: true,
     idempotencyKey: delivery.idempotencyKey,
   });
 

@@ -12,6 +12,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import type { HealthDto } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
 import { AppError, toAppError } from '../lib/errors.js';
@@ -30,7 +31,7 @@ export interface RuntimeStatus {
   version: string;
   startedAt: Date;
   schedulerStatus(): SchedulerStatusSnapshot;
-  telegramStatus(): { enabled: boolean; mode: string; configured: boolean; ownerConfigured: boolean };
+  telegramStatus(): HealthDto['providers']['telegram'];
 }
 
 export interface BuildServerOptions {

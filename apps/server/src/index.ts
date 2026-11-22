@@ -105,6 +105,7 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
 
   // The scheduler is database-backed: this object only owns the tick loop.
   const scheduler: ReminderScheduler = createReminderScheduler(ctx);
+  let polling: PollingController | null = null;
 
   const runtime: RuntimeStatus = {
     version: config.version,
@@ -115,6 +116,8 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
       mode: config.telegram.mode,
       configured: ctx.capabilities.telegramConfigured,
       ownerConfigured: config.telegram.ownerIds.length > 0,
+      // Assigned below once polling starts; read lazily on each health request.
+      polling: polling ? polling.status() : null,
     }),
   };
 
@@ -127,7 +130,6 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
   await app.listen({ host: config.host, port: config.port });
   logger.info('http listening', { url: `http://${config.host}:${config.port}` });
 
-  let polling: PollingController | null = null;
   if (adapter) {
     if (config.telegram.mode === 'webhook') {
       const url = config.telegram.webhookUrl;

@@ -204,6 +204,13 @@ rate-limited to 120 requests/minute per client IP. If Recall runs behind a rever
 proxy, set `TRUST_PROXY` to that proxy's address or CIDR so the limiter sees the
 real client IP; leave it `false` when clients connect directly.
 
+Switching back to polling needs no manual step: polling mode removes a leftover
+webhook first (pending messages are kept). Give each deployment its own bot
+token; Telegram allows one receiver per bot. Telegram is a temporary bridge until
+ALIVE's native Windows and Android notifications exist (decision D58 in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). Reminders alert with sound; the
+daily briefing arrives silently.
+
 ### Production deployment
 
 The repository includes a Docker Compose stack: a one-shot migration service, the

@@ -88,8 +88,9 @@ apps/server/tests/
 │   ├── retry.test.ts               backoff, caps, jitter, retry policy
 │   ├── auth.test.ts                session signing, tampering, expiry, log redaction
 │   ├── telegram-format.test.ts     commands, confirmations, keyboards, callback data
-│   ├── telegram-notifier.test.ts   proactive delivery, failure classification
-│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update
+│   ├── telegram-notifier.test.ts   proactive delivery, failure classification, sound vs silent
+│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update, webhook and
+│   │                               poller 409s, start-up retries, status codes, no token in logs
 │   ├── telegram-client.test.ts     bounded file stream, Content-Length, cancel on cap
 │   ├── chat-providers.test.ts      provider request shape and response parsing
 │   ├── library-format.test.ts      snippets, search type resolution, list formatting
@@ -112,6 +113,8 @@ apps/server/tests/
     ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
     ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
     ├── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
+    ├── telegram-bridge.test.ts     reminders (audible) and briefings (silent) delivered while
+    │                               polling is in conflict; polling status in health
     ├── detail-routes.test.ts       dashboard detail API: exact record, 401, non-leaking 404
     ├── ask-api.test.ts             /api/ask: grounding, citations, validation, fallback
     ├── briefing-api.test.ts        /api/briefing: sections, dates, config, disabled flag
@@ -691,6 +694,10 @@ Deliberately included as first-class cases, not afterthoughts:
 | Telegram delivery failure | `telegram-notifier.test.ts` — 429 retryable, 4xx permanent, network error never throws |
 | Duplicate Telegram updates | `telegram-capture.test.ts` — replay stores one capture |
 | Telegram API failure while polling | `telegram-polling.test.ts` — backoff, `retry_after`, bad token stops |
+| Webhook left over when switching to polling | `telegram-polling.test.ts` — removed before the first poll (pending updates kept); removed again on a mid-run 409, at most once per window |
+| Two copies polling with one token | `telegram-polling.test.ts` — nothing deleted, capped backoff, recovers by itself |
+| Network not ready at start-up | `telegram-polling.test.ts` — token check retries, then polling starts |
+| Polling down while reminders are due | `telegram-bridge.test.ts` — reminder and briefing still delivered |
 | One bad update in a batch | `telegram-polling.test.ts` — loop continues, offset advances |
 | Restart with pending reminders | `reminder-scheduler.test.ts` and `briefing-delivery.test.ts` |
 | Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts`, `briefing-service.test.ts`, `briefing-api.test.ts` |
