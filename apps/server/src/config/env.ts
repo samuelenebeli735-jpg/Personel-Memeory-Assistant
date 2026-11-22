@@ -237,11 +237,22 @@ export const configSchema = z
     ai: z.object({
       provider: z.enum(['none', 'openai', 'openai-compatible', 'anthropic']).default('none'),
       apiKey: envOptionalStr(),
-      baseUrl: envStr('https://api.openai.com/v1'),
+      /**
+       * Provider endpoint. Empty means the provider's own default
+       * (Anthropic: https://api.anthropic.com; OpenAI: https://api.openai.com/v1),
+       * resolved in `ai/index.ts`.
+       */
+      baseUrl: envOptionalStr(),
+      /** Required whenever a provider is selected: no built-in model can go stale. */
       model: envOptionalStr(),
       timeoutMs: envInt(15000, { min: 1000, max: 120000 }),
       maxRetries: envInt(2, { min: 0, max: 5 }),
-      allowRawText: envBool(true),
+      /**
+       * Whether the owner's own text (captures, notes, transcripts, Ask
+       * evidence) may be sent to the AI provider. Off unless explicitly enabled:
+       * sharing personal text with a third party is opt-in.
+       */
+      allowRawText: envBool(false),
     }),
 
     stt: z.object({
@@ -366,6 +377,14 @@ export const configSchema = z
         message: 'AI_API_KEY is required when AI_PROVIDER is not "none"',
       });
     }
+    if (value.ai.provider !== 'none' && value.ai.model === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ai', 'model'],
+        message:
+          'AI_MODEL is required when AI_PROVIDER is not "none" (for example claude-opus-5-5 or claude-haiku-5-5 for anthropic); there is no built-in default model',
+      });
+    }
     if (value.stt.provider !== 'none' && isPlaceholder(value.stt.apiKey)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -377,7 +396,8 @@ export const configSchema = z
       [['ai', 'baseUrl'], value.ai.baseUrl],
       [['stt', 'baseUrl'], value.stt.baseUrl],
     ] as const) {
-      if (!isSafeProviderBaseUrl(baseUrl, value.nodeEnv)) {
+      // An empty AI base URL means "the provider's default", which is safe.
+      if (baseUrl !== null && !isSafeProviderBaseUrl(baseUrl, value.nodeEnv)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [...providerPath],
@@ -400,6 +420,8 @@ export type AppConfig = z.infer<typeof configSchema>;
 /** Convenience flags derived from the validated configuration. */
 export interface RuntimeCapabilities {
   readonly aiEnabled: boolean;
+  /** AI_ALLOW_RAW_TEXT: personal text may be sent to the AI provider. */
+  readonly aiRawTextAllowed: boolean;
   readonly sttEnabled: boolean;
   readonly telegramEnabled: boolean;
   readonly telegramConfigured: boolean;
@@ -410,6 +432,7 @@ export function capabilitiesOf(config: AppConfig): RuntimeCapabilities {
   const telegramConfigured = !isPlaceholder(config.telegram.botToken);
   return {
     aiEnabled: config.ai.provider !== 'none' && !isPlaceholder(config.ai.apiKey),
+    aiRawTextAllowed: config.ai.allowRawText,
     sttEnabled: config.stt.provider !== 'none' && !isPlaceholder(config.stt.apiKey),
     telegramEnabled: config.telegram.enabled,
     telegramConfigured,

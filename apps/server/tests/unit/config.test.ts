@@ -131,7 +131,29 @@ describe('configuration validation', () => {
 
   it('requires an API key when an AI provider is selected', () => {
     expectInvalid({ AI_PROVIDER: 'openai' }, 'ai.apiKey');
-    expect(expectOk({ AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-abcdefghijklmnop' }).ai.provider).toBe('openai');
+    expect(expectOk({ AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-abcdefghijklmnop', AI_MODEL: 'test-model' }).ai.provider).toBe('openai');
+  });
+
+  it('requires an explicit AI_MODEL with any AI provider (no stale built-in default)', () => {
+    const key = 'sk-test-abcdefghijklmnop';
+    expectInvalid({ AI_PROVIDER: 'anthropic', AI_API_KEY: key }, 'ai.model');
+    expectInvalid({ AI_PROVIDER: 'openai', AI_API_KEY: key }, 'ai.model');
+    expect(expectOk({ AI_PROVIDER: 'anthropic', AI_API_KEY: key, AI_MODEL: 'claude-opus-5-5' }).ai.model).toBe('claude-opus-5-5');
+    // No provider, no model needed.
+    expect(expectOk({ AI_PROVIDER: 'none' }).ai.model).toBeNull();
+  });
+
+  it('does not send personal text to an AI provider unless explicitly allowed', () => {
+    const config = expectOk({ AI_ALLOW_RAW_TEXT: undefined });
+    expect(config.ai.allowRawText).toBe(false);
+    expect(capabilitiesOf(config).aiRawTextAllowed).toBe(false);
+    expect(expectOk({ AI_ALLOW_RAW_TEXT: 'true' }).ai.allowRawText).toBe(true);
+  });
+
+  it('leaves the AI base URL empty so each provider uses its own endpoint', () => {
+    const key = 'sk-test-abcdefghijklmnop';
+    expect(expectOk({ AI_PROVIDER: 'anthropic', AI_API_KEY: key, AI_MODEL: 'm' }).ai.baseUrl).toBeNull();
+    expect(expectOk({ AI_PROVIDER: 'anthropic', AI_API_KEY: key, AI_MODEL: 'm', AI_BASE_URL: '' }).ai.baseUrl).toBeNull();
   });
 
   it('requires an API key when a speech provider is selected', () => {
@@ -157,6 +179,7 @@ describe('configuration validation', () => {
       expectOk({
         AI_PROVIDER: 'openai-compatible',
         AI_API_KEY: aiKey,
+        AI_MODEL: 'test-model',
         AI_BASE_URL: 'http://127.0.0.1:11434/v1',
       }).ai.baseUrl,
     ).toBe('http://127.0.0.1:11434/v1');
@@ -164,6 +187,7 @@ describe('configuration validation', () => {
       expectOk({
         AI_PROVIDER: 'openai-compatible',
         AI_API_KEY: aiKey,
+        AI_MODEL: 'test-model',
         AI_BASE_URL: 'http://localhost:11434/v1',
       }).ai.baseUrl,
     ).toBe('http://localhost:11434/v1');
@@ -180,6 +204,7 @@ describe('configuration validation', () => {
         NODE_ENV: 'development',
         AI_PROVIDER: 'openai-compatible',
         AI_API_KEY: aiKey,
+        AI_MODEL: 'test-model',
         AI_BASE_URL: 'http://example.com/v1',
       }).ai.baseUrl,
     ).toBe('http://example.com/v1');

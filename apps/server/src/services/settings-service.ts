@@ -156,6 +156,7 @@ export function toSettingsDto(
     locale: row.locale,
     telegramOwnerConfigured: ownerIds.length > 0,
     aiProviderConfigured: capabilities.aiEnabled,
+    aiRawTextAllowed: capabilities.aiRawTextAllowed,
     sttProviderConfigured: capabilities.sttEnabled,
     updatedAt: row.updatedAt.toISOString(),
   };

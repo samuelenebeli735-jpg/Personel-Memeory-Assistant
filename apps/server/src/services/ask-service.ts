@@ -26,6 +26,7 @@
 import type { AskPeriod, SearchEntityType, SearchResultItem } from '@recall/shared';
 import { DateTime } from 'luxon';
 
+import { aiForPersonalText } from '../ai/access.js';
 import type { EvidenceRecord } from '../ai/types.js';
 import type { AppContext } from '../context.js';
 import type { Db } from '../db/client.js';
@@ -616,9 +617,11 @@ export async function askQuestion(ctx: AppContext, request: AskRequest): Promise
     };
   }
 
-  // `aiEnabled` is the owner's switch, not a capability flag: a configured
-  // provider must never be called while the owner has disabled AI.
-  const ai = settings.aiEnabled ? ctx.ai : null;
+  // Evidence is the owner's own text. A configured provider is used only when
+  // AI is enabled in Settings AND the server allows personal text to leave
+  // (AI_ALLOW_RAW_TEXT); otherwise the answer is the deterministic, cited
+  // summary — quietly, because this is a policy, not a failure.
+  const ai = aiForPersonalText(ctx, settings).provider;
   if (ai) {
     try {
       const aiAnswer = await ai.answer({

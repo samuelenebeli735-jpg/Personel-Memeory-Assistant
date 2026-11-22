@@ -8,6 +8,7 @@
  *
  * Model names are never hard-coded; they come from configuration.
  */
+import Anthropic, { APIConnectionError, APIConnectionTimeoutError, APIError, type ClientOptions } from '@anthropic-ai/sdk';
 import { classifyCaptureSchema, type Classification } from '@recall/shared';
 
 import { ProviderError } from '../lib/errors.js';
@@ -29,6 +30,15 @@ export interface ChatProviderOptions {
   /** Structured log sink; never receives message content. */
   onEvent?: (event: { level: 'warn' | 'info' | 'debug'; msg: string; context?: Record<string, unknown> }) => void;
 }
+
+/**
+ * Output-token ceilings. They are caps, not costs: current models may reason
+ * before they answer, and that reasoning counts against the cap, so the old
+ * 700/900 limits could cut an answer off before its JSON. A cut-off answer is
+ * reported as `max_tokens` (never retried) rather than as malformed JSON.
+ */
+export const CLASSIFY_MAX_TOKENS = 4096;
+export const ANSWER_MAX_TOKENS = 4096;
 
 const CLASSIFY_SYSTEM_PROMPT = `You turn a person's captured note into structured data for a personal memory assistant.
 Reply with a single JSON object and nothing else. Never wrap it in prose or code fences.
@@ -229,33 +239,44 @@ abstract class BaseChatProvider implements AiProvider {
     }
   }
 
-  async classify(request: ClassificationRequest): Promise<Classification> {
+  /**
+   * Last line of defence: both operations send the owner's own text (a
+   * capture, or records quoted as evidence), so neither may run unless
+   * AI_ALLOW_RAW_TEXT is on. Services check first and never get here; this
+   * guard means a future caller that forgets cannot leak text either.
+   */
+  private requirePersonalTextAllowed(operation: string): void {
     if (!this.options.allowRawText) {
-      throw new ProviderError('ai', 'AI classification is disabled for raw capture text', {
+      throw new ProviderError('ai', `AI ${operation} is disabled: personal text may not be sent (AI_ALLOW_RAW_TEXT)`, {
         retryable: false,
-        details: { reason: 'raw-text-disabled' },
+        details: { reason: 'raw_text_disabled' },
       });
     }
+  }
+
+  async classify(request: ClassificationRequest): Promise<Classification> {
+    this.requirePersonalTextAllowed('classification');
     const raw = await this.withProviderRetry('classify', () =>
       this.callChat(
         [
           { role: 'system', content: CLASSIFY_SYSTEM_PROMPT },
           { role: 'user', content: classifyUserPrompt(request) },
         ],
-        900,
+        CLASSIFY_MAX_TOKENS,
       ),
     );
     return parseClassification(raw);
   }
 
   async answer(request: AnswerRequest): Promise<AiAnswer> {
+    this.requirePersonalTextAllowed('answering');
     const raw = await this.withProviderRetry('answer', () =>
       this.callChat(
         [
           { role: 'system', content: ANSWER_SYSTEM_PROMPT },
           { role: 'user', content: answerUserPrompt(request) },
         ],
-        700,
+        ANSWER_MAX_TOKENS,
       ),
     );
     const parsed = extractJsonObject(raw) as { answer?: unknown; citedIds?: unknown };
@@ -295,6 +316,7 @@ abstract class BaseChatProvider implements AiProvider {
         throw new ProviderError('ai', 'Provider returned a non-JSON response', {
           retryable: true,
           cause: error,
+          details: { reason: 'invalid_response' },
         });
       }
     } catch (error) {
@@ -303,6 +325,7 @@ abstract class BaseChatProvider implements AiProvider {
       throw new ProviderError('ai', aborted ? 'Provider request timed out' : 'Provider request failed', {
         retryable: true,
         cause: error,
+        details: { reason: aborted ? 'timeout' : 'network' },
       });
     } finally {
       clearTimeout(timer);
@@ -340,7 +363,11 @@ export class OpenAiCompatibleProvider extends BaseChatProvider {
     if (!Array.isArray(choices) || choices.length === 0) {
       throw new ProviderError('ai', 'Provider returned no choices', { retryable: true });
     }
-    const first = choices[0] as { message?: { content?: unknown } };
+    const first = choices[0] as { message?: { content?: unknown }; finish_reason?: unknown };
+    // A cut-off or filtered answer cannot be valid JSON; retrying would only
+    // repeat the same cost, so these are reported and not retried.
+    if (first.finish_reason === 'length') throw truncatedError();
+    if (first.finish_reason === 'content_filter') throw refusedError();
     const content = first.message?.content;
     if (typeof content !== 'string' || content.trim().length === 0) {
       throw new ProviderError('ai', 'Provider returned an empty message', { retryable: true });
@@ -349,39 +376,110 @@ export class OpenAiCompatibleProvider extends BaseChatProvider {
   }
 }
 
-/** Anthropic Messages API. */
+function truncatedError(): ProviderError {
+  return new ProviderError('ai', 'The model ran out of output tokens before finishing', {
+    retryable: false,
+    details: { reason: 'max_tokens' },
+  });
+}
+
+function refusedError(): ProviderError {
+  return new ProviderError('ai', 'The model declined to answer', {
+    retryable: false,
+    details: { reason: 'refused' },
+  });
+}
+
+/**
+ * The root the Anthropic SDK expects. The SDK adds `/v1/messages` itself, so
+ * a configured base written with `/v1` or trailing slashes is normalised:
+ * "https://api.anthropic.com/v1/" and "https://api.anthropic.com" are the same.
+ */
+export function anthropicBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+/** Maps an SDK error to the provider error taxonomy, without copying its text. */
+function fromAnthropicError(error: unknown): ProviderError {
+  if (error instanceof ProviderError) return error;
+  if (error instanceof APIConnectionTimeoutError) {
+    return new ProviderError('ai', 'Provider request timed out', { retryable: true, cause: error, details: { reason: 'timeout' } });
+  }
+  if (error instanceof APIConnectionError) {
+    return new ProviderError('ai', 'Provider request failed', { retryable: true, cause: error, details: { reason: 'network' } });
+  }
+  if (error instanceof APIError && typeof error.status === 'number') {
+    const status = error.status;
+    // 408/409/429 and 5xx (529 = overloaded) are transient; other 4xx
+    // (bad request, auth, unknown model) will fail the same way again.
+    const retryable = status === 408 || status === 409 || status === 429 || status >= 500;
+    return new ProviderError('ai', `Provider responded with HTTP ${status}`, { retryable, cause: error, details: { status } });
+  }
+  return new ProviderError('ai', 'Provider request failed', { retryable: true, cause: error, details: { reason: 'unexpected' } });
+}
+
+/**
+ * Anthropic Messages API, through the official SDK (`@anthropic-ai/sdk`).
+ *
+ * The SDK owns the wire format, the API version header (2026-10-21 in SDK 1.x)
+ * and authentication. Retries stay with `withProviderRetry` so every provider
+ * follows one policy: the SDK's own retries are turned off. No sampling
+ * parameters are sent — the 2026-10-21 API rejects `temperature`, `top_p` and
+ * `top_k` on every model.
+ */
 export class AnthropicProvider extends BaseChatProvider {
   readonly name = 'anthropic';
+  private readonly client: Anthropic;
+
+  constructor(options: ChatProviderOptions) {
+    super(options);
+    this.client = new Anthropic({
+      // Explicit values only: the SDK must not pick up ANTHROPIC_API_KEY,
+      // ANTHROPIC_AUTH_TOKEN or ANTHROPIC_BASE_URL from the environment.
+      apiKey: options.apiKey,
+      authToken: null,
+      baseURL: anthropicBaseUrl(options.baseUrl),
+      timeout: options.timeoutMs,
+      maxRetries: 0,
+      // Tests inject a fetch double, so no request ever reaches the real API.
+      ...(options.fetchImpl ? { fetch: options.fetchImpl as ClientOptions['fetch'] } : {}),
+    });
+  }
 
   protected override async callChat(messages: ChatMessage[], maxTokens: number): Promise<string> {
-    const base = this.options.baseUrl.replace(/\/+$/, '');
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
     const userMessages = messages
       .filter((m) => m.role === 'user')
       .map((m) => ({ role: 'user' as const, content: m.content }));
-    const payload = await this.postJson(
-      `${base}/v1/messages`,
-      {
+
+    let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
+    try {
+      response = await this.client.messages.create({
         model: this.options.model,
         max_tokens: maxTokens,
-        temperature: 0,
         system,
         messages: userMessages,
-      },
-      { 'x-api-key': this.options.apiKey, 'anthropic-version': '2023-06-01' },
-    );
-    const content = (payload as { content?: unknown }).content;
-    if (!Array.isArray(content)) {
-      throw new ProviderError('ai', 'Provider returned no content blocks', { retryable: true });
+      });
+    } catch (error) {
+      throw fromAnthropicError(error);
     }
-    const text = content
-      .map((block) => (block as { type?: string; text?: unknown }))
-      .filter((block) => block.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text as string)
+
+    if (!('content' in response)) {
+      throw new ProviderError('ai', 'Provider returned an unexpected response', { retryable: false, details: { reason: 'invalid_response' } });
+    }
+    if (response.stop_reason === 'refusal') throw refusedError();
+    if (response.stop_reason === 'max_tokens' || response.stop_reason === 'model_context_window_exceeded') {
+      throw truncatedError();
+    }
+    // Thinking blocks (and any other non-text block) are skipped: only the
+    // visible answer text is parsed.
+    const text = response.content
+      .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+      .map((block) => block.text)
       .join('\n')
       .trim();
     if (text.length === 0) {
-      throw new ProviderError('ai', 'Provider returned an empty message', { retryable: true });
+      throw new ProviderError('ai', 'Provider returned an empty message', { retryable: true, details: { reason: 'empty_response' } });
     }
     return text;
   }

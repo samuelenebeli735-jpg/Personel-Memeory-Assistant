@@ -150,11 +150,11 @@ text.
 | `STT_AUDIO_DIR` | `./data/audio` | Only used when retention is on; never served by the API |
 | `AI_PROVIDER` | `none` | `none`, `openai`, `openai-compatible` or `anthropic` |
 | `AI_API_KEY` | empty | Required when the provider is not `none` |
-| `AI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL; plain `http://` is accepted only for loopback hosts outside development |
-| `AI_MODEL` | provider default | Model name recorded in logs and used in the cache key |
+| `AI_BASE_URL` | empty (the provider's own endpoint: `https://api.anthropic.com` or `https://api.openai.com/v1`) | Set only for an OpenAI-compatible server or a gateway; plain `http://` is accepted only for loopback hosts outside development; an OpenAI address with `AI_PROVIDER=anthropic` is ignored with a startup warning |
+| `AI_MODEL` | none (**required** with a provider) | Model id, e.g. `claude-opus-5-5` or `claude-haiku-5-5`; recorded in logs and health and used in the cache key. The server refuses to start without it when a provider is set |
 | `AI_TIMEOUT_MS` | `15000` | Per-attempt timeout |
 | `AI_MAX_RETRIES` | `2` | Bounded retries for retryable failures |
-| `AI_ALLOW_RAW_TEXT` | `true` | Send capture text to the provider; enabling an AI provider therefore shares raw text unless this is explicitly set to `false` |
+| `AI_ALLOW_RAW_TEXT` | `false` | Opt-in permission to send your own text (captures, transcripts, Ask evidence) to the provider. Off: a configured provider receives nothing |
 
 Voice pipeline behaviour:
 

@@ -140,12 +140,19 @@ user activity, monitoring of other applications.
 - HTTP request logs contain the method, the path *without* the query string, and
   the status code. Query strings can contain search terms, so they are excluded.
 - `Error` objects are logged as `{name, message}` — never with captured payloads.
-- Capture text is only sent to an AI provider when a provider is configured **and**
-  `AI_ALLOW_RAW_TEXT=true`. With the default `AI_PROVIDER=none`, nothing leaves the
-  machine at all. `AI_ALLOW_RAW_TEXT` defaults to `true`: enabling an AI provider
-  therefore enables raw-text sharing unless the operator explicitly sets
-  `AI_ALLOW_RAW_TEXT=false`. This is a privacy decision the operator must make
-  before enabling AI.
+- The owner's own text (capture text, voice transcripts, and records quoted as
+  evidence for Ask) is sent to an AI provider only when **all three** hold: a
+  provider is configured, the owner's Settings switch `aiEnabled` is on, and the
+  server permission `AI_ALLOW_RAW_TEXT=true`. `AI_ALLOW_RAW_TEXT` **defaults to
+  `false`**: configuring a provider shares nothing until the operator opts in.
+  One rule (`ai/access.ts`) decides this for classification and Ask alike, and
+  the provider itself refuses as a second line of defence. When the answer is no,
+  Recall uses its rules and cited summaries without logging a failure per call;
+  one line at startup states the setting. Questions about time ("What do I have
+  tomorrow?") never use a provider. Health (`/api/health`) and Settings show
+  `rawTextAllowed`; health also shows the last provider success and failure as a
+  timestamp and a sanitised code (e.g. `http_429`, `timeout`, `refused`), never an
+  error message or content.
 - **Voice:** the download is read as a bounded stream. A declared `Content-Length`
   over `STT_MAX_AUDIO_BYTES` is rejected before the body is read, and the reader
   cancels as soon as the running total exceeds the cap, so an oversized or endless
@@ -203,8 +210,8 @@ shell out to anything derived from saved text:
 | Provider | When | Data sent | Retention |
 | --- | --- | --- | --- |
 | Telegram | Always when enabled | The message you send (that is the transport) | Per Telegram's policy |
-| AI classification (`openai`, `openai-compatible`, `anthropic`) | Only if `AI_PROVIDER` is not `none` and `AI_ALLOW_RAW_TEXT=true` | The capture text verbatim, the local time and time zone, your existing project names, and any explicit kind hint. No ids, no history, no settings. | Per the provider's policy |
-| AI recall (`answer`) | Only on an explicit recall request | The question plus the retrieved evidence rows (titles, snippets, timestamps, statuses) — not the whole database | Per the provider's policy |
+| AI classification (`openai`, `openai-compatible`, `anthropic`) | Only if `AI_PROVIDER` is not `none`, `aiEnabled` is on and `AI_ALLOW_RAW_TEXT=true` (default `false`) | The capture text verbatim, the local time and time zone, your existing project names, and any explicit kind hint. No ids, no history, no settings. | Per the provider's policy |
+| AI recall (`answer`) | Only on an explicit recall request that is not a time question, and only if a provider is configured, `aiEnabled` is on and `AI_ALLOW_RAW_TEXT=true` | The question plus the retrieved evidence rows (titles, snippets, timestamps, statuses) — not the whole database | Per the provider's policy |
 | Speech-to-text (`openai`) | Only if `STT_PROVIDER=openai`, on a voice message | The audio bytes, the declared mime type and a generated filename, plus the duration. No caption, no chat id, no owner id. | Per the provider's policy; Recall does not keep the audio unless `STT_RETAIN_AUDIO=true` |
 
 With the default configuration (`AI_PROVIDER=none`, `STT_PROVIDER=none`) the only

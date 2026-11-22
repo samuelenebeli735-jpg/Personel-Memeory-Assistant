@@ -37,6 +37,10 @@ export function testEnv(overrides: EnvOverrides = {}): NodeJS.ProcessEnv {
     DEFAULT_MORNING_TIME: '09:00',
     DEFAULT_EVENING_TIME: '19:00',
     AI_PROVIDER: 'none',
+    // Tests inject fake AI providers (never a real service) and opt in to
+    // sending text to them. Production defaults to false; the privacy tests
+    // override this to prove both switches are enforced.
+    AI_ALLOW_RAW_TEXT: 'true',
     STT_PROVIDER: 'none',
     LOG_MESSAGE_CONTENT: 'false',
   };

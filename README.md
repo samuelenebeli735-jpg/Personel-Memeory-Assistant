@@ -310,7 +310,9 @@ The most important variables:
 | `TELEGRAM_OWNER_IDS` | The **only** Telegram user ids allowed to use the bot | *(required when enabled)* |
 | `DEFAULT_TIME_ZONE` | IANA zone used to interpret and display local times | `Africa/Lagos` |
 | `AI_PROVIDER` | `none`, `openai`, `openai-compatible`, `anthropic` | `none` |
-| `AI_BASE_URL` / `STT_BASE_URL` | Provider endpoint; must be `http(s)` with no embedded credentials or fragment | OpenAI API URL |
+| `AI_BASE_URL` / `STT_BASE_URL` | Provider endpoint; must be `http(s)` with no embedded credentials or fragment | AI: the provider's own endpoint; STT: OpenAI API URL |
+| `AI_MODEL` | Model id; **required** whenever `AI_PROVIDER` is not `none` | *(none)* |
+| `AI_ALLOW_RAW_TEXT` | Opt-in: may your own text be sent to the AI provider? | `false` |
 | `STT_PROVIDER` | `none`, `openai` | `none` |
 | `STT_MAX_AUDIO_SECONDS` / `STT_MAX_AUDIO_BYTES` | Voice clip limits; the byte cap is enforced while streaming the download | `180` / `25 MiB` |
 | `STT_RETAIN_AUDIO` / `STT_AUDIO_DIR` | Keep raw voice audio on disk (opt-in only; permanent purge removes it) | `false` / `./data/audio` |
@@ -385,8 +387,8 @@ Everything stored is treated as private. The Telegram bot answers only to the
 owner ids in `TELEGRAM_OWNER_IDS`. The dashboard requires a password and the
 server enforces authorization on every `/api` route. Message content, transcripts
 and credentials are redacted from logs by default (`LOG_MESSAGE_CONTENT=false`).
-Nothing is sent to an AI provider unless you configure one *and* leave
-`AI_ALLOW_RAW_TEXT=true`. Voice audio is sent only to the configured speech
+Nothing is sent to an AI provider unless you configure one, keep AI on in
+Settings, *and* set `AI_ALLOW_RAW_TEXT=true` (off by default). Voice audio is sent only to the configured speech
 provider, is held in memory during that request, and is never written to disk
 unless you set `STT_RETAIN_AUDIO=true`. Retained audio is deleted when you
 permanently purge the capture; undo keeps it. You can export or delete all your

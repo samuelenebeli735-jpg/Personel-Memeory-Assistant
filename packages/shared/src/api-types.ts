@@ -166,6 +166,8 @@ export interface SettingsDto {
   locale: string;
   telegramOwnerConfigured: boolean;
   aiProviderConfigured: boolean;
+  /** Server setting AI_ALLOW_RAW_TEXT (read-only here): personal text may be sent to the AI provider. */
+  aiRawTextAllowed?: boolean;
   sttProviderConfigured: boolean;
   updatedAt: string;
 }
@@ -182,7 +184,21 @@ export interface HealthDto {
     scheduledTotal: number;
   };
   providers: {
-    ai: { provider: string; configured: boolean; enabled: boolean };
+    ai: {
+      provider: string;
+      configured: boolean;
+      enabled: boolean;
+      /** Configured model id (AI_MODEL), or null when no provider. */
+      model?: string | null;
+      /** AI_ALLOW_RAW_TEXT: personal text may be sent to the provider. */
+      rawTextAllowed?: boolean;
+      /** Last successful provider call since the process started (UTC ISO). */
+      lastSuccessAt?: string | null;
+      /** Last failed provider call since the process started (UTC ISO). */
+      lastFailureAt?: string | null;
+      /** Sanitised failure code, e.g. "http_429", "timeout", "refused"; never a message. */
+      lastFailureCode?: string | null;
+    };
     stt: { provider: string; configured: boolean; enabled: boolean };
     telegram: { enabled: boolean; mode: string; configured: boolean; ownerConfigured: boolean };
   };

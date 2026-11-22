@@ -38,7 +38,7 @@ function makeCtx(
   clock: AdvanceableClock = advanceableClock('2026-10-17T10:00:00.000Z'),
 ): { ctx: AppContext; clock: AdvanceableClock } {
   const ctx = createAppContext({
-    config: testConfig({ AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-not-real' }),
+    config: testConfig({ AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-not-real', AI_MODEL: 'fake-model' }),
     db: testDb.db,
     clock,
     logger: testLogger(),

@@ -3,6 +3,7 @@
  * the Telegram adapter and the scheduler. Constructing it explicitly (rather
  * than importing singletons) is what makes the integration tests possible.
  */
+import { createAiStatus, withAiStatus, type AiStatus } from './ai/status.js';
 import type { AiProvider } from './ai/types.js';
 import { createRuleClassifier, type RuleClassifier } from './ai/rules-classifier.js';
 import type { AppConfig, RuntimeCapabilities } from './config/env.js';
@@ -21,8 +22,14 @@ export interface AppContext {
   readonly db: Db;
   readonly clock: Clock;
   readonly defaults: SettingsDefaults;
-  /** AI provider, or null when none is configured (rules-only mode). */
+  /**
+   * AI provider, or null when none is configured (rules-only mode). Wrapped so
+   * every call updates `aiStatus`; use `aiForPersonalText` before sending it
+   * the owner's text.
+   */
   readonly ai: AiProvider | null;
+  /** Last success / last failure of the AI provider, for the health report. */
+  readonly aiStatus: AiStatus;
   /** Deterministic classifier, always available. */
   readonly rules: RuleClassifier;
   /** Speech-to-text, or null when unavailable. */
@@ -48,14 +55,17 @@ export function createAppContext(options: CreateContextOptions): AppContext {
   const { config } = options;
   const logger = options.logger ?? loggerFromConfig(config);
   const notifier = options.notifier ?? nullNotifier();
+  const clock = options.clock ?? systemClock;
+  const aiStatus = createAiStatus();
   return {
     config,
     capabilities: capabilitiesOf(config),
     logger,
     db: options.db ?? createDb({ url: config.databaseUrl }),
-    clock: options.clock ?? systemClock,
+    clock,
     defaults: settingsDefaultsFromConfig(config),
-    ai: options.ai ?? null,
+    ai: options.ai ? withAiStatus(options.ai, aiStatus, () => clock.now()) : null,
+    aiStatus,
     rules: createRuleClassifier(),
     stt: options.stt ?? null,
     notifier,

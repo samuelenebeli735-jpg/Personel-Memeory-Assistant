@@ -58,6 +58,13 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
   const ai = resolveAiProvider(config, logger);
   const stt = resolveTranscriber(config, logger);
   if (!ai) logger.info('ai provider disabled - deterministic classification only');
+  if (ai && !config.ai.allowRawText) {
+    // Said once here rather than as a warning on every capture: it is the
+    // owner's privacy setting, not a failure.
+    logger.info('ai provider configured, but AI_ALLOW_RAW_TEXT is off - no personal text will be sent; rules and cited summaries are used', {
+      provider: config.ai.provider,
+    });
+  }
   if (!stt) logger.info('speech-to-text disabled - voice capture will be stored untranscribed');
 
   const capabilities = capabilitiesOf(config);
