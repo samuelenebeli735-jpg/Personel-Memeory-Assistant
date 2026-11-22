@@ -19,7 +19,9 @@
  *    quiet hours end — and closes 2 hours later (`BRIEFING_LATE_LIMIT_MS`, real
  *    time, so DST cannot stretch or shrink it). Only that first quiet-hours
  *    delay moves the window; a missing channel, the daily cap, a failed send or
- *    the server being offline never extend it. A briefing still unsent at the
+ *    the server being offline never extend it. The deadline governs the start
+ *    of the send: it is checked again on the live clock just before the
+ *    notifier is called. A briefing still unsent at the
  *    deadline is recorded as `SKIPPED` ("more than 2 hours late"), logged once,
  *    and never sent later by a retry or a restart.
  *  - **A briefing belongs to its own day.** Midnight is a hard stop: the
@@ -332,6 +334,21 @@ async function attemptDelivery(
   });
   const text = formatBriefingText(briefing);
 
+  // The deadline governs the START of the send. The tick's `now` may be
+  // seconds old by here (gates, generation), so the check is repeated on the
+  // live clock right before the request; a request that starts in time is not
+  // cancelled if Telegram is slow to answer.
+  const sendStartsAt = ctx.clock.now();
+  if (isPastDeadline(sendStartsAt, briefingDeadline(delivery.scheduledFor, settings, timeZone))) {
+    await ctx.db.briefingDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'SKIPPED', attemptedAt: null, nextRetryAt: null, error: BRIEFING_LATE_REASON },
+    });
+    attempt.report.skipped += 1;
+    logLateSkip(ctx, delivery.occurrenceKey, delivery.scheduledFor, sendStartsAt);
+    return;
+  }
+
   attempt.report.attempts += 1;
   const outcome = await attempt.notifier.send({
     text,
@@ -340,11 +357,13 @@ async function attemptDelivery(
     silent: true,
     idempotencyKey: delivery.idempotencyKey,
   });
+  // Recorded times describe when the send actually finished, not when the tick began.
+  const finishedAt = ctx.clock.now();
 
   if (outcome.ok) {
     await ctx.db.briefingDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'DELIVERED', deliveredAt: now, nextRetryAt: null, error: null },
+      data: { status: 'DELIVERED', deliveredAt: finishedAt, nextRetryAt: null, error: null },
     });
     attempt.report.delivered += 1;
     return;
@@ -373,7 +392,7 @@ async function attemptDelivery(
           status: 'PENDING',
           channel: attempt.notifier.channel,
           scheduledFor: delivery.scheduledFor,
-          nextRetryAt: new Date(now.getTime() + waitMs),
+          nextRetryAt: new Date(finishedAt.getTime() + waitMs),
           error: `retry ${nextAttempt} after: ${error}`,
           idempotencyKey: `${delivery.occurrenceKey}:${nextAttempt}`,
         },

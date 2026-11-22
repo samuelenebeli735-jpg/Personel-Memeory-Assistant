@@ -138,6 +138,17 @@ Operational notes:
   ready begins polling once it is. Only a rejected token (401/403/404) stops
   polling, with `telegram rejected the bot token`; it never stops the HTTP API —
   captures via the web or CLI keep working, so a bot outage cannot lose data.
+- **A message is acknowledged only after it was handled.** If handling an
+  update fails (for example the database is briefly unavailable), Recall does
+  not move past it: later updates wait, and the same update is fetched again
+  after the normal backoff (`failed to handle telegram update N (attempt k of
+  10) - it will be retried`). Replaying is safe because each message is
+  de-duplicated by its Telegram id. An update that cannot succeed is
+  dead-lettered so it cannot block the bot forever: immediately when the input
+  is invalid, otherwise after 10 attempts (about 4 minutes). A dead letter is
+  logged as an error (ids and reason only, never the text), counted in health
+  (`deadLetteredUpdates`, `lastDeadLetterAt`), and the bot tells you which
+  message it could not process so you can send it again.
 - **Two copies polling with one token.** Telegram allows one poller per bot. The
   second gets a 409 and logs `another copy of Recall is polling with this bot
   token`; Recall deletes nothing and keeps retrying, so it takes over by itself
@@ -145,8 +156,10 @@ Operational notes:
 - **Health shows the polling state.** `GET /api/health` reports
   `providers.telegram.polling`: `state` (`starting`, `running`, `retrying`,
   `stopped`), `lastPollAt`, `lastErrorAt`, a short `lastErrorCode`
-  (`webhook_conflict`, `poller_conflict`, `http_<status>`, `timeout`, `network`)
-  and `stoppedReason` (`token_rejected`, `shutdown`). It never contains messages
+  (`webhook_conflict`, `poller_conflict`, `update_failed`,
+  `update_dead_lettered`, `http_<status>`, `timeout`, `network`),
+  `stoppedReason` (`token_rejected`, `shutdown`), `retryingUpdateId` (an update
+  being retried) and `deadLetteredUpdates` / `lastDeadLetterAt`. It never contains messages
   or the token, is kept in memory and resets on restart. It is `null` in webhook
   mode or when the bot is off.
 - **Shutdown.** `SIGINT`/`SIGTERM` stops polling (with a 2-second cap on the
@@ -363,7 +376,12 @@ same values.
 - **Sent within 2 hours, or skipped (D59).** The window opens at the briefing
   time. If that time falls inside quiet hours, it opens when those quiet hours
   end instead (briefing 06:00, quiet hours until 09:00: sendable until 11:00).
-  It closes 2 real hours later; DST changes do not stretch it. Nothing else
+  It closes 2 real hours later; DST changes do not stretch it. The deadline
+  governs the *start* of the send: it is checked again on the live clock
+  immediately before the message is handed to Telegram, so time spent preparing
+  the briefing cannot push a send past it; a send that starts in time is not
+  cancelled if Telegram answers slowly. `deliveredAt` records when the send
+  finished. Nothing else
   moves the deadline: a server that was off, a missing channel, the daily cap or
   a failed send only use up the same window. A briefing still unsent at the
   deadline is recorded as `SKIPPED` with the reason `more than 2 hours late`,

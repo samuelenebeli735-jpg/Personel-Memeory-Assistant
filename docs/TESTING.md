@@ -89,8 +89,9 @@ apps/server/tests/
 │   ├── auth.test.ts                session signing, tampering, expiry, log redaction
 │   ├── telegram-format.test.ts     commands, confirmations, keyboards, callback data
 │   ├── telegram-notifier.test.ts   proactive delivery, failure classification, sound vs silent
-│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update, webhook and
-│   │                               poller 409s, start-up retries, status codes, no token in logs
+│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, failed-update retry and
+│   │                               dead letter, webhook and poller 409s, start-up retries,
+│   │                               status codes, no token in logs
 │   ├── telegram-client.test.ts     bounded file stream, Content-Length, cancel on cap
 │   ├── chat-providers.test.ts      provider request shape and response parsing
 │   ├── library-format.test.ts      snippets, search type resolution, list formatting
@@ -185,7 +186,9 @@ Executed 2026-11-22 on Node v24.17.0, npm 11.13.0, Windows (win32), for the
 Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
 `75ccb0e` with **738 server, 67 dashboard and 80 browser tests** passing; the
 follow-up that makes Telegram `/settings` report the AI privacy rule adds 8
-server tests, giving the 746 below. The server suite passes both with the test
+server tests (746), and the PR #2 review fixes (Telegram acknowledges an update
+only after handling it; the briefing deadline is rechecked before sending) add
+6 more, giving the 752 below. The server suite passes both with the test
 host pinned to `Pacific/Kiritimati` (UTC+14, the default) and with
 `RECALL_TEST_HOST_TZ=UTC`.
 
@@ -193,7 +196,7 @@ Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
  Test Files  42 passed (42)
-      Tests  746 passed (746)
+      Tests  752 passed (752)
 ```
 
 Before the Windows worker cap, a default-worker run timed out in four setup hooks
@@ -243,7 +246,7 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 | `unit/auth.test.ts` | 14 | passed |
 | `unit/telegram-format.test.ts` | 27 | passed |
 | `unit/telegram-notifier.test.ts` | 9 | passed |
-| `unit/telegram-polling.test.ts` | 17 | passed |
+| `unit/telegram-polling.test.ts` | 21 | passed |
 | `unit/telegram-client.test.ts` | 3 | passed |
 | `unit/chat-providers.test.ts` | 2 | passed |
 | `unit/ai-transport.test.ts` | 25 | passed |
@@ -275,9 +278,9 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 | `integration/ask-temporal.test.ts` | 21 | passed |
 | `integration/ai-privacy.test.ts` | 15 | passed |
 | `integration/briefing-api.test.ts` | 26 | passed |
-| `integration/briefing-delivery.test.ts` | 44 | passed |
+| `integration/briefing-delivery.test.ts` | 46 | passed |
 | `integration/dashboard-api.test.ts` | 2 | passed |
-| **Total** | **746** | **all passed** |
+| **Total** | **752** | **all passed** |
 
 Dashboard suite:
 
@@ -715,7 +718,8 @@ Deliberately included as first-class cases, not afterthoughts:
 | Two copies polling with one token | `telegram-polling.test.ts` — nothing deleted, capped backoff, recovers by itself |
 | Network not ready at start-up | `telegram-polling.test.ts` — token check retries, then polling starts |
 | Polling down while reminders are due | `telegram-bridge.test.ts` — reminder and briefing still delivered |
-| One bad update in a batch | `telegram-polling.test.ts` — loop continues, offset advances |
+| One bad update in a batch | `telegram-polling.test.ts` — the failed update is fetched again and later updates are not acknowledged ahead of it; one that keeps failing (or is invalid) is dead-lettered visibly and the owner is asked to resend |
+| Briefing send starting after its deadline | `briefing-delivery.test.ts` — the deadline is rechecked on the live clock before sending; `deliveredAt` is when the send finished |
 | Restart with pending reminders | `reminder-scheduler.test.ts` and `briefing-delivery.test.ts` |
 | Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts`, `briefing-service.test.ts`, `briefing-api.test.ts` |
 | Unsupported answer claim | `ask-service.test.ts` and `ask-api.test.ts` — statement removed; deterministic fallback |

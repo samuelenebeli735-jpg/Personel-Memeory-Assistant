@@ -179,9 +179,14 @@ export interface TelegramPollingStatusDto {
   /** Last successful `getUpdates` (ISO). */
   lastPollAt: string | null;
   lastErrorAt: string | null;
-  /** e.g. `webhook_conflict`, `poller_conflict`, `http_502`, `timeout`, `network`. */
+  /** e.g. `webhook_conflict`, `poller_conflict`, `update_failed`, `http_502`, `timeout`, `network`. */
   lastErrorCode: string | null;
   stoppedReason: 'token_rejected' | 'shutdown' | null;
+  /** An update whose handling failed and is being retried (not yet acknowledged). */
+  retryingUpdateId: number | null;
+  /** Updates given up on since start-up; each one was logged and the owner was asked to resend. */
+  deadLetteredUpdates: number;
+  lastDeadLetterAt: string | null;
 }
 
 export interface HealthDto {

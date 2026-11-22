@@ -13,7 +13,10 @@ import { createLogger } from '../../src/lib/logger.js';
 import { advanceableClock, type AdvanceableClock } from '../../src/ports.js';
 import { TelegramApiError, TelegramClient, type TelegramUpdate } from '../../src/telegram/client.js';
 import type { TelegramAdapter } from '../../src/telegram/handler.js';
+import { NotFoundError, ProviderError, RateLimitError, ValidationError } from '../../src/lib/errors.js';
 import {
+  deadLetterNotice,
+  isPermanentFailure,
   pollingErrorCode,
   startTelegramPolling,
   type PollingController,
@@ -162,36 +165,57 @@ describe('telegram polling', () => {
     expect(controller.isRunning()).toBe(false);
   });
 
-  it('survives a failure while handling one update', async () => {
-    const seen: number[] = [];
+  it('retries a failed update and never acknowledges later updates ahead of it', async () => {
+    // Replaces the Milestone 2 test that expected the offset to move past a
+    // failed update — which told Telegram to drop a message that was never
+    // handled. Telegram is modelled as a queue: getUpdates returns every update
+    // at or after the offset, and an offset acknowledges everything before it.
+    const handled: string[] = [];
+    const offsets: (number | undefined)[] = [];
+    const delays: number[] = [];
+    let duringRetry: ReturnType<PollingController['status']> | undefined;
     let controller!: PollingController;
-    let polls = 0;
+    let failuresLeft = 1;
 
     const adapter = {
       handleUpdate: async (item: TelegramUpdate) => {
-        if (item.update_id === 2) throw new Error('boom');
-        seen.push(item.update_id);
+        if (item.update_id === 2 && failuresLeft > 0) {
+          failuresLeft -= 1;
+          handled.push('2 failed');
+          throw new Error('database is locked');
+        }
+        handled.push(String(item.update_id));
         return { handled: true };
       },
+      sendText: async () => undefined,
     } as unknown as TelegramAdapter;
 
+    const queue = [1, 2, 3];
     const client = stubClient({
-      getMe: async () => ({ id: 1 }),
-      getUpdates: async () => {
-        polls += 1;
-        if (polls === 1) return [update(1), update(2), update(3)];
-        controller.stop();
-        return [];
+      getUpdates: async ({ offset }: { offset?: number }) => {
+        offsets.push(offset);
+        const pending = queue.filter((id) => offset === undefined || id >= offset);
+        if (pending.length === 0) controller.stop();
+        return pending.map(update);
       },
     });
 
     controller = startTelegramPolling(stubContext(), client, adapter, {
-      sleep: async () => undefined,
+      sleep: async (ms) => {
+        delays.push(ms);
+        duringRetry = controller.status();
+      },
+      initialBackoffMs: 100,
     });
     await controller.done;
 
-    expect(seen).toEqual([1, 3]);
-    // The offset still moved past the failed update, so it is not retried forever.
+    // 3 is not handled until 2 has succeeded; 2 is handled exactly once successfully.
+    expect(handled).toEqual(['1', '2 failed', '2', '3']);
+    // The retry poll acknowledges 1 only and asks for 2 again.
+    expect(offsets).toEqual([undefined, 2, 4]);
+    expect(delays).toEqual([100]);
+    expect(duringRetry).toMatchObject({ state: 'retrying', retryingUpdateId: 2, lastErrorCode: 'update_failed' });
+    expect(controller.status()).toMatchObject({ retryingUpdateId: null, deadLetteredUpdates: 0 });
     expect(controller.currentOffset()).toBe(4);
   });
 
@@ -542,6 +566,124 @@ describe('telegram polling recovery', () => {
     expect(failed).toMatchObject({ state: 'retrying', lastErrorCode: 'http_502' });
     expect(JSON.stringify(failed)).not.toContain('Bad Gateway');
     expect(text()).not.toContain('SECRET-TOKEN');
+  });
+
+  it('dead-letters an update that keeps failing, tells the owner, and moves on', async () => {
+    const attemptsFor5: number[] = [];
+    const handled: number[] = [];
+    const offsets: (number | undefined)[] = [];
+    const delays: number[] = [];
+    const notices: { chatId: number | string; text: string }[] = [];
+    let controller!: PollingController;
+
+    const failing = {
+      update_id: 5,
+      message: { message_id: 50, date: 0, chat: { id: 777, type: 'private' }, text: 'Buy milk tomorrow' },
+    } as unknown as TelegramUpdate;
+    const adapter = {
+      handleUpdate: async (item: TelegramUpdate) => {
+        if (item.update_id === 5) {
+          attemptsFor5.push(1);
+          throw new Error('database is locked');
+        }
+        handled.push(item.update_id);
+        return { handled: true };
+      },
+      sendText: async (chatId: number | string, text: string) => {
+        notices.push({ chatId, text });
+      },
+    } as unknown as TelegramAdapter;
+
+    const queue = [failing, update(6)];
+    const client = stubClient({
+      getUpdates: async ({ offset }: { offset?: number }) => {
+        offsets.push(offset);
+        const pending = queue.filter((item) => offset === undefined || item.update_id >= offset);
+        if (pending.length === 0) controller.stop();
+        return pending;
+      },
+    });
+    const { ctx, at } = recordingContext();
+
+    controller = startTelegramPolling(ctx, client, adapter, {
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+      initialBackoffMs: 100,
+      maxUpdateAttempts: 3,
+    });
+    await controller.done;
+
+    expect(attemptsFor5).toHaveLength(3);
+    expect(delays).toEqual([100, 200]); // two waits, then the third attempt gives up
+    expect(handled).toEqual([6]); // later updates continue after the dead letter
+    expect(offsets).toEqual([undefined, 5, 5, 7]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.chatId).toBe(777);
+    expect(notices[0]!.text).toContain('"Buy milk tomorrow"');
+    expect(notices[0]!.text).toContain('send it again');
+    expect(controller.status()).toMatchObject({
+      deadLetteredUpdates: 1,
+      lastErrorCode: 'update_dead_lettered',
+      retryingUpdateId: null,
+    });
+    expect(controller.status().lastDeadLetterAt).not.toBeNull();
+    const errors = at('error').join('\n');
+    expect(errors).toContain('dead-lettered');
+    expect(errors).not.toContain('Buy milk'); // ids and reasons only, never the text
+  });
+
+  it('dead-letters a permanent failure (invalid input) at once, without retrying', async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    let controller!: PollingController;
+    const adapter = {
+      handleUpdate: async () => {
+        attempts += 1;
+        throw new ValidationError('Capture text is too long');
+      },
+      sendText: async () => undefined,
+    } as unknown as TelegramAdapter;
+    let polls = 0;
+    const client = stubClient({
+      getUpdates: async () => {
+        polls += 1;
+        if (polls === 1) return [update(8)];
+        controller.stop();
+        return [];
+      },
+    });
+
+    controller = startTelegramPolling(recordingContext().ctx, client, adapter, {
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    await controller.done;
+
+    expect(attempts).toBe(1);
+    expect(delays).toEqual([]);
+    expect(controller.status().deadLetteredUpdates).toBe(1);
+    expect(controller.currentOffset()).toBe(9);
+  });
+
+  it('treats only 4xx application errors as permanent', () => {
+    expect(isPermanentFailure(new ValidationError('bad'))).toBe(true);
+    expect(isPermanentFailure(new NotFoundError('Capture'))).toBe(true);
+    expect(isPermanentFailure(new RateLimitError('slow down'))).toBe(false);
+    expect(isPermanentFailure(new ProviderError('ai', 'down'))).toBe(false);
+    expect(isPermanentFailure(new Error('database is locked'))).toBe(false);
+  });
+
+  it('names the failed message in the notice so the owner can resend it', () => {
+    const base = { message_id: 1, date: 0, chat: { id: 1, type: 'private' } };
+    const long = 'x'.repeat(80);
+    type Message = NonNullable<TelegramUpdate['message']>;
+    expect(deadLetterNotice({ ...base, text: long } as unknown as Message)).toContain(`"${'x'.repeat(60)}…"`);
+    expect(
+      deadLetterNotice({ ...base, voice: { file_id: 'v', duration: 3 } } as unknown as Message),
+    ).toContain('your voice note');
+    expect(deadLetterNotice(base as unknown as Message)).toContain('one of your messages');
   });
 
   it('maps errors to short codes', () => {

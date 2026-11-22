@@ -670,6 +670,47 @@ describe('scheduled briefing delivery — 2-hour limit (D59)', () => {
     expect(report.briefings.skipped).toBe(1);
     expect(h.notifier.sent).toHaveLength(0);
   });
+
+  it('rechecks the deadline on the live clock right before sending', async () => {
+    // Briefing 09:00 Lagos = 08:00Z; the tick starts at 10:00:00Z, exactly on
+    // the deadline. One second passes before the send would start (gates,
+    // briefing generation), so the send must not start.
+    await enableBriefing(h.ctx, { briefingTime: '09:00' });
+    const available = h.notifier.isAvailable.bind(h.notifier);
+    h.notifier.isAvailable = () => {
+      h.clock.advanceMs(1_000);
+      return available();
+    };
+
+    const report = await h.scheduler.tick();
+
+    expect(report.briefings.skipped).toBe(1);
+    expect(report.briefings.attempts).toBe(0);
+    expect(h.notifier.sent).toHaveLength(0);
+    const rows = await rowsOf(h.ctx);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'SKIPPED', error: BRIEFING_LATE_REASON, attemptedAt: null });
+  });
+
+  it('records the time the send finished, and schedules a retry from it', async () => {
+    await enableBriefing(h.ctx);
+    const send = h.notifier.send.bind(h.notifier);
+    h.notifier.send = async (message) => {
+      h.clock.advanceMs(5_000); // a slow provider
+      return send(message);
+    };
+    h.notifier.setNext({ ok: false, retryable: true, error: 'network hiccup' }, { ok: true });
+
+    await h.scheduler.tick(); // fails at 10:00:05Z
+    const [failed, retry] = await rowsOf(h.ctx);
+    expect(failed!.status).toBe('FAILED');
+    expect(retry!.nextRetryAt!.toISOString()).toBe('2026-10-17T10:00:35.000Z'); // 30 s after the send finished
+
+    h.clock.set(new Date('2026-10-17T10:00:40.000Z'));
+    await h.scheduler.tick(); // succeeds, finishing at 10:00:45Z
+    const delivered = (await rowsOf(h.ctx)).find((row) => row.status === 'DELIVERED');
+    expect(delivered!.deliveredAt!.toISOString()).toBe('2026-10-17T10:00:45.000Z');
+  });
 });
 
 describe('scheduled briefing delivery — quiet hours and the 2-hour limit (D59)', () => {

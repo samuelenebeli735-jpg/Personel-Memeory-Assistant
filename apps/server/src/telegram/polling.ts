@@ -25,16 +25,34 @@
  * Outbound delivery (reminders, briefings) uses `sendMessage` directly and does
  * not depend on this loop.
  *
+ * Acknowledgement: an update is acknowledged (the offset moves past it) only
+ * after it was handled. If handling throws, the rest of the batch is left
+ * alone, the next poll asks for the failed update again after the normal
+ * backoff, and nothing after it is acknowledged first — the same contract as
+ * webhook mode, where a failure returns 500 and Telegram redelivers. An update
+ * that cannot succeed is dead-lettered instead of blocking the bot forever:
+ * at once for a permanent failure (invalid input), otherwise after
+ * `TELEGRAM_UPDATE_MAX_ATTEMPTS`. Dead-lettering is visible: an error log, a
+ * health counter, and a message asking the owner to resend.
+ *
  * The offset is kept in memory. A restart therefore re-fetches the last few
  * updates from Telegram, which is safe because ingestion is idempotent on
  * `telegram:<chatId>:<messageId>` — the replay finds the existing capture instead
- * of storing a second one.
+ * of storing a second one. The same idempotency makes retrying a failed update
+ * safe.
  */
 import type { TelegramPollingStatusDto } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
-import { TelegramApiError, type TelegramClient } from './client.js';
+import { AppError } from '../lib/errors.js';
+import { TelegramApiError, type TelegramClient, type TelegramUpdate } from './client.js';
 import type { TelegramAdapter } from './handler.js';
+
+/**
+ * Attempts for one update before it is dead-lettered. With the capped backoff
+ * this is roughly four minutes, enough to ride out a short database outage.
+ */
+export const TELEGRAM_UPDATE_MAX_ATTEMPTS = 10;
 
 export interface PollingOptions {
   /** How long Telegram may hold the request open, in seconds. */
@@ -48,6 +66,8 @@ export interface PollingOptions {
   maxBackoffMs?: number;
   /** Minimum time between two webhook removals triggered by a 409. */
   webhookClearWindowMs?: number;
+  /** Attempts for one update before it is dead-lettered. */
+  maxUpdateAttempts?: number;
 }
 
 export interface PollingController {
@@ -93,6 +113,28 @@ export function pollingErrorCode(error: unknown): string {
   return 'unexpected';
 }
 
+/**
+ * A failure that a retry cannot fix (invalid input, a missing record): an
+ * application error with a 4xx status other than 408/429. Anything else (a
+ * database outage, a provider error, a bug) is presumed temporary.
+ */
+export function isPermanentFailure(error: unknown): boolean {
+  if (!(error instanceof AppError)) return false;
+  const status = error.httpStatus;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/** Tells the owner which message was not processed, so they can send it again. */
+export function deadLetterNotice(message: NonNullable<TelegramUpdate['message']>): string {
+  const what =
+    typeof message.text === 'string' && message.text.trim().length > 0
+      ? `your message "${message.text.trim().length > 60 ? `${message.text.trim().slice(0, 60)}…` : message.text.trim()}"`
+      : message.voice
+        ? 'your voice note'
+        : 'one of your messages';
+  return `Sorry, I could not process ${what}, even after retrying. It may not have been saved. Please check the dashboard or send it again.`;
+}
+
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -124,10 +166,14 @@ export function startTelegramPolling(
   const webhookClearWindowMs = options.webhookClearWindowMs ?? 10 * 60_000;
   const nowMs = () => ctx.clock.now().getTime();
 
+  const maxUpdateAttempts = options.maxUpdateAttempts ?? TELEGRAM_UPDATE_MAX_ATTEMPTS;
+
   let running = true;
   let offset: number | undefined;
   let backoff = initialBackoff;
   let lastWebhookClearMs: number | null = null;
+  /** The update currently being retried, if one failed. */
+  let failing: { updateId: number; attempts: number } | null = null;
 
   const state: TelegramPollingStatusDto = {
     state: 'starting',
@@ -135,7 +181,38 @@ export function startTelegramPolling(
     lastErrorAt: null,
     lastErrorCode: null,
     stoppedReason: null,
+    retryingUpdateId: null,
+    deadLetteredUpdates: 0,
+    lastDeadLetterAt: null,
   };
+
+  /**
+   * Gives up on one update, visibly: an error log (ids and the reason, never
+   * the text), a health counter, and a message asking the owner to resend.
+   */
+  async function deadLetter(update: TelegramUpdate, error: unknown, attempts: number): Promise<void> {
+    state.deadLetteredUpdates += 1;
+    state.lastDeadLetterAt = ctx.clock.now().toISOString();
+    state.lastErrorAt = state.lastDeadLetterAt;
+    state.lastErrorCode = 'update_dead_lettered';
+    ctx.logger.error('telegram update dead-lettered: not processed and will not be retried', {
+      updateId: update.update_id,
+      kind: update.callback_query ? 'callback_query' : update.message ? 'message' : 'other',
+      attempts,
+      permanent: isPermanentFailure(error),
+      reason: reasonOf(error),
+    });
+    const message = update.message;
+    if (!message) return;
+    try {
+      await adapter.sendText(message.chat.id, deadLetterNotice(message));
+    } catch (notifyError) {
+      ctx.logger.warn('could not tell the owner about a dead-lettered update', {
+        updateId: update.update_id,
+        reason: reasonOf(notifyError),
+      });
+    }
+  }
 
   function recordError(error: unknown): void {
     state.lastErrorAt = ctx.clock.now().toISOString();
@@ -244,20 +321,44 @@ export function startTelegramPolling(
         const updates = await client.getUpdates({ offset, timeoutSeconds: pollTimeoutSeconds });
         state.state = 'running';
         state.lastPollAt = ctx.clock.now().toISOString();
+        let retryAfterFailure: unknown = null;
         for (const update of updates) {
           if (!running) break;
-          offset = update.update_id + 1;
           try {
             await adapter.handleUpdate(update);
+            // Acknowledge only after success: the next poll's offset tells
+            // Telegram this update is done.
+            offset = update.update_id + 1;
+            if (failing?.updateId === update.update_id) failing = null;
+            state.retryingUpdateId = null;
           } catch (error) {
-            // One bad update must not stop the loop; the capture may or may not
-            // have been written, and Telegram will not resend it once the offset
-            // moves past it, so this is logged with the update id for triage.
-            ctx.logger.error('failed to handle a telegram update', {
-              updateId: update.update_id,
-              reason: reasonOf(error),
-            });
+            const previous: { updateId: number; attempts: number } | null = failing;
+            const attempts: number = previous?.updateId === update.update_id ? previous.attempts + 1 : 1;
+            if (isPermanentFailure(error) || attempts >= maxUpdateAttempts) {
+              await deadLetter(update, error, attempts);
+              offset = update.update_id + 1;
+              failing = null;
+              state.retryingUpdateId = null;
+              continue;
+            }
+            // Keep it: the next poll asks for this update again, and nothing
+            // after it is acknowledged first.
+            failing = { updateId: update.update_id, attempts };
+            offset = update.update_id;
+            state.retryingUpdateId = update.update_id;
+            retryAfterFailure = error;
+            break;
           }
+        }
+        if (retryAfterFailure !== null) {
+          state.state = 'retrying';
+          state.lastErrorAt = ctx.clock.now().toISOString();
+          state.lastErrorCode = 'update_failed';
+          await backOff(
+            retryAfterFailure,
+            `failed to handle telegram update ${failing?.updateId} (attempt ${failing?.attempts} of ${maxUpdateAttempts}) - it will be retried`,
+          );
+          continue;
         }
         backoff = initialBackoff;
       } catch (error) {
