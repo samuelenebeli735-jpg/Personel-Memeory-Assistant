@@ -145,6 +145,21 @@ apps/web/e2e/
 └── accessibility.spec.ts axe WCAG A/AA on login and authenticated pages
 ```
 
+### The host time zone is pinned
+
+`apps/server/vitest.config.ts` sets the test process's own zone to
+`Pacific/Kiritimati` (UTC+14, no DST), a zone no test uses as an owner zone.
+Recall must read dates in the owner's configured zone, never the host's; on a
+machine that happens to share the owner's zone (a laptop in `Africa/Lagos`) a
+host-zone bug is invisible, so the suite deliberately runs somewhere else. A
+guard test in `tests/unit/nlp.test.ts` fails if the pin is not in effect.
+
+To reproduce the production container, run with the host in UTC:
+
+```bash
+RECALL_TEST_HOST_TZ=UTC npm test --workspace @recall/server
+```
+
 ### How the database tests work
 
 `globalSetup` runs the **real** `prisma migrate deploy` once against a template

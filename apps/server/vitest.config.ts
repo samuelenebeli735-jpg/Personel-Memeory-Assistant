@@ -1,5 +1,18 @@
 import { defineConfig } from 'vitest/config';
 
+/**
+ * The host machine's time zone is pinned for every test run.
+ *
+ * Recall must interpret dates in the owner's configured zone, never the
+ * host's. A developer machine that happens to share the owner's zone (e.g. a
+ * laptop in Africa/Lagos) hides host-zone bugs completely, so the suite runs
+ * in a zone no test uses as an owner zone: Pacific/Kiritimati (UTC+14, no
+ * DST). Override with RECALL_TEST_HOST_TZ, e.g. `RECALL_TEST_HOST_TZ=UTC` to
+ * match the production container. Set here, before workers start, so every
+ * forked worker inherits it.
+ */
+process.env.TZ = process.env.RECALL_TEST_HOST_TZ ?? 'Pacific/Kiritimati';
+
 export default defineConfig({
   test: {
     environment: 'node',
