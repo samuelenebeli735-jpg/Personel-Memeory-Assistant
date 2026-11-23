@@ -72,6 +72,7 @@ function envToInput(env: NodeJS.ProcessEnv) {
     logLevel: env.LOG_LEVEL,
     logMessageContent: env.LOG_MESSAGE_CONTENT,
     trustProxy: env.TRUST_PROXY,
+    testRateLimitPerMinute: env.RECALL_TEST_RATE_LIMIT_PER_MINUTE,
     databaseUrl: env.DATABASE_URL,
     telegram: {
       enabled: env.TELEGRAM_ENABLED,
