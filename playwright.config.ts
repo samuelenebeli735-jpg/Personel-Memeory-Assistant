@@ -48,6 +48,11 @@ const serverEnv: Record<string, string> = {
   BRIEFING_ENABLED: 'false',
   LOG_LEVEL: 'warn',
   LOG_MESSAGE_CONTENT: 'false',
+  // Every browser request comes from 127.0.0.1, so a fast machine can exceed the
+  // production limit of 240 requests per minute from one address. This raises
+  // the global limit for this test server only; the server refuses the setting
+  // unless NODE_ENV=test. Login keeps its own limit of 10 per minute.
+  RECALL_TEST_RATE_LIMIT_PER_MINUTE: '5000',
 };
 
 export default defineConfig({

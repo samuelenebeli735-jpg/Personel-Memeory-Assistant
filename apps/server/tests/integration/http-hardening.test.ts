@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
-import { buildServer, type BuildServerOptions } from '../../src/http/server.js';
+import { buildServer, GLOBAL_RATE_LIMIT_PER_MINUTE, type BuildServerOptions } from '../../src/http/server.js';
 import { createTestContext, type EnvOverrides } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
 
@@ -155,6 +155,57 @@ describe('HTTP boundary hardening', () => {
       });
       expect(limited.statusCode, limited.body).toBe(429);
       expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reports the 240/minute limit to clients when no test override is set', async () => {
+    const app = await buildApp({ TRUST_PROXY: 'false' }, { enableRateLimit: true });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/test/ip', remoteAddress: '10.4.5.7' });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-ratelimit-limit']).toBe(String(GLOBAL_RATE_LIMIT_PER_MINUTE));
+      expect(GLOBAL_RATE_LIMIT_PER_MINUTE).toBe(240);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('raises only the global limit when the test-only override is set', async () => {
+    const app = await buildApp(
+      { TRUST_PROXY: 'false', RECALL_TEST_RATE_LIMIT_PER_MINUTE: '250' },
+      { enableRateLimit: true },
+    );
+
+    try {
+      // Requests 241-250 would have been refused at the production limit.
+      for (let i = 0; i < 250; i += 1) {
+        const response = await app.inject({ method: 'GET', url: '/test/ip', remoteAddress: '10.4.5.8' });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers['x-ratelimit-limit']).toBe('250');
+      }
+      // Still a limit: the 251st request is refused.
+      const limited = await app.inject({ method: 'GET', url: '/test/ip', remoteAddress: '10.4.5.8' });
+      expect(limited.statusCode, limited.body).toBe(429);
+
+      // Login keeps its own, tighter limit of 10 per minute.
+      for (let i = 0; i < 10; i += 1) {
+        const login = await app.inject({
+          method: 'POST',
+          url: '/api/auth/login',
+          remoteAddress: '10.4.5.9',
+          payload: { password: 'wrong-password' },
+        });
+        expect(login.statusCode).not.toBe(429);
+      }
+      const loginLimited = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: '10.4.5.9',
+        payload: { password: 'wrong-password' },
+      });
+      expect(loginLimited.statusCode, loginLimited.body).toBe(429);
     } finally {
       await app.close();
     }

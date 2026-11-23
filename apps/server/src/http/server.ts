@@ -34,6 +34,9 @@ export interface RuntimeStatus {
   telegramStatus(): HealthDto['providers']['telegram'];
 }
 
+/** Requests per minute per client address on ordinary routes (production policy). */
+export const GLOBAL_RATE_LIMIT_PER_MINUTE = 240;
+
 export interface BuildServerOptions {
   runtime?: RuntimeStatus;
   /** Set to false in tests to reduce noise. */
@@ -67,11 +70,21 @@ export async function buildServer(
   });
 
   if (options.enableRateLimit !== false) {
+    // Only the browser test server may raise the global limit, and only with
+    // NODE_ENV=test (enforced by config validation). It never lowers or
+    // disables it, and the tighter login and webhook limits are unaffected.
+    const globalMax = ctx.config.testRateLimitPerMinute ?? GLOBAL_RATE_LIMIT_PER_MINUTE;
+    if (ctx.config.testRateLimitPerMinute !== null) {
+      ctx.logger.warn('test-only global rate limit override active', {
+        perMinute: globalMax,
+        productionDefault: GLOBAL_RATE_LIMIT_PER_MINUTE,
+      });
+    }
     await app.register(rateLimit, {
       // Enabled globally; login and the public webhook override the bucket with
       // their tighter route-level limits below.
       global: true,
-      max: 240,
+      max: globalMax,
       timeWindow: '1 minute',
       keyGenerator: (request: FastifyRequest) => request.ip,
       errorResponseBuilder: () => ({
