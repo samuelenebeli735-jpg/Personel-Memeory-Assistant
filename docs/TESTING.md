@@ -70,6 +70,26 @@ The browser suite is not a substitute for the Docker/Caddy deployment check: it
 runs against a local production bundle and a local API, not against the public
 host or a publicly trusted TLS certificate.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request to `main`, on every push to
+`main`, and on demand (**Run workflow** in the Actions tab). A newer run for the
+same branch cancels the older one. Jobs run in parallel on `ubuntu-latest` with
+Node 24 and npm's lockfile install (`npm ci`); each first builds
+`@recall/shared`, because the other workspaces import its built `dist/`.
+
+| Job | What it runs |
+| --- | --- |
+| Typecheck, Prisma, web tests, build | `npm run typecheck`; the web typecheck; `prisma validate`; `prisma migrate diff --exit-code` (the migrations must produce exactly the schema); the web tests; `npm run build:all` |
+| Server tests | `npm run test --workspace @recall/server`, twice: with the test host at `Pacific/Kiritimati` (UTC+14, the suite's default) and at `UTC` (`RECALL_TEST_HOST_TZ`) |
+| Browser tests (Edge + axe) | `npm run test:e2e` with Microsoft Edge, installed only if the runner lacks it. Playwright retries a failed test once in CI, so check the run summary for tests reported as flaky. On failure, `test-results/` (HTML report, traces, screenshots) is uploaded as the `playwright-results` artifact for 7 days. |
+
+The workflow has read-only repository access and uses no secrets. No provider is
+configured: Telegram, AI and speech-to-text are tested only through in-process
+fakes, so CI never calls a live service. Every database is a disposable SQLite
+file on the runner; the browser suite generates random credentials per run.
+Actions are pinned to full commit SHAs, with the release version in a comment.
+
 ## Layout
 
 ```
