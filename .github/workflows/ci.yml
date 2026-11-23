@@ -1,0 +1,131 @@
+# Continuous integration for Recall.
+#
+# Reproduces the local verification on a clean Ubuntu runner: typechecks, Prisma
+# schema and migration checks, server and web tests, production builds and the
+# browser suite with axe. No secrets are used and no provider is configured:
+# Telegram, AI and speech-to-text are exercised only through in-process fakes.
+#
+# Actions are pinned to full commit SHAs of their official releases.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer run for the same branch or pull request replaces an older one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Only `prisma generate` (npm ci postinstall) reads this, as in the Dockerfile.
+  # Tests and the browser suite create their own disposable databases.
+  DATABASE_URL: file:/tmp/recall-ci-generate.db
+
+jobs:
+  checks:
+    name: Typecheck, Prisma, web tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      # @recall/shared resolves to its built dist/, which is not committed.
+      - name: Build shared package
+        run: npm run build --workspace @recall/shared
+      - name: Typecheck shared and server
+        run: npm run typecheck
+      - name: Typecheck web
+        run: npm run typecheck --workspace @recall/web
+      - name: Validate Prisma schema
+        run: node node_modules/prisma/build/index.js validate --schema apps/server/prisma/schema.prisma
+      - name: Check migrations match the schema
+        run: >-
+          node node_modules/prisma/build/index.js migrate diff
+          --from-migrations apps/server/prisma/migrations
+          --to-schema-datamodel apps/server/prisma/schema.prisma
+          --shadow-database-url file:/tmp/recall-ci-shadow.db
+          --exit-code
+      - name: Web tests
+        run: npm run test --workspace @recall/web
+      - name: Production builds
+        run: npm run build:all
+
+  server-tests:
+    name: Server tests (host TZ ${{ matrix.host_tz }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # UTC+14 is the suite's own default and exposes host-zone bugs; UTC
+        # matches the production container.
+        host_tz: [Pacific/Kiritimati, UTC]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build shared package
+        run: npm run build --workspace @recall/shared
+      - name: Server tests
+        run: npm run test --workspace @recall/server
+        env:
+          RECALL_TEST_HOST_TZ: ${{ matrix.host_tz }}
+
+  e2e:
+    name: Browser tests (Edge + axe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build shared package
+        run: npm run build --workspace @recall/shared
+      # The suite uses Playwright's `msedge` channel. Runner images usually
+      # include Edge; install it only when it is missing.
+      - name: Ensure Microsoft Edge
+        run: |
+          if [ -x /opt/microsoft/msedge/msedge ]; then
+            /opt/microsoft/msedge/msedge --version
+          else
+            npx playwright install --with-deps msedge
+          fi
+      # Builds the dashboard, prepares a disposable database with random
+      # credentials, and runs every spec. Playwright retries once when CI is set.
+      - name: Browser tests
+        run: npm run test:e2e
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
