@@ -2,7 +2,7 @@
 
 Legend: **Done** · **In progress** · **Not started**
 
-Last updated: 2026-10-22 (Milestone 7 complete; acceptance results recorded)
+Last updated: 2026-11-23 (Round 1 foundation fixes merged as PR #2, merge commit `7d808a2`)
 
 ---
 
@@ -638,6 +638,74 @@ claimed.
 
 ---
 
+## Round 1 — Foundation fixes  ·  **Done**
+
+Source: the 2026-11-17 completion audit (findings N1–N17). Merged into `main` on
+2026-11-23 as PR #2 (merge commit `7d808a2`; reviewed head `54f3157`).
+
+| ID | Task | Commit | Audit finding | Decision |
+| --- | --- | --- | --- | --- |
+| R1-00 | Preserve M6–M8 work on `feat/m6-m8` | `aa59749` | — | — |
+| R1-01 | Settings saves; AI toggle; section checkboxes; IANA zones | `c408642` | N1 | — |
+| R1-02 | One owner time zone (dashboard + server); capture ack zone | `183a510` | N2, N10 | D54 |
+| R1-02b | Natural-language dates in the Settings zone | `2d9b6ac` | (found during R1-02) | D55 |
+| R1-03 | Ask answers date and time questions | `1c4631f` | N3 | D56 |
+| R1-04 | AI providers: SDK, explicit model, privacy by default | `e589c44` | N4, N6 | D57 |
+| R1-05 | Telegram polling recovery; audible reminders | `dc83591`, `3abc799`, `bea4359` | N5 | D58 |
+| R1-06 | Briefing sent within 2 hours or skipped | `75ccb0e`, `3abc799` | N12 | D59 |
+| — | `/settings` AI line; test totals; replay-claim docs | `babe8a1`, `54f3157` | — | — |
+
+**Verification evidence:** At `bea4359`, server tests passed 758/758 under UTC+14
+and UTC, web tests passed 67/67, and Playwright passed 80/80 with axe. The
+subsequent documentation-only commit `54f3157` passed typecheck and 24/24 polling
+tests. No live Telegram, AI or speech-to-text call was made. The repository has no
+CI workflow.
+
+**Accepted limitations** (owner decision, 2026-11-23; see D58 and OPERATIONS):
+retry and dead-letter state are in process memory and reset on restart, with no
+durable dead-letter record; a command can run twice in a narrow restart window; a
+voice note can be transcribed again; an acknowledged dead letter is not recovered
+automatically; the answer on a dead-lettered button press is best effort.
+
+## Master completion checklist
+
+Moved here from §19 of the 2026-11-17 audit; this file is now the source of truth.
+
+- [x] Backend capture, classification, library, search, reminders and briefings implemented and tested
+- [x] Migrations consistent with the schema; dev.db integrity ok
+- [x] Typecheck and production build pass
+- [x] Uncommitted work preserved on a branch (`feat/m6-m8` @ `aa59749`)
+- [x] Settings page saves correctly (N1) — R1-01
+- [x] Dashboard time zone follows settings (N2) — R1-02
+- [x] Ask answers date and time questions (N3) — R1-03
+- [x] AI provider transports correct and tested against mocks (N4, N6) — R1-04; live calls not yet made
+- [x] Telegram mode switch self-heals (N5) — R1-05
+- [x] Playwright suite green after Round 1 (80/80) — not yet extended to Round 2 features
+- [ ] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2
+- [ ] CI workflow reproducing the checks on pull requests
+- [ ] Local Docker drill re-run on the current code (R3-05)
+- [ ] Host deployed with trusted TLS (R4-01)
+- [ ] Live Telegram capture and delivery verified (R4-02)
+- [ ] Live AI and speech-to-text smoke tests (R4-03)
+- [ ] Backup cron, off-host copy and a restore performed on the host (R4-04)
+- [ ] Monitoring and alerting in place (N14, R4-04)
+- [ ] Docs reconciled and release tagged (R4-05)
+
+**Still open from the audit:** N7 dashboard gaps; N8 silent create-modal failures;
+N9 `capturesApi` contract drift; N11 `db:seed` points at a missing file; N13
+MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
+N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
+failed once under load (not seen since; cause unknown).
+
+**Later rounds:** Round 2 (R2-01 to R2-07) is not started. Round 3 is not
+started except in part: R3-01's re-run of the existing Playwright suite passed
+(80/80) but is not yet extended to Round 2 features, and R3-02's briefing window
+was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
+In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
+R4-05 (docs reconciled, release tagged) is not started.
+
+---
+
 ## Engineering backlog
 
 - [ ] SQLite FTS5 virtual table for large-text search once volume justifies it
@@ -647,6 +715,8 @@ claimed.
 - [ ] Multi-user support (schema already keys everything for a single owner; the
       upgrade path is documented).
 - [ ] Coverage thresholds enforced in CI.
+- [ ] Durable Telegram dead-letter record (needs a migration; see D58).
+- [ ] CI workflow running typecheck and the server and web tests on pull requests.
 
 ## Test-data policy
 
