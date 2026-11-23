@@ -682,7 +682,11 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 - [x] Telegram mode switch self-heals (N5) — R1-05
 - [x] Playwright suite green after Round 1 (80/80) — not yet extended to Round 2 features
 - [ ] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2
-- [ ] CI workflow reproducing the checks on pull requests
+- [x] CI workflow reproducing the checks on pull requests — `.github/workflows/ci.yml` (PR #4, with the test-only rate-limit fix in PR #5)
+  - Verified 2026-11-23 by the first run on `main` (run `45137724098`, commit `08454cb`):
+    server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
+    80/80 with axe and zero retries, typechecks and production builds pass, Prisma
+    schema valid with no migration drift.
 - [ ] Local Docker drill re-run on the current code (R3-05)
 - [ ] Host deployed with trusted TLS (R4-01)
 - [ ] Live Telegram capture and delivery verified (R4-02)
@@ -716,7 +720,7 @@ R4-05 (docs reconciled, release tagged) is not started.
       upgrade path is documented).
 - [ ] Coverage thresholds enforced in CI.
 - [ ] Durable Telegram dead-letter record (needs a migration; see D58).
-- [ ] CI workflow running typecheck and the server and web tests on pull requests.
+- [x] CI workflow running typecheck and the server and web tests on pull requests (done 2026-11-23; see the master checklist).
 
 ## Test-data policy
 
