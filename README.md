@@ -23,6 +23,7 @@ screenshots of your activity.
 | 6. Voice + AI | speech-to-text with provenance, replaceable AI providers, per-capture cache, degraded operation | **Done** |
 | 7. Recall + briefings | database-grounded retrieval, configurable daily briefing | **Done** |
 | 8. Deployment | production config, persistent hosting, backups, recovery | **In progress** — Docker/Caddy stack, local backup/restore drill and operations runbook; live host/TLS validation pending |
+| Round 1 foundation fixes | audit 2026-11-17: settings, time zones, Ask dates, AI privacy, Telegram recovery, briefing deadline | **Done** — merged as PR #2 |
 
 Full detail, acceptance criteria and remaining work: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
