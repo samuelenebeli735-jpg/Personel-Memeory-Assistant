@@ -142,6 +142,24 @@ function isSafeProviderBaseUrl(value: string, nodeEnv: AppConfig['nodeEnv']): bo
   }
 }
 
+/**
+ * Test-only raise of the global HTTP rate limit (RECALL_TEST_RATE_LIMIT_PER_MINUTE).
+ *
+ * The browser suite sends every request from 127.0.0.1, so on a fast machine it
+ * can exceed the production limit of 240 requests per minute from one address.
+ * The setting can only raise the limit (never lower or disable it), and the
+ * schema below refuses it unless NODE_ENV=test.
+ */
+function envTestRateLimit() {
+  return z.preprocess((raw) => {
+    if (raw === undefined || raw === null) return null;
+    const value = String(raw).trim();
+    if (value === '') return null;
+    const num = Number(value);
+    return Number.isNaN(num) ? value : num;
+  }, z.number().int().min(241).max(100_000).nullable());
+}
+
 function envOptionalStr() {
   return z.preprocess((raw) => {
     if (raw === undefined || raw === null) return null;
@@ -198,6 +216,8 @@ export const configSchema = z
      * `true`, an address, or a comma-separated address/CIDR list are accepted.
      */
     trustProxy: envTrustProxy().default(false),
+    /** Test-only global rate limit per minute; null means the production default. */
+    testRateLimitPerMinute: envTestRateLimit(),
 
     databaseUrl: envStr('file:./dev.db'),
 
@@ -413,6 +433,18 @@ export const configSchema = z
         message: 'DEFAULT_TIME_ZONE must be an IANA zone such as Africa/Lagos',
       });
     }
+    // The override exists only for the browser test server. Refusing it outside
+    // NODE_ENV=test means a copied variable cannot change a real server's limit.
+    if (value.testRateLimitPerMinute !== null && value.nodeEnv !== 'test') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['testRateLimitPerMinute'],
+        message:
+          value.nodeEnv === 'production'
+            ? 'RECALL_TEST_RATE_LIMIT_PER_MINUTE is a test-only setting and is refused in production; remove it (the limit stays 240 requests per minute)'
+            : 'RECALL_TEST_RATE_LIMIT_PER_MINUTE is only accepted when NODE_ENV=test (the browser test server); remove it',
+      });
+    }
   });
 
 export type AppConfig = z.infer<typeof configSchema>;
@@ -462,6 +494,7 @@ export function envToConfigInput(env: NodeJS.ProcessEnv = process.env) {
     logLevel: env.LOG_LEVEL,
     logMessageContent: env.LOG_MESSAGE_CONTENT,
     trustProxy: env.TRUST_PROXY,
+    testRateLimitPerMinute: env.RECALL_TEST_RATE_LIMIT_PER_MINUTE,
     databaseUrl: env.DATABASE_URL,
     telegram: {
       enabled: env.TELEGRAM_ENABLED,

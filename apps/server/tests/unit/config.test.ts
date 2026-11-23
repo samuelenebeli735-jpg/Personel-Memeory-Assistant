@@ -334,3 +334,57 @@ describe('configuration validation', () => {
     // The logger redacts these keys; see logger tests.
   });
 });
+
+describe('test-only rate limit override (RECALL_TEST_RATE_LIMIT_PER_MINUTE)', () => {
+  const production = {
+    NODE_ENV: 'production',
+    DASHBOARD_PASSWORD: 'Correct-Horse-Battery-Staple-42',
+    SESSION_SECRET: 's9K2mQ7xR4tN8vB3cZ6dF1gH5jL0pW2yU7',
+    COOKIE_SECURE: 'true',
+  };
+
+  function issuesFor(overrides: Record<string, string | undefined>): string[] {
+    const result = parse(overrides);
+    return result.success ? [] : result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+  }
+
+  it('is off by default in every environment, leaving the production limit in place', () => {
+    expect(expectOk({}).testRateLimitPerMinute).toBeNull(); // test
+    expect(expectOk({ NODE_ENV: 'development' }).testRateLimitPerMinute).toBeNull();
+    expect(expectOk(production).testRateLimitPerMinute).toBeNull();
+    expect(expectOk({ RECALL_TEST_RATE_LIMIT_PER_MINUTE: '' }).testRateLimitPerMinute).toBeNull();
+  });
+
+  it('is accepted with NODE_ENV=test, which is how the browser test server runs', () => {
+    expect(expectOk({ RECALL_TEST_RATE_LIMIT_PER_MINUTE: '5000' }).testRateLimitPerMinute).toBe(5000);
+  });
+
+  it('is refused in production, with a message that says why', () => {
+    const issues = issuesFor({ ...production, RECALL_TEST_RATE_LIMIT_PER_MINUTE: '5000' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('testRateLimitPerMinute');
+    expect(issues[0]).toContain('refused in production');
+  });
+
+  it('is refused in development, so a normal dev server cannot pick it up', () => {
+    const issues = issuesFor({ NODE_ENV: 'development', RECALL_TEST_RATE_LIMIT_PER_MINUTE: '5000' });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('only accepted when NODE_ENV=test');
+  });
+
+  it('can only raise the limit, never lower or disable it', () => {
+    for (const value of ['240', '1', '0', '-5', '100001', '2.5', 'unlimited', 'off']) {
+      expectInvalid({ RECALL_TEST_RATE_LIMIT_PER_MINUTE: value }, 'testRateLimitPerMinute');
+    }
+    expect(expectOk({ RECALL_TEST_RATE_LIMIT_PER_MINUTE: '241' }).testRateLimitPerMinute).toBe(241);
+  });
+
+  it('makes loadConfig fail in production rather than start with a changed limit', () => {
+    expect(() =>
+      loadConfig({
+        loadFiles: false,
+        env: testEnv({ ...production, RECALL_TEST_RATE_LIMIT_PER_MINUTE: '5000' }) as NodeJS.ProcessEnv,
+      }),
+    ).toThrow(ConfigError);
+  });
+});

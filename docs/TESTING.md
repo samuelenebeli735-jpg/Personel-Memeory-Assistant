@@ -57,6 +57,14 @@ saves the session for the workflow project. Axe is run with the `wcag2a` and
 `wcag2aa` tags against the login screen and six authenticated pages in the default
 light color scheme.
 
+Every browser request comes from `127.0.0.1`, so on a fast machine the suite can
+exceed the production limit of 240 requests per minute from one address (the
+first Linux CI run did, and the dashboard then showed the login screen). The test
+server therefore runs with `RECALL_TEST_RATE_LIMIT_PER_MINUTE=5000`, set only in
+`playwright.config.ts`. The setting can only raise the global limit, login keeps
+its own limit of 10 per minute, and configuration validation refuses it unless
+`NODE_ENV=test`, so production and development servers cannot use it.
+
 Useful focused commands:
 
 ```bash
@@ -209,7 +217,8 @@ follow-up that makes Telegram `/settings` report the AI privacy rule adds 8
 server tests (746), and the PR #2 review fixes (Telegram acknowledges an update
 only after handling it; the briefing deadline is rechecked before sending) add
 6 more (752), and the verification follow-up (dead-letter notice failures,
-dead-lettered button presses, a slow briefing send) adds 6 more, giving the 758
+dead-lettered button presses, a slow briefing send) adds 6 more (758). The
+test-only rate-limit setting adds 8 (6 configuration, 2 HTTP), giving the 766
 below. The server suite passes both with the test
 host pinned to `Pacific/Kiritimati` (UTC+14, the default) and with
 `RECALL_TEST_HOST_TZ=UTC`.
@@ -218,7 +227,7 @@ Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
  Test Files  42 passed (42)
-      Tests  758 passed (758)
+      Tests  766 passed (766)
 ```
 
 Before the Windows worker cap, a default-worker run timed out in four setup hooks
@@ -260,7 +269,7 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 
 | Suite | Tests | Result |
 | --- | --- | --- |
-| `unit/config.test.ts` | 33 | passed |
+| `unit/config.test.ts` | 39 | passed |
 | `unit/time.test.ts` | 16 | passed |
 | `unit/nlp.test.ts` | 40 | passed |
 | `unit/rules-classifier.test.ts` | 20 | passed |
@@ -295,14 +304,14 @@ the 2-hour briefing deadline (R1-06, `briefing-delivery`).
 | `integration/telegram-reminders.test.ts` | 19 | passed |
 | `integration/telegram-bridge.test.ts` | 5 | passed |
 | `integration/detail-routes.test.ts` | 3 | passed |
-| `integration/http-hardening.test.ts` | 5 | passed |
+| `integration/http-hardening.test.ts` | 7 | passed |
 | `integration/ask-api.test.ts` | 19 | passed |
 | `integration/ask-temporal.test.ts` | 21 | passed |
 | `integration/ai-privacy.test.ts` | 15 | passed |
 | `integration/briefing-api.test.ts` | 26 | passed |
 | `integration/briefing-delivery.test.ts` | 47 | passed |
 | `integration/dashboard-api.test.ts` | 2 | passed |
-| **Total** | **758** | **all passed** |
+| **Total** | **766** | **all passed** |
 
 Dashboard suite:
 
