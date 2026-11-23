@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { capturesApi, type CaptureDto, type CaptureInput } from '../lib/api'
-import { getTimeZone } from '../lib/date'
+import { useTimeZone } from '../hooks/useTimeZone'
 import { Button, Textarea, Card, EmptyState } from '../components/ui'
 import { CaptureRow } from '../components/record-rows'
 import { CaptureIcon } from '../components/Layout'
@@ -15,7 +15,7 @@ export function CapturePage() {
   const [recentCaptures, setRecentCaptures] = useState<CaptureDto[]>([])
   const [isLoadingCaptures, setIsLoadingCaptures] = useState(true)
 
-  const timeZone = getTimeZone()
+  const timeZone = useTimeZone().timeZone
 
   const loadRecent = async () => {
     try {

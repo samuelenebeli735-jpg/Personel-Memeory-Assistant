@@ -103,16 +103,93 @@ Polling and webhook mode are mutually exclusive; there is no fallback from one t
 the other, so a misconfigured deployment fails loudly instead of silently dropping
 messages.
 
+**Telegram is a temporary bridge (D58).** It delivers reminders and the daily
+briefing, and accepts captures and commands, until ALIVE's native Windows and
+Android notifications exist. It is kept reliable but not extended, and it will be
+retired only after native notifications are implemented, tested and confirmed
+reliable.
+
+**What depends on polling.** Polling (or the webhook) carries only what you send
+*to* the bot: captures, voice notes, `/snooze`, `/cancel`, `/ask` and the
+correction buttons. Reminders and briefings are sent with `sendMessage` to the
+first `TELEGRAM_OWNER_IDS` entry and keep working while polling is down.
+
+**Sound.** Reminders arrive with the normal Telegram alert (sound or vibration,
+as set on the phone). The daily briefing arrives silently. Quiet hours and the
+daily cap still apply to both.
+
+**Switching from webhook to polling.** Telegram refuses `getUpdates` while a
+webhook is set (HTTP 409). In polling mode Recall checks for a webhook before the
+first poll and removes it, keeping pending updates (`drop_pending_updates:
+false`); the log names the old webhook's host only. If the webhook comes back
+mid-run, it is removed again at most once every 10 minutes. A webhook that keeps
+returning means another deployment is using the same bot token in webhook mode:
+give each deployment its own bot token.
+
 Operational notes:
 
-- **Polling offset lives in memory.** A restart re-fetches the last few updates.
-  The `(source, externalId)` idempotency key means each one is recognised and no
-  second capture is stored — the bot simply replies "Already saved". Persistent
-  offsets may be added later; the current behaviour is intentional and safe.
+- **Polling offset lives in memory.** A restart re-fetches every update Telegram
+  has not yet seen acknowledged. For captures the `(source, externalId)`
+  idempotency key means each one is recognised and no second capture is stored —
+  the bot simply replies "Already saved". Commands are not de-duplicated: a
+  command handled just before the process stopped, but not yet acknowledged, can
+  run a second time (for example `/remind` creating a second reminder). The
+  window is the time between handling and the next poll, normally a fraction of
+  a second. Persistent offsets may be added later.
 - **The poll loop backs off.** Transient failures retry with exponential backoff
-  and honour Telegram's `retry_after`. An invalid token aborts polling with
-  `telegram getMe failed` but never stops the HTTP API — captures via the web or
-  CLI keep working, so a bot outage cannot lose data.
+  (capped at 30 seconds) and honour Telegram's `retry_after`. The start-up token
+  check retries the same way, so a server that starts before the network is
+  ready begins polling once it is. Only a rejected token (401/403/404) stops
+  polling, with `telegram rejected the bot token`; it never stops the HTTP API —
+  captures via the web or CLI keep working, so a bot outage cannot lose data.
+- **A message is acknowledged only after it was handled.** If handling an
+  update fails (for example the database is briefly unavailable), Recall does
+  not move past it: later updates wait, and the same update is fetched again
+  after the normal backoff (`failed to handle telegram update N (attempt k of
+  10) - it will be retried`). A capture is de-duplicated by its Telegram
+  message id, so a retry cannot store it twice; a voice note can be downloaded
+  and transcribed again on a retry if the failure came after transcription. An
+  update that cannot succeed is dead-lettered so it cannot block the bot
+  forever: immediately when the input is invalid, otherwise after 10 attempts.
+  The nine waits before the tenth attempt are 1 + 2 + 4 + 8 + 16 + 30 + 30 + 30
+  + 30 = 151 seconds, about 2.5 minutes (longer if an earlier poll failure had
+  already raised the backoff). A dead letter is logged as an error (ids and
+  reason only, never the text), counted in health (`deadLetteredUpdates`,
+  `lastDeadLetterAt`), and the bot tells you: for a message, which one it could
+  not process and that it may not have been saved; for a button press, that its
+  action may not have taken effect. If that notice cannot be delivered, the
+  dead letter still stands; the failure is logged as an error (`could not tell
+  the owner about a dead-lettered telegram update`) and counted in
+  `deadLetterNoticesFailed`.
+- **Retry and dead-letter state is not durable.** All of it is held in process
+  memory: attempt counts, retry timing, the offset and the health counters. A
+  restart resets them; there is no dead-letter record in the database. In
+  practice:
+  - An update not yet acknowledged when the process stops (one being retried,
+    or one handled but not yet acknowledged) is delivered again after the
+    restart and starts again at attempt 1. Captures are recognised by message
+    id; commands can run twice; voice notes can be downloaded and transcribed
+    again.
+  - A dead-lettered update that was already acknowledged is not replayed after a
+    restart; Telegram does not redeliver it and Recall keeps no copy.
+  - The error log (if your process manager keeps it) and your Telegram chat
+    history may still show what happened, but they are evidence, not a Recall
+    dead-letter record, and nothing recovers the message automatically. If in
+    doubt, check the dashboard and resend.
+- **Two copies polling with one token.** Telegram allows one poller per bot. The
+  second gets a 409 and logs `another copy of Recall is polling with this bot
+  token`; Recall deletes nothing and keeps retrying, so it takes over by itself
+  once the other copy stops. Stop one of them.
+- **Health shows the polling state.** `GET /api/health` reports
+  `providers.telegram.polling`: `state` (`starting`, `running`, `retrying`,
+  `stopped`), `lastPollAt`, `lastErrorAt`, a short `lastErrorCode`
+  (`webhook_conflict`, `poller_conflict`, `update_failed`,
+  `update_dead_lettered`, `http_<status>`, `timeout`, `network`),
+  `stoppedReason` (`token_rejected`, `shutdown`), `retryingUpdateId` (an update
+  being retried), `deadLetteredUpdates` / `lastDeadLetterAt` and
+  `deadLetterNoticesFailed`. It never contains messages
+  or the token, is kept in memory and resets on restart. It is `null` in webhook
+  mode or when the bot is off.
 - **Shutdown.** `SIGINT`/`SIGTERM` stops polling (with a 2-second cap on the
   in-flight long poll) before the HTTP server closes.
 - **Webhook registration is done for you.** On boot in webhook mode the process
@@ -150,11 +227,11 @@ text.
 | `STT_AUDIO_DIR` | `./data/audio` | Only used when retention is on; never served by the API |
 | `AI_PROVIDER` | `none` | `none`, `openai`, `openai-compatible` or `anthropic` |
 | `AI_API_KEY` | empty | Required when the provider is not `none` |
-| `AI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL; plain `http://` is accepted only for loopback hosts outside development |
-| `AI_MODEL` | provider default | Model name recorded in logs and used in the cache key |
+| `AI_BASE_URL` | empty (the provider's own endpoint: `https://api.anthropic.com` or `https://api.openai.com/v1`) | Set only for an OpenAI-compatible server or a gateway; plain `http://` is accepted only for loopback hosts outside development; an OpenAI address with `AI_PROVIDER=anthropic` is ignored with a startup warning |
+| `AI_MODEL` | none (**required** with a provider) | Model id, e.g. `claude-opus-5-5` or `claude-haiku-5-5`; recorded in logs and health and used in the cache key. The server refuses to start without it when a provider is set |
 | `AI_TIMEOUT_MS` | `15000` | Per-attempt timeout |
 | `AI_MAX_RETRIES` | `2` | Bounded retries for retryable failures |
-| `AI_ALLOW_RAW_TEXT` | `true` | Send capture text to the provider; enabling an AI provider therefore shares raw text unless this is explicitly set to `false` |
+| `AI_ALLOW_RAW_TEXT` | `false` | Opt-in permission to send your own text (captures, transcripts, Ask evidence) to the provider. Off: a configured provider receives nothing |
 
 Voice pipeline behaviour:
 
@@ -255,7 +332,9 @@ AI classification and cache:
 `GET /api/health` returns HTTP 200 with `status: "degraded"` when a dependency is
 down, and includes the database latency, scheduler state (last tick, due count)
 and whether AI/STT/Telegram are configured and enabled. This distinguishes
-"process down" from "dependency down".
+"process down" from "dependency down". In polling mode it also shows whether
+Telegram polling is actually working (`providers.telegram.polling`, see
+"Telegram bot runtime").
 
 ## 6a. Reminder scheduler configuration and behavior
 
@@ -318,13 +397,31 @@ same values.
 - **Off by default.** With the daily delivery disabled nothing is sent, but
   `GET /api/briefing` still returns a briefing on demand — the switch governs
   *scheduled delivery only*.
-- **Quiet hours and the daily cap defer, never drop.** A deferred attempt stays
-  `PENDING` with a future `nextRetryAt`; the row survives a restart. The daily
-  cap counts reminder and briefing deliveries together, because that is what the
-  owner experiences.
-- **A briefing belongs to its own day.** If it could not be delivered before
-  midnight it is skipped rather than delivered the next morning: a stale
-  briefing is worse than no briefing. The attempt is recorded as `SKIPPED`.
+- **Quiet hours and the daily cap defer, within a deadline.** A deferred attempt
+  stays `PENDING` with a future `nextRetryAt`; the row survives a restart. The
+  daily cap counts reminder and briefing deliveries together, because that is
+  what the owner experiences.
+- **Sent within 2 hours, or skipped (D59).** The window opens at the briefing
+  time. If that time falls inside quiet hours, it opens when those quiet hours
+  end instead (briefing 06:00, quiet hours until 09:00: sendable until 11:00).
+  It closes 2 real hours later; DST changes do not stretch it. The deadline
+  governs the *start* of the send: it is checked again on the live clock
+  immediately before the message is handed to Telegram, so time spent preparing
+  the briefing cannot push a send past it; a send that starts in time is not
+  cancelled if Telegram answers slowly. `deliveredAt` records when the send
+  finished. Nothing else
+  moves the deadline: a server that was off, a missing channel, the daily cap or
+  a failed send only use up the same window. A briefing still unsent at the
+  deadline is recorded as `SKIPPED` with the reason `more than 2 hours late`,
+  logged once (`daily briefing skipped: more than 2 hours late`), and never sent
+  later by a retry, a restart or a change of briefing time that day. Switching
+  the briefing on more than 2 hours after its time therefore starts it
+  tomorrow. The 2 hours are fixed in code (`BRIEFING_LATE_LIMIT_MS`); there is no
+  setting. Reminders keep their own rule (`REMINDER_OVERDUE_GRACE_HOURS`).
+- **A briefing belongs to its own day.** Midnight is a hard stop: a 23:00
+  briefing can be sent until 23:59 at the latest. A row still waiting from an
+  earlier day is skipped rather than delivered the next morning (reason `the
+  briefing day had passed`). Missed days are never caught up or combined.
 - **At-least-once with a bounded retry.** A transient failure is retried with
   exponential backoff (30 s base, 30-minute ceiling, 3 attempts in total). A
   permanent failure is recorded as `FAILED` and is not retried.
@@ -468,9 +565,13 @@ substitute for exercising the owner's real backup on the deployment host.
 | Port already in use | Change `PORT`, or stop the other process. |
 | Bot ignores your messages | `TELEGRAM_OWNER_IDS` does not contain your Telegram user id (not your username). Check with `npm run recall -- doctor` and the startup log line. |
 | Bot replies "This bot is private" | You are messaging from an id that is not in `TELEGRAM_OWNER_IDS`. |
-| `telegram getMe failed - polling not started` | The bot token is wrong or revoked. Nothing else is affected; capture via the API/CLI still works. |
+| `telegram rejected the bot token ... - polling stopped` | The bot token is wrong or revoked. Nothing else is affected; capture via the API/CLI still works. Fix the token and restart. |
+| `telegram getMe failed - retrying before polling starts` | Telegram is unreachable at start-up (often the network is not up yet). Recall keeps retrying and starts polling once it can. |
 | `telegram polling failed - retrying` | A transient network or Telegram error. Recall backs off (and honours `retry_after`) and recovers on its own. |
-| Duplicate-looking behaviour after a restart | A restart re-fetches the last few updates because the polling offset is in memory. Idempotency means no second capture is stored; the reply is simply "Already saved". |
+| `telegram webhook is set - removing it so polling can start` | The bot was last used in webhook mode. Expected once after switching to polling. |
+| `telegram webhook keeps returning - another deployment may be using this bot token in webhook mode` | Another deployment re-registers its webhook. Give each deployment its own bot token. |
+| `another copy of Recall is polling with this bot token` | Two processes poll with the same token. Stop one; the other recovers by itself. |
+| Duplicate-looking behaviour after a restart | A restart re-fetches the updates not yet acknowledged because the polling offset is in memory. For a capture, idempotency means no second capture is stored; the reply is simply "Already saved". A command (for example `/remind`) is not de-duplicated and can genuinely have run twice; check and remove the duplicate. A voice note may have been transcribed again. See "Retry and dead-letter state is not durable" in the Telegram bot runtime section. |
 | Webhook returns 401 | `TELEGRAM_WEBHOOK_SECRET` on the server does not match the `secret_token` Telegram sends. Re-register by restarting the server. |
 | Webhook returns 503 | `TELEGRAM_WEBHOOK_SECRET` is not set. Webhook mode will not accept unsigned updates. |
 | `A reminder is set.` never appears | A reminder is only created when you asked for one ("remind me …") *and* a time was recognised. Tasks with a deadline get a `dueAt`, not a reminder. |

@@ -6,6 +6,19 @@ import { Header, Sidebar } from "./components/Layout";
 import { LoginPage } from "./pages/Login";
 import { APP_ROUTES } from "./routes";
 import { useAuth } from "./hooks/useAuth";
+import { TimeZoneProvider, useTimeZone } from "./hooks/useTimeZone";
+
+/** Shown only when Settings could not be read and the browser zone is in use. */
+function TimeZoneFallbackNotice() {
+  const { source, timeZone } = useTimeZone();
+  if (source === "settings") return null;
+  return (
+    <div className="card" role="status" style={{ padding: "12px 16px", marginBottom: "16px" }}>
+      Your Settings could not be loaded, so times are shown in this browser's
+      time zone ({timeZone}). Reload the page to try again.
+    </div>
+  );
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -51,6 +64,7 @@ function AppLayout() {
           onToggleMobileNav={() => setMobileNavOpen((open) => !open)}
         />
         <main className="page" role="main">
+          <TimeZoneFallbackNotice />
           <Routes>
             {APP_ROUTES.map((route) => (
               <Route
@@ -76,7 +90,9 @@ function App() {
             path="/*"
             element={
               <ProtectedRoute>
-                <AppLayout />
+                <TimeZoneProvider>
+                  <AppLayout />
+                </TimeZoneProvider>
               </ProtectedRoute>
             }
           />

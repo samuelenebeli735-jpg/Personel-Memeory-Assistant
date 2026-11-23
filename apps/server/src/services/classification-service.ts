@@ -12,6 +12,7 @@
  */
 import { classifyCaptureSchema, type Classification, type CaptureKind } from '@recall/shared';
 
+import { aiForPersonalText } from '../ai/access.js';
 import type { AppContext } from '../context.js';
 import { ProviderError } from '../lib/errors.js';
 import { sha256Hex } from '../lib/hash.js';
@@ -219,9 +220,12 @@ export async function classifyCaptureText(
     knownProjects: input.knownProjects ?? [],
   };
 
-  const useAi = ctx.ai !== null && settings.aiEnabled && input.forceRules !== true;
-  if (useAi && ctx.ai) {
-    const provider = ctx.ai;
+  // The capture text is personal: it goes to the provider only when the owner
+  // enabled AI in Settings AND the server allows personal text to leave
+  // (AI_ALLOW_RAW_TEXT). Otherwise the rules classify it, without a warning.
+  const access = aiForPersonalText(ctx, settings);
+  if (access.provider && input.forceRules !== true) {
+    const provider = access.provider;
     const cacheKey = input.captureId
       ? classificationCacheKey({
           text: request.text,

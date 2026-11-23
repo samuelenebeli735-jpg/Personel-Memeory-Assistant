@@ -166,8 +166,29 @@ export interface SettingsDto {
   locale: string;
   telegramOwnerConfigured: boolean;
   aiProviderConfigured: boolean;
+  /** Server setting AI_ALLOW_RAW_TEXT (read-only here): personal text may be sent to the AI provider. */
+  aiRawTextAllowed?: boolean;
   sttProviderConfigured: boolean;
   updatedAt: string;
+}
+
+/** Telegram polling state for health. Times and a short code only — never messages or tokens. */
+export interface TelegramPollingStatusDto {
+  /** starting: token check / webhook removal; retrying: last poll failed. */
+  state: 'starting' | 'running' | 'retrying' | 'stopped';
+  /** Last successful `getUpdates` (ISO). */
+  lastPollAt: string | null;
+  lastErrorAt: string | null;
+  /** e.g. `webhook_conflict`, `poller_conflict`, `update_failed`, `http_502`, `timeout`, `network`. */
+  lastErrorCode: string | null;
+  stoppedReason: 'token_rejected' | 'shutdown' | null;
+  /** An update whose handling failed and is being retried (not yet acknowledged). */
+  retryingUpdateId: number | null;
+  /** Updates given up on since start-up; each one was logged and the owner was asked to resend. */
+  deadLetteredUpdates: number;
+  lastDeadLetterAt: string | null;
+  /** Dead-letter notices that could not be delivered to the owner (each one is also logged as an error). */
+  deadLetterNoticesFailed: number;
 }
 
 export interface HealthDto {
@@ -182,9 +203,30 @@ export interface HealthDto {
     scheduledTotal: number;
   };
   providers: {
-    ai: { provider: string; configured: boolean; enabled: boolean };
+    ai: {
+      provider: string;
+      configured: boolean;
+      enabled: boolean;
+      /** Configured model id (AI_MODEL), or null when no provider. */
+      model?: string | null;
+      /** AI_ALLOW_RAW_TEXT: personal text may be sent to the provider. */
+      rawTextAllowed?: boolean;
+      /** Last successful provider call since the process started (UTC ISO). */
+      lastSuccessAt?: string | null;
+      /** Last failed provider call since the process started (UTC ISO). */
+      lastFailureAt?: string | null;
+      /** Sanitised failure code, e.g. "http_429", "timeout", "refused"; never a message. */
+      lastFailureCode?: string | null;
+    };
     stt: { provider: string; configured: boolean; enabled: boolean };
-    telegram: { enabled: boolean; mode: string; configured: boolean; ownerConfigured: boolean };
+    telegram: {
+      enabled: boolean;
+      mode: string;
+      configured: boolean;
+      ownerConfigured: boolean;
+      /** Present while the bot runs in polling mode; null otherwise. */
+      polling?: TelegramPollingStatusDto | null;
+    };
   };
   counts: { captures: number; tasks: number; reminders: number; pendingDeliveries: number };
 }
@@ -228,6 +270,21 @@ export interface SearchResponse {
   query: Record<string, unknown>;
 }
 
+/**
+ * The period a time question was answered for ("tomorrow", "this week").
+ * Clients display it without parsing the answer text.
+ */
+export interface AskPeriod {
+  /** Inclusive start, UTC ISO-8601. */
+  start: string;
+  /** Exclusive end, UTC ISO-8601. */
+  end: string;
+  /** Human-readable label in the owner's zone, e.g. "Tomorrow, Sun 18 Oct". */
+  label: string;
+  /** IANA zone the period was interpreted in (the owner's Settings zone). */
+  timeZone: string;
+}
+
 export interface AskResponse {
   grounded: boolean;
   answer: string;
@@ -236,6 +293,8 @@ export interface AskResponse {
   provider: string;
   /** True when the answer came from deterministic retrieval, not a model. */
   deterministic: boolean;
+  /** Present when the question was about a period of time. Optional and additive. */
+  period?: AskPeriod;
 }
 
 export interface CaptureAckDto {

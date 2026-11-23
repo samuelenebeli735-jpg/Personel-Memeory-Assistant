@@ -88,8 +88,10 @@ apps/server/tests/
 │   ├── retry.test.ts               backoff, caps, jitter, retry policy
 │   ├── auth.test.ts                session signing, tampering, expiry, log redaction
 │   ├── telegram-format.test.ts     commands, confirmations, keyboards, callback data
-│   ├── telegram-notifier.test.ts   proactive delivery, failure classification
-│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, bad update
+│   ├── telegram-notifier.test.ts   proactive delivery, failure classification, sound vs silent
+│   ├── telegram-polling.test.ts    offset, backoff, stop, bad token, failed-update retry and
+│   │                               dead letter, webhook and poller 409s, start-up retries,
+│   │                               status codes, no token in logs
 │   ├── telegram-client.test.ts     bounded file stream, Content-Length, cancel on cap
 │   ├── chat-providers.test.ts      provider request shape and response parsing
 │   ├── library-format.test.ts      snippets, search type resolution, list formatting
@@ -112,6 +114,8 @@ apps/server/tests/
     ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
     ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
     ├── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
+    ├── telegram-bridge.test.ts     reminders (audible) and briefings (silent) delivered while
+    │                               polling is in conflict; polling status in health
     ├── detail-routes.test.ts       dashboard detail API: exact record, 401, non-leaking 404
     ├── ask-api.test.ts             /api/ask: grounding, citations, validation, fallback
     ├── briefing-api.test.ts        /api/briefing: sections, dates, config, disabled flag
@@ -145,6 +149,21 @@ apps/web/e2e/
 └── accessibility.spec.ts axe WCAG A/AA on login and authenticated pages
 ```
 
+### The host time zone is pinned
+
+`apps/server/vitest.config.ts` sets the test process's own zone to
+`Pacific/Kiritimati` (UTC+14, no DST), a zone no test uses as an owner zone.
+Recall must read dates in the owner's configured zone, never the host's; on a
+machine that happens to share the owner's zone (a laptop in `Africa/Lagos`) a
+host-zone bug is invisible, so the suite deliberately runs somewhere else. A
+guard test in `tests/unit/nlp.test.ts` fails if the pin is not in effect.
+
+To reproduce the production container, run with the host in UTC:
+
+```bash
+RECALL_TEST_HOST_TZ=UTC npm test --workspace @recall/server
+```
+
 ### How the database tests work
 
 `globalSetup` runs the **real** `prisma migrate deploy` once against a template
@@ -163,14 +182,23 @@ complete.
 
 ## Current results
 
-Executed 2026-11-01 on Node v24.17.0, npm 11.13.0, Windows (win32).
+Executed 2026-11-22 on Node v24.17.0, npm 11.13.0, Windows (win32), for the
+Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
+`75ccb0e` with **738 server, 67 dashboard and 80 browser tests** passing; the
+follow-up that makes Telegram `/settings` report the AI privacy rule adds 8
+server tests (746), and the PR #2 review fixes (Telegram acknowledges an update
+only after handling it; the briefing deadline is rechecked before sending) add
+6 more (752), and the verification follow-up (dead-letter notice failures,
+dead-lettered button presses, a slow briefing send) adds 6 more, giving the 758
+below. The server suite passes both with the test
+host pinned to `Pacific/Kiritimati` (UTC+14, the default) and with
+`RECALL_TEST_HOST_TZ=UTC`.
 
 Server suite (`npm run verify`; Vitest is capped at two workers on Windows):
 
 ```
- Test Files  37 passed (37)
-      Tests  590 passed (590)
-   Duration  100.72s
+ Test Files  42 passed (42)
+      Tests  758 passed (758)
 ```
 
 Before the Windows worker cap, a default-worker run timed out in four setup hooks
@@ -181,9 +209,8 @@ passes with nothing skipped. On Linux the default worker count is unchanged.
 Dashboard suite (`npm run test --workspace @recall/web`):
 
 ```
- Test Files  6 passed (6)
-      Tests  40 passed (40)
-   Duration  5.57s
+ Test Files  7 passed (7)
+      Tests  67 passed (67)
 ```
 
 The server suite was re-run after the Milestone 7 and Milestone 8 work. It
@@ -204,46 +231,58 @@ error states, every visible record-row link against the registered route table,
 search-filter serialization, local date formatting, and session bootstrap behavior
 when only the health probe fails.
 
+Round 1 adds: the Settings form contract (R1-01); one owner time zone, including
+the host-zone pin and DST cases (R1-02, R1-02b); date and time questions answered
+from timestamps (R1-03, `ask-temporal`); AI transport, configuration and privacy
+(R1-04, `ai-transport`, `ai-privacy`); Telegram polling recovery and the
+reminder/briefing sound split (R1-05, `telegram-polling`, `telegram-bridge`); and
+the 2-hour briefing deadline (R1-06, `briefing-delivery`).
+
 | Suite | Tests | Result |
 | --- | --- | --- |
-| `unit/config.test.ts` | 30 | passed |
+| `unit/config.test.ts` | 33 | passed |
 | `unit/time.test.ts` | 16 | passed |
-| `unit/nlp.test.ts` | 19 | passed |
+| `unit/nlp.test.ts` | 40 | passed |
 | `unit/rules-classifier.test.ts` | 20 | passed |
 | `unit/retry.test.ts` | 8 | passed |
 | `unit/auth.test.ts` | 14 | passed |
-| `unit/telegram-format.test.ts` | 23 | passed |
-| `unit/telegram-notifier.test.ts` | 8 | passed |
-| `unit/telegram-polling.test.ts` | 6 | passed |
+| `unit/telegram-format.test.ts` | 27 | passed |
+| `unit/telegram-notifier.test.ts` | 9 | passed |
+| `unit/telegram-polling.test.ts` | 24 | passed |
 | `unit/telegram-client.test.ts` | 3 | passed |
 | `unit/chat-providers.test.ts` | 2 | passed |
+| `unit/ai-transport.test.ts` | 25 | passed |
 | `unit/library-format.test.ts` | 24 | passed |
 | `unit/reminder-commands.test.ts` | 24 | passed |
 | `unit/voice-text.test.ts` | 24 | passed |
 | `unit/stt-transcriber.test.ts` | 9 | passed |
-| `unit/ask-service.test.ts` | 28 | passed |
+| `unit/ask-service.test.ts` | 35 | passed |
+| `unit/ask-temporal.test.ts` | 17 | passed |
 | `unit/briefing-service.test.ts` | 18 | passed |
-| `integration/health-and-auth.test.ts` | 17 | passed |
+| `integration/health-and-auth.test.ts` | 18 | passed |
 | `integration/telegram-capture.test.ts` | 31 | passed |
 | `integration/voice-capture.test.ts` | 32 | passed |
 | `integration/classification-cache.test.ts` | 11 | passed |
-| `integration/capture-api.test.ts` | 17 | passed |
+| `integration/capture-api.test.ts` | 20 | passed |
 | `integration/capture-atomicity.test.ts` | 3 | passed |
 | `integration/library-api.test.ts` | 22 | passed |
 | `integration/search-api.test.ts` | 26 | passed |
-| `integration/telegram-library.test.ts` | 15 | passed |
+| `integration/telegram-library.test.ts` | 16 | passed |
 | `integration/export-restore.test.ts` | 13 | passed |
 | `integration/backup-service.test.ts` | 6 | passed |
 | `integration/reminder-scheduler.test.ts` | 16 | passed |
 | `integration/reminder-api.test.ts` | 10 | passed |
 | `integration/telegram-reminders.test.ts` | 19 | passed |
+| `integration/telegram-bridge.test.ts` | 5 | passed |
 | `integration/detail-routes.test.ts` | 3 | passed |
 | `integration/http-hardening.test.ts` | 5 | passed |
 | `integration/ask-api.test.ts` | 19 | passed |
+| `integration/ask-temporal.test.ts` | 21 | passed |
+| `integration/ai-privacy.test.ts` | 15 | passed |
 | `integration/briefing-api.test.ts` | 26 | passed |
-| `integration/briefing-delivery.test.ts` | 21 | passed |
+| `integration/briefing-delivery.test.ts` | 47 | passed |
 | `integration/dashboard-api.test.ts` | 2 | passed |
-| **Total** | **590** | **all passed** |
+| **Total** | **758** | **all passed** |
 
 Dashboard suite:
 
@@ -251,21 +290,22 @@ Dashboard suite:
 | --- | --- | --- |
 | `lib/capture-content.test.ts` | 6 | passed |
 | `lib/search-filters.test.ts` | 7 | passed |
-| `lib/date.test.ts` | 8 | passed |
+| `lib/date.test.ts` | 18 | passed |
+| `lib/settings-form.test.ts` | 17 | passed |
 | `hooks/session-bootstrap.test.ts` | 7 | passed |
 | `pages/RecordDetails.test.tsx` | 9 | passed |
 | `navigation.test.tsx` | 3 | passed |
-| **Total** | **40** | **all passed** |
+| **Total** | **67** | **all passed** |
 
-Browser E2E (`npm run test:e2e`, Microsoft Edge 156 headless):
+Browser E2E (`npm run test:e2e`, Microsoft Edge 156 headless), run at `75ccb0e`:
 
 ```
- Running 71 tests using 1 worker
- 71 passed (2.8m)
+ 80 passed (5.1m)
 ```
 
-The 71 Playwright tests comprise 70 browser workflow/accessibility checks plus the
-login setup project. The run used a disposable database, the production dashboard
+The 80 Playwright tests comprise 79 browser workflow/accessibility checks plus the
+login setup project: the 71 of Milestone 8 plus the Settings specs (R1-01) and
+the time-zone specs (R1-02). The run used a disposable database, the production dashboard
 bundle and the real Fastify API. It covered login/logout, bad-password rejection,
 session expiry, anonymous access, keyboard navigation, modal focus trapping,
 responsive desktop/tablet/mobile layouts, empty and failed-request states, missing
@@ -676,7 +716,13 @@ Deliberately included as first-class cases, not afterthoughts:
 | Telegram delivery failure | `telegram-notifier.test.ts` — 429 retryable, 4xx permanent, network error never throws |
 | Duplicate Telegram updates | `telegram-capture.test.ts` — replay stores one capture |
 | Telegram API failure while polling | `telegram-polling.test.ts` — backoff, `retry_after`, bad token stops |
-| One bad update in a batch | `telegram-polling.test.ts` — loop continues, offset advances |
+| Webhook left over when switching to polling | `telegram-polling.test.ts` — removed before the first poll (pending updates kept); removed again on a mid-run 409, at most once per window |
+| Two copies polling with one token | `telegram-polling.test.ts` — nothing deleted, capped backoff, recovers by itself |
+| Network not ready at start-up | `telegram-polling.test.ts` — token check retries, then polling starts |
+| Polling down while reminders are due | `telegram-bridge.test.ts` — reminder and briefing still delivered |
+| One bad update in a batch | `telegram-polling.test.ts` — the failed update is fetched again and later updates are not acknowledged ahead of it; one that keeps failing (or is invalid) is dead-lettered visibly and the owner is asked to resend |
+| Dead-letter notice fails, or a button press is dead-lettered | `telegram-polling.test.ts` — the dead letter stands, the update is acknowledged only after it completes, the failure is logged and counted; a button press gets a notice that never claims the action happened. `telegram-bridge.test.ts` — with the real adapter and a failing capture write: no "Saved" confirmation, no capture row, the owner is told it may not have been saved |
+| Briefing send starting after its deadline | `briefing-delivery.test.ts` — the deadline is rechecked on the live clock before sending; a send that started in time but finished after the deadline is delivered; `deliveredAt` is when the send finished |
 | Restart with pending reminders | `reminder-scheduler.test.ts` and `briefing-delivery.test.ts` |
 | Invalid dates and ambiguous times | `nlp.test.ts`, `rules-classifier.test.ts`, `briefing-service.test.ts`, `briefing-api.test.ts` |
 | Unsupported answer claim | `ask-service.test.ts` and `ask-api.test.ts` — statement removed; deterministic fallback |

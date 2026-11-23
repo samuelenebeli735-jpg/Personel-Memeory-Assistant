@@ -10,7 +10,8 @@ import {
   type TaskUpdateInput,
   type TaskStatus,
 } from "../lib/api";
-import { getTimeZone } from "../lib/date";
+import { useTimeZone } from "../hooks/useTimeZone";
+import { localDateTimeToUtcIso } from "../lib/date";
 import {
   Button,
   Input,
@@ -58,9 +59,9 @@ export function TasksPage() {
     projectId: "",
   });
   const [createLoading, setCreateLoading] = useState(false);
-  const [createErrors, setCreateErrors] = useState<{ title?: string }>({});
+  const [createErrors, setCreateErrors] = useState<{ title?: string; dueAt?: string }>({});
 
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   const status = searchParams.get("status") || "";
   const page = parseInt(searchParams.get("page") || "1", 10);
   const limit = 25;
@@ -89,8 +90,14 @@ export function TasksPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createForm.title.trim()) {
-      setCreateErrors({ title: "Title is required" });
+    // A due date is optional; when given, it is read in the owner's Settings
+    // zone and sent as UTC (the API rejects a value without a zone).
+    const dueAt = localDateTimeToUtcIso(createForm.dueAt, timeZone);
+    const nextErrors: { title?: string; dueAt?: string } = {};
+    if (!createForm.title.trim()) nextErrors.title = "Title is required";
+    if (!dueAt.ok) nextErrors.dueAt = dueAt.error;
+    if (Object.keys(nextErrors).length > 0 || !dueAt.ok) {
+      setCreateErrors(nextErrors);
       return;
     }
     setCreateErrors({});
@@ -104,7 +111,7 @@ export function TasksPage() {
         priority: createForm.priority
           ? (createForm.priority as "LOW" | "MEDIUM" | "HIGH" | "URGENT")
           : null,
-        dueAt: createForm.dueAt || null,
+        dueAt: dueAt.value,
         projectId: createForm.projectId || null,
         tags: [],
         captureId: null,
@@ -354,9 +361,14 @@ export function TasksPage() {
             label="Due Date"
             type="datetime-local"
             value={createForm.dueAt}
-            onChange={(e) =>
-              setCreateForm({ ...createForm, dueAt: e.target.value })
-            }
+            onChange={(e) => {
+              setCreateForm({ ...createForm, dueAt: e.target.value });
+              if (createErrors.dueAt) {
+                setCreateErrors((prev) => ({ ...prev, dueAt: undefined }));
+              }
+            }}
+            error={createErrors.dueAt}
+            hint={`Optional. Time zone: ${timeZone}`}
           />
           <Input
             label="Project ID (optional)"

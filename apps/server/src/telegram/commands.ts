@@ -12,6 +12,7 @@
  */
 import { searchQuerySchema, type SearchQuery } from '@recall/shared';
 
+import { aiForPersonalText } from '../ai/access.js';
 import type { AppContext } from '../context.js';
 import { parseRemindCommand, parseSnoozeCommand, splitSnoozeTarget } from '../lib/reminder-commands.js';
 import { localDayRange } from '../lib/time.js';
@@ -107,7 +108,9 @@ const settings: CommandHandler = async ({ ctx }) => {
       briefingEnabled: row.briefingEnabled,
       briefingTime: row.briefingTime,
       aiProvider: ctx.config.ai.provider,
-      aiEnabled: row.aiEnabled && ctx.ai !== null,
+      // The same rule classification and Ask obey (R1-04), so this line cannot
+      // claim AI is active while AI_ALLOW_RAW_TEXT keeps the owner's text local.
+      aiBlockReason: aiForPersonalText(ctx, row).reason,
       sttProvider: ctx.config.stt.provider,
       ownerIds: ctx.config.telegram.ownerIds,
     }),
@@ -116,7 +119,7 @@ const settings: CommandHandler = async ({ ctx }) => {
 
 const inbox: CommandHandler = async ({ ctx }) => {
   const captures = await listInbox(ctx.db, 25);
-  return { text: formatCaptureList(captures, ctx.defaults.timeZone, 'Inbox — waiting for review') };
+  return { text: formatCaptureList(captures, await timeZoneOf(ctx), 'Inbox — waiting for review') };
 };
 
 /**

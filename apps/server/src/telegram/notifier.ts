@@ -4,6 +4,9 @@
  * This is the one place that turns an `OutboundMessage` into a Bot API call. It
  * never throws: a failed delivery is reported as an `ok: false` outcome so the
  * scheduler can record the attempt and retry, rather than losing it to a crash.
+ *
+ * Telegram is a temporary bridge (D58) until ALIVE's native notifications exist.
+ * Messages alert with sound unless `silent` is set (the daily briefing).
  */
 import type { Logger } from '../lib/logger.js';
 import type { DeliveryOutcome, Notifier, OutboundMessage } from '../ports.js';
@@ -60,7 +63,7 @@ export function createTelegramNotifier(options: TelegramNotifierOptions): Notifi
           chatId,
           text: message.text,
           replyMarkup: buttonsToReplyMarkup(message.buttons),
-          disableNotification: message.proactive === true,
+          disableNotification: message.silent === true,
         });
         return { ok: true, messageId: String(sent.message_id) };
       } catch (error) {

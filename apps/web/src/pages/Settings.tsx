@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
+import { useTimeZone } from '../hooks/useTimeZone'
 import { settingsApi, type SettingsDto } from '../lib/api'
 import { Button, Input, Select, Card } from '../components/ui'
 import {
@@ -158,6 +159,7 @@ function BriefingSectionsEditor({
 export function SettingsPage() {
   const { health, refreshHealth } = useAuth()
   const { showToast } = useToast()
+  const { setTimeZone } = useTimeZone()
   const [settings, setSettings] = useState<SettingsDto | null>(null)
   const [form, setForm] = useState<SettingsFormState | null>(null)
   const [errors, setErrors] = useState<SettingsFormErrors>({})
@@ -211,6 +213,9 @@ export function SettingsPage() {
       // Show exactly what the server stored, not what was sent.
       setSettings(saved)
       setForm(formFromSettings(saved))
+      // Every page reads the zone from the provider, so the dashboard switches
+      // to the saved zone immediately, without a reload.
+      setTimeZone(saved.timeZone)
       setErrors({})
       showToast('success', 'Settings saved')
       void refreshHealth()
@@ -370,9 +375,11 @@ export function SettingsPage() {
               checked={form.aiEnabled}
               label="Use AI to classify captures and answer questions"
               hint={
-                settings.aiProviderConfigured
-                  ? 'When off, nothing is sent to the AI provider; Recall uses its built-in rules and cited record summaries.'
-                  : 'No AI provider is configured on the server, so Recall uses its built-in rules either way.'
+                !settings.aiProviderConfigured
+                  ? 'No AI provider is configured on the server, so Recall uses its built-in rules either way.'
+                  : settings.aiRawTextAllowed === false
+                    ? 'The server does not allow your text to be sent to the AI provider (AI_ALLOW_RAW_TEXT is off), so nothing is sent even when this is on; Recall uses its built-in rules and cited record summaries.'
+                    : 'When off, nothing is sent to the AI provider; Recall uses its built-in rules and cited record summaries.'
               }
               onChange={(checked) => update('aiEnabled', checked)}
             />

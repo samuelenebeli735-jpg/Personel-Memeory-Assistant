@@ -453,7 +453,7 @@ function setup(
 ): { ctx: AppContext; adapter: TestTelegramAdapter['adapter']; client: TestTelegramAdapter['client']; fake: FakeTelegram } {
   const clock = advanceableClock('2026-10-17T10:00:00.000Z');
   const config = testConfig({
-    ...(options.ai ? { AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-not-real' } : {}),
+    ...(options.ai ? { AI_PROVIDER: 'openai', AI_API_KEY: 'sk-test-not-real', AI_MODEL: 'fake-model' } : {}),
     ...options.overrides,
   });
   const ctx = createAppContext({

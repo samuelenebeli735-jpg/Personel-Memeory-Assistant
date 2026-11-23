@@ -108,7 +108,8 @@ Telegram was tested against a fake Bot API only — no live bot token exists in 
 environment, so no live Telegram call is claimed.
 
 **Known limitation:** a restart re-fetches the last few updates because the polling
-offset is in memory; idempotency makes that harmless.
+offset is in memory; idempotency makes that harmless for captures, but a command can
+run twice (see D19 and D58).
 
 ---
 
@@ -206,7 +207,8 @@ backlog item.
 injectable clock; no live Telegram delivery was claimed.
 
 **Known limitation:** a restart re-fetches the last few Telegram updates because
-the polling offset is in memory; idempotency makes that harmless.
+the polling offset is in memory; idempotency makes that harmless for captures, but a
+command can run twice (see D19 and D58).
 
 ---
 

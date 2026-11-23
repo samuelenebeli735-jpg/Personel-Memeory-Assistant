@@ -58,6 +58,13 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
   const ai = resolveAiProvider(config, logger);
   const stt = resolveTranscriber(config, logger);
   if (!ai) logger.info('ai provider disabled - deterministic classification only');
+  if (ai && !config.ai.allowRawText) {
+    // Said once here rather than as a warning on every capture: it is the
+    // owner's privacy setting, not a failure.
+    logger.info('ai provider configured, but AI_ALLOW_RAW_TEXT is off - no personal text will be sent; rules and cited summaries are used', {
+      provider: config.ai.provider,
+    });
+  }
   if (!stt) logger.info('speech-to-text disabled - voice capture will be stored untranscribed');
 
   const capabilities = capabilitiesOf(config);
@@ -98,6 +105,7 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
 
   // The scheduler is database-backed: this object only owns the tick loop.
   const scheduler: ReminderScheduler = createReminderScheduler(ctx);
+  let polling: PollingController | null = null;
 
   const runtime: RuntimeStatus = {
     version: config.version,
@@ -108,6 +116,8 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
       mode: config.telegram.mode,
       configured: ctx.capabilities.telegramConfigured,
       ownerConfigured: config.telegram.ownerIds.length > 0,
+      // Assigned below once polling starts; read lazily on each health request.
+      polling: polling ? polling.status() : null,
     }),
   };
 
@@ -120,7 +130,6 @@ export async function start(config: AppConfig, logger: Logger): Promise<StartedA
   await app.listen({ host: config.host, port: config.port });
   logger.info('http listening', { url: `http://${config.host}:${config.port}` });
 
-  let polling: PollingController | null = null;
   if (adapter) {
     if (config.telegram.mode === 'webhook') {
       const url = config.telegram.webhookUrl;

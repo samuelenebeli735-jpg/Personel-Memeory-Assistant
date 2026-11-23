@@ -9,8 +9,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { EvidenceRecord } from '../../src/ai/types.js';
 import {
+  clocksIn,
+  dateVocabulary,
   deterministicAnswer,
   groundAnswer,
+  localWhen,
   NO_EVIDENCE_ANSWER,
   queryVariants,
   splitClaims,
@@ -210,5 +213,68 @@ describe('deterministicAnswer', () => {
   it('uses the singular for one record', () => {
     const answer = deterministicAnswer([searchItem({ id: 'a' })]);
     expect(answer).toContain('1 relevant record:');
+  });
+});
+
+describe('local dates in grounding (R1-03)', () => {
+  // 2026-10-21T08:00Z is Wednesday 09:00 in Lagos and 04:00 in New York.
+  const dentist: EvidenceRecord = {
+    type: 'EVENT',
+    id: 'e1',
+    title: 'Dentist appointment',
+    snippet: 'Dentist appointment',
+    timestamp: '2026-10-21T08:00:00.000Z',
+    status: null,
+  };
+  const lagos = { timeZone: 'Africa/Lagos', now: new Date('2026-10-20T10:00:00.000Z') };
+
+  it('renders a record time in the owner zone', () => {
+    expect(localWhen('2026-10-21T08:00:00.000Z', 'Africa/Lagos')).toBe('Wed 21 Oct 2026, 09:00');
+    expect(localWhen('2026-10-21T08:00:00.000Z', 'America/New_York')).toBe('Wed 21 Oct 2026, 04:00');
+  });
+
+  it('lists the forms an answer may use for that time, including the relative day', () => {
+    const words = dateVocabulary('2026-10-21T08:00:00.000Z', 'Africa/Lagos', lagos.now);
+    for (const form of ['Wednesday', 'Oct', 'October', '21st', '2026-10-21', '09:00', '9am', 'tomorrow']) {
+      expect(words).toContain(form);
+    }
+  });
+
+  it('keeps date statements that match the cited record and drops others', () => {
+    const answer =
+      'Your dentist appointment is tomorrow at 9am. It is on 21 October 2026. It is on 22 October. It is at 10:00.';
+    const result = groundAnswer(answer, [dentist], lagos);
+    expect(result.supported).toEqual([
+      'Your dentist appointment is tomorrow at 9am.',
+      'It is on 21 October 2026.',
+    ]);
+    expect(result.dropped).toEqual(['It is on 22 October.', 'It is at 10:00.']);
+  });
+
+  it('uses the owner zone, so the Lagos time is wrong for a New York owner', () => {
+    const result = groundAnswer('The dentist appointment is at 9am.', [dentist], { timeZone: 'America/New_York' });
+    expect(result.supported).toEqual([]);
+  });
+
+  it('still drops every date without a zone (the pre-R1-03 behaviour)', () => {
+    expect(groundAnswer('The dentist appointment is at 9am.', [dentist]).supported).toEqual([]);
+  });
+
+  it('adds the local time to the deterministic summary when a zone is known', () => {
+    const item: SearchResultItem = { ...dentist, status: undefined, matchedOn: ['title'] } as SearchResultItem;
+    expect(deterministicAnswer([item], 'Africa/Lagos')).toContain('Dentist appointment (Wed 21 Oct 2026, 09:00)');
+    expect(deterministicAnswer([item])).not.toContain('2026');
+  });
+});
+
+describe('clocksIn', () => {
+  it('normalises every common clock form to 24-hour HH:MM and ignores dates', () => {
+    expect(clocksIn('at 9am, 9:00 pm, 21:00, 12am and 12 pm on 2026-10-21')).toEqual([
+      '09:00',
+      '21:00',
+      '21:00',
+      '00:00',
+      '12:00',
+    ]);
   });
 });

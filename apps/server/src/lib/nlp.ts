@@ -14,12 +14,269 @@
 import type { ReminderRecurrence } from '@recall/shared';
 
 import * as chronoModule from 'chrono-node';
+import { DateTime } from 'luxon';
 
 import { localDateTimeToUtc, localDateKey, parseHhMm, toLocal } from './time.js';
 
 // chrono-node ships CommonJS; normalise both interop shapes.
 const chrono = ((chronoModule as unknown as { default?: typeof chronoModule }).default ??
   chronoModule) as typeof chronoModule;
+
+/* -------------------------------------------------------------------------- */
+/* Time zones                                                                  */
+/* -------------------------------------------------------------------------- */
+//
+// chrono-node's `timezone` option understands only minute offsets and a fixed
+// table of abbreviations ("UTC", "EST"). An IANA name such as "Africa/Lagos"
+// resolves to nothing, and chrono then silently uses the HOST's offset — so
+// the same phrase meant different instants on a Lagos laptop and a UTC server.
+//
+// The parser therefore never relies on chrono to know the owner's zone:
+//
+//  1. chrono gets the owner zone's numeric offset *at the reference instant*,
+//     so "today", "tomorrow" and "next Monday" are counted on the owner's
+//     calendar, whatever the host's zone.
+//  2. For a wall-clock phrase ("tomorrow at 9am") only chrono's local fields
+//     (date and time) are used; they are converted to UTC with the owner's
+//     IANA zone at the TARGET date, so a DST change between now and then is
+//     applied correctly.
+//  3. When chrono itself fixed the offset — an exact duration ("in 2 hours")
+//     or a zone written in the text ("9am UTC") — its instant is kept as is.
+
+/** Minimal view of chrono's parsed components used here. */
+interface ChronoComponents {
+  get(
+    component:
+      | 'year'
+      | 'month'
+      | 'day'
+      | 'weekday'
+      | 'hour'
+      | 'minute'
+      | 'second'
+      | 'millisecond'
+      | 'timezoneOffset',
+  ): number | null;
+  isCertain(component: 'timezoneOffset' | 'weekday' | 'day' | 'month' | 'year'): boolean;
+  date(): Date;
+  tags(): Set<string>;
+}
+
+/**
+ * chrono's casual English parser without its `ForwardDateRefiner`.
+ *
+ * That refiner (chrono-node 2.10) compares a reference shifted to the HOST's
+ * clock with a real instant, so "on friday" could mean last Friday on a host
+ * far from the owner's zone. `forwardDate` is still passed to chrono — it also
+ * widens what the duration parser accepts — but the forward rules are applied
+ * by `forwardIntoFuture` below, on real instants in the owner's zone.
+ */
+const parser = (() => {
+  const custom = chrono.casual.clone();
+  const before = custom.refiners.length;
+  custom.refiners = custom.refiners.filter((refiner) => refiner.constructor.name !== 'ForwardDateRefiner');
+  if (custom.refiners.length !== before - 1) {
+    throw new Error('chrono-node no longer has exactly one ForwardDateRefiner; review lib/nlp.ts');
+  }
+  return custom;
+})();
+
+/** The owner zone's offset from UTC at an instant, in minutes (Lagos: 60). */
+function zoneOffsetMinutes(at: Date, timeZone: string): number {
+  return DateTime.fromJSDate(at, { zone: timeZone }).offset;
+}
+
+/** A chrono reference that is independent of the host machine's zone. */
+function chronoReference(reference: Date, timeZone: string): { instant: Date; timezone: number } {
+  return { instant: reference, timezone: zoneOffsetMinutes(reference, timeZone) };
+}
+
+export interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second?: number;
+  millisecond?: number;
+}
+
+export interface ResolvedWallClock {
+  instant: Date | null;
+  /** Set when the local time did not exist or occurred twice. */
+  note: string | null;
+}
+
+function sameWallClock(local: DateTime, wall: WallClock): boolean {
+  return (
+    local.year === wall.year &&
+    local.month === wall.month &&
+    local.day === wall.day &&
+    local.hour === wall.hour &&
+    local.minute === wall.minute
+  );
+}
+
+function hhmmOf(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/**
+ * Converts a local wall-clock time in `timeZone` to a UTC instant.
+ *
+ * DST policy, stated so callers can tell the owner:
+ *  - a time that does not exist (spring-forward gap) moves forward by the
+ *    length of the gap: 02:30 becomes 03:30;
+ *  - a time that occurs twice (fall-back overlap) means its FIRST occurrence,
+ *    because a reminder an hour early is safer than an hour late.
+ */
+export function resolveWallClock(wall: WallClock, timeZone: string): ResolvedWallClock {
+  const naiveUtc = Date.UTC(
+    wall.year,
+    wall.month - 1,
+    wall.day,
+    wall.hour,
+    wall.minute,
+    wall.second ?? 0,
+    wall.millisecond ?? 0,
+  );
+  if (Number.isNaN(naiveUtc)) return { instant: null, note: null };
+
+  // Every offset the zone uses around this date; a candidate is valid when it
+  // reads back as the same wall clock.
+  const offsets = new Set<number>();
+  for (const hours of [-36, -12, 0, 12, 36]) {
+    const probe = DateTime.fromMillis(naiveUtc + hours * 3_600_000, { zone: timeZone });
+    if (!probe.isValid) return { instant: null, note: null };
+    offsets.add(probe.offset);
+  }
+  const valid = [...offsets]
+    .map((offset) => naiveUtc - offset * 60_000)
+    .filter((ms) => sameWallClock(DateTime.fromMillis(ms, { zone: timeZone }), wall))
+    .sort((a, b) => a - b);
+  const dateLabel = `${wall.year}-${String(wall.month).padStart(2, '0')}-${String(wall.day).padStart(2, '0')}`;
+  const asked = hhmmOf(wall.hour, wall.minute);
+
+  if (valid.length > 0) {
+    const distinct = [...new Set(valid)];
+    return {
+      instant: new Date(distinct[0]!),
+      note:
+        distinct.length > 1
+          ? `${asked} occurs twice on ${dateLabel} in ${timeZone}; used the first occurrence`
+          : null,
+    };
+  }
+
+  // Spring-forward gap: Luxon moves a non-existent time forward by the gap.
+  const shifted = DateTime.fromObject(
+    {
+      year: wall.year,
+      month: wall.month,
+      day: wall.day,
+      hour: wall.hour,
+      minute: wall.minute,
+      second: wall.second ?? 0,
+      millisecond: wall.millisecond ?? 0,
+    },
+    { zone: timeZone },
+  );
+  if (!shifted.isValid) return { instant: null, note: null };
+  return {
+    instant: shifted.toUTC().toJSDate(),
+    note: `${asked} does not exist on ${dateLabel} in ${timeZone}; used ${hhmmOf(shifted.hour, shifted.minute)}`,
+  };
+}
+
+/** A Luxon zone name for a fixed offset in minutes, e.g. -300 -> "UTC-05:00". */
+function fixedOffsetZone(offsetMinutes: number): string {
+  const sign = offsetMinutes < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMinutes);
+  return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
+function wallClockOf(components: ChronoComponents): WallClock | null {
+  const year = components.get('year');
+  const month = components.get('month');
+  const day = components.get('day');
+  if (year === null || month === null || day === null) return null;
+  return {
+    year,
+    month,
+    day,
+    hour: components.get('hour') ?? 12,
+    minute: components.get('minute') ?? 0,
+    second: components.get('second') ?? 0,
+    millisecond: components.get('millisecond') ?? 0,
+  };
+}
+
+function withDate(wall: WallClock, local: DateTime): WallClock {
+  return { ...wall, year: local.year, month: local.month, day: local.day };
+}
+
+/**
+ * chrono's forward-date rules, applied to real instants in `zone`:
+ *  - a time with no date that already passed today means tomorrow;
+ *  - a weekday with no date that already passed means its next occurrence;
+ *  - a month and day with no year that already passed means next year.
+ */
+function forwardIntoFuture(
+  components: ChronoComponents,
+  wall: WallClock,
+  zone: string,
+  reference: Date,
+  resolved: ResolvedWallClock,
+): ResolvedWallClock {
+  if (!resolved.instant || resolved.instant.getTime() >= reference.getTime()) return resolved;
+  const certain = (c: 'weekday' | 'day' | 'month' | 'year') => components.isCertain(c);
+  const referenceLocal = DateTime.fromJSDate(reference, { zone });
+
+  if (!certain('weekday') && !certain('day') && !certain('month') && !certain('year')) {
+    return resolveWallClock(withDate(wall, referenceLocal.plus({ days: 1 })), zone);
+  }
+  if (certain('weekday') && !certain('day') && !certain('month')) {
+    const weekday = components.get('weekday') ?? 0; // 0 = Sunday
+    const days = (weekday - (referenceLocal.weekday % 7) + 7) % 7 || 7;
+    return resolveWallClock(withDate(wall, referenceLocal.plus({ days })), zone);
+  }
+  if (certain('month') && !certain('year')) {
+    let next = resolved;
+    let candidate = wall;
+    for (let i = 0; i < 3 && next.instant && next.instant.getTime() < reference.getTime(); i += 1) {
+      candidate = { ...candidate, year: candidate.year + 1 };
+      next = resolveWallClock(candidate, zone);
+    }
+    return next;
+  }
+  return resolved;
+}
+
+/**
+ * The UTC instant chrono's components describe.
+ *
+ * Wall-clock phrases are resolved in the owner's zone (or in a zone written in
+ * the text, e.g. "9am UTC"); exact durations ("in 2 hours") keep chrono's
+ * instant, which is reference + duration.
+ */
+function componentsToInstant(
+  components: ChronoComponents,
+  timeZone: string,
+  reference: Date,
+  forwardDate: boolean,
+): ResolvedWallClock {
+  if (components.tags().has('result/relativeDate')) {
+    // "in 2 hours", "in 3 days": elapsed time from the reference.
+    return { instant: components.date(), note: null };
+  }
+  const offset = components.get('timezoneOffset');
+  const zone =
+    components.isCertain('timezoneOffset') && offset !== null ? fixedOffsetZone(offset) : timeZone;
+  const wall = wallClockOf(components);
+  if (!wall) return { instant: null, note: null };
+  const resolved = resolveWallClock(wall, zone);
+  return forwardDate ? forwardIntoFuture(components, wall, zone, reference, resolved) : resolved;
+}
 
 export type TemporalCertainty = 'high' | 'medium' | 'low';
 
@@ -190,8 +447,8 @@ export function parseTemporalExpression(
     assumption: null,
   };
 
-  const referenceInput = { instant: reference, timezone: timeZone };
-  const results = chrono.parse(text, referenceInput, { forwardDate });
+  // The owner's zone, as a numeric offset chrono understands (see above).
+  const results = parser.parse(text, chronoReference(reference, timeZone), { forwardDate });
   const usable = results.filter((result) => hasTemporalAnchor(result.text));
 
   // Case 1: chrono found an explicit clock time.
@@ -200,15 +457,17 @@ export function parseTemporalExpression(
   );
   if (withTime) {
     const certainty: TemporalCertainty = withTime.start.isCertain('day') ? 'high' : 'medium';
+    const resolved = componentsToInstant(withTime.start, timeZone, reference, forwardDate);
+    if (!resolved.instant) return empty;
     return {
       found: true,
-      instant: withTime.start.date(),
+      instant: resolved.instant,
       certainty,
       matchedText: withTime.text,
       usedDefaultTime: false,
       dateOnly: false,
       recurrence,
-      assumption: null,
+      assumption: resolved.note,
     };
   }
 
@@ -220,7 +479,10 @@ export function parseTemporalExpression(
     if (!vague) {
       // A bare date such as "on Friday" with no time of day: keep the date and
       // tell the user no time was inferred (callers may ask for clarification).
-      const dayStart = withDate.start.date();
+      // The instant is midday on that local date in the owner's zone, so the
+      // date survives any zone conversion callers make.
+      const dayStart = componentsToInstant(withDate.start, timeZone, reference, forwardDate).instant;
+      if (!dayStart) return empty;
       return {
         found: true,
         instant: dayStart,
@@ -236,10 +498,8 @@ export function parseTemporalExpression(
       return { ...empty, matchedText: withDate.text, recurrence, certainty: 'low', found: true, dateOnly: true };
     }
     // Fill the missing hour from the configured (or conventional) default.
-    const dayPart = withDate.start.date();
-    const dayKey = localDateKey(dayPart, timeZone);
-    const local = toLocal(dayPart, timeZone);
-    const anchorDay = local.isValid ? dayKey : localDateKey(reference, timeZone);
+    const dayPart = componentsToInstant(withDate.start, timeZone, reference, forwardDate).instant;
+    const anchorDay = dayPart ? localDateKey(dayPart, timeZone) : localDateKey(reference, timeZone);
     let instant = localDateTimeToUtc(anchorDay, vague.hhmm, timeZone);
     if (instant && forwardDate && instant.getTime() < reference.getTime()) {
       // "tomorrow morning" is never in the past; only shift when the day itself
@@ -269,15 +529,18 @@ export function parseTemporalExpression(
     const anchor = /\btonight\b/.test(text.toLowerCase()) ? 'today' : null;
     if (!anchor) return { ...empty, recurrence, assumption: null };
 
-    const chronoTonight = chrono.parse(
+    const chronoTonight = parser.parse(
       'tonight',
-      { instant: reference, timezone: timeZone },
+      chronoReference(reference, timeZone),
       { forwardDate },
     )[0];
-    if (chronoTonight) {
+    const tonight = chronoTonight
+      ? componentsToInstant(chronoTonight.start, timeZone, reference, forwardDate).instant
+      : null;
+    if (chronoTonight && tonight) {
       return {
         found: true,
-        instant: chronoTonight.start.date(),
+        instant: tonight,
         certainty: 'medium',
         matchedText: chronoTonight.text,
         usedDefaultTime: false,

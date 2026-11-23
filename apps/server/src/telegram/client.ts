@@ -107,16 +107,35 @@ export function truncateForTelegram(text: string, max = TELEGRAM_SAFE_LENGTH): s
 export class TelegramApiError extends ProviderError {
   readonly status: number | undefined;
   readonly retryAfterSeconds: number | undefined;
+  /** Telegram's own `description`, kept so callers can tell similar errors apart (e.g. the two 409s). */
+  readonly description: string | undefined;
+  /** True when no response arrived because the request timed out. */
+  readonly timedOut: boolean;
 
   constructor(
     message: string,
-    options: { status?: number; retryAfterSeconds?: number; retryable?: boolean; cause?: unknown } = {},
+    options: {
+      status?: number;
+      retryAfterSeconds?: number;
+      retryable?: boolean;
+      cause?: unknown;
+      description?: string;
+      timedOut?: boolean;
+    } = {},
   ) {
     super('telegram', message, { retryable: options.retryable ?? true, cause: options.cause });
     this.name = 'TelegramApiError';
     this.status = options.status;
     this.retryAfterSeconds = options.retryAfterSeconds;
+    this.description = options.description;
+    this.timedOut = options.timedOut ?? false;
   }
+}
+
+export interface TelegramWebhookInfo {
+  /** Empty when no webhook is set. */
+  url: string;
+  pending_update_count?: number;
 }
 
 export class TelegramClient {
@@ -179,6 +198,7 @@ export class TelegramClient {
           status: parsed.error_code ?? response.status,
           retryAfterSeconds: retryAfter,
           retryable: response.status === 429 || response.status >= 500,
+          ...(parsed.description === undefined ? {} : { description: parsed.description }),
         });
       }
       return parsed.result as T;
@@ -188,6 +208,7 @@ export class TelegramClient {
       throw new TelegramApiError(aborted ? `Telegram ${method} timed out` : `Telegram ${method} failed`, {
         retryable: true,
         cause: error,
+        timedOut: aborted,
       });
     } finally {
       clearTimeout(timer);
@@ -271,8 +292,19 @@ export class TelegramClient {
     });
   }
 
+  /** Never drops pending updates: messages sent while the webhook was set are still delivered to polling. */
   async deleteWebhook(): Promise<void> {
     await this.call('deleteWebhook', { drop_pending_updates: false });
+  }
+
+  async getWebhookInfo(): Promise<TelegramWebhookInfo> {
+    const info = await this.call<Partial<TelegramWebhookInfo> | null>('getWebhookInfo', {});
+    return {
+      url: typeof info?.url === 'string' ? info.url : '',
+      ...(typeof info?.pending_update_count === 'number'
+        ? { pending_update_count: info.pending_update_count }
+        : {}),
+    };
   }
 
   /** Returns the file path needed to download an uploaded file. */

@@ -24,6 +24,15 @@ describe('telegram notifier', () => {
     expect(notifier.channel).toBe('telegram');
   });
 
+  it('sends a proactive message with sound unless it is marked silent', async () => {
+    const { fake, notifier } = build();
+    await notifier.send({ text: 'Reminder: call Ada', proactive: true });
+    await notifier.send({ text: 'Daily briefing', proactive: true, silent: true });
+    const [reminder, briefing] = fake.callsTo('sendMessage');
+    expect(reminder?.payload).not.toHaveProperty('disable_notification');
+    expect(briefing?.payload.disable_notification).toBe(true);
+  });
+
   it('honours an explicit chat id over the default owner', async () => {
     const { fake, notifier } = build();
     await notifier.send({ chatId: '999', text: 'hello' });

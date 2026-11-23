@@ -82,6 +82,10 @@ function describeProviders(ctx: AppContext, runtime: RuntimeStatus) {
       provider: ctx.config.ai.provider,
       configured: ctx.ai !== null,
       enabled: ctx.ai !== null && ctx.capabilities.aiEnabled,
+      model: ctx.ai ? ctx.ai.model : null,
+      rawTextAllowed: ctx.capabilities.aiRawTextAllowed,
+      // Timestamps and a sanitised code only — never an error message or content.
+      ...ctx.aiStatus.snapshot(),
     },
     stt: {
       provider: ctx.config.stt.provider,

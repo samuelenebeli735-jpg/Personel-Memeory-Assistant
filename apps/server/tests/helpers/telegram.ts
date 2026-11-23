@@ -149,6 +149,8 @@ export function createFakeTelegram(options: FakeTelegramOptions = {}): FakeTeleg
         return json({ ok: true, result: { message_id: 1000 + calls.length } });
       case 'getUpdates':
         return json({ ok: true, result: [] });
+      case 'getWebhookInfo':
+        return json({ ok: true, result: { url: '', pending_update_count: 0 } });
       default:
         return json({ ok: true, result: true });
     }

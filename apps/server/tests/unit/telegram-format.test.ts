@@ -12,9 +12,11 @@ import {
   formatAskAnswer,
   formatCaptureConfirmation,
   formatHelp,
+  formatSettingsSummary,
   kindCorrectionButtons,
   undoConfirmButtons,
 } from '../../src/telegram/format.js';
+import type { AiBlockReason } from '../../src/ai/access.js';
 
 const referenceNow = new Date('2026-10-17T10:00:00.000Z');
 
@@ -326,5 +328,46 @@ describe('formatHelp', () => {
 
   it('warns when no owner is configured', () => {
     expect(formatHelp(false)).toMatch(/no owner id is configured/);
+  });
+});
+
+describe('/settings AI line', () => {
+  function aiLine(aiProvider: string, aiBlockReason: AiBlockReason | null): string {
+    const text = formatSettingsSummary({
+      displayName: null,
+      timeZone: 'Africa/Lagos',
+      morningDefaultTime: '09:00',
+      eveningDefaultTime: '19:00',
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      maxNotificationsPerDay: 0,
+      briefingEnabled: false,
+      briefingTime: '07:30',
+      aiProvider,
+      aiBlockReason,
+      sttProvider: 'none',
+      ownerIds: ['1'],
+    });
+    return text.split('\n').find((line) => line.startsWith('AI classification:')) ?? '';
+  }
+
+  it('names the provider only when it really receives text', () => {
+    expect(aiLine('anthropic', null)).toBe('AI classification: anthropic');
+  });
+
+  it('says so when the server keeps text local (AI_ALLOW_RAW_TEXT=false)', () => {
+    const line = aiLine('anthropic', 'raw_text_not_allowed');
+    expect(line).toContain('not used');
+    expect(line).toContain('AI_ALLOW_RAW_TEXT is off');
+    expect(line).toContain('built-in parsing');
+  });
+
+  it('distinguishes the Settings switch and a missing provider', () => {
+    expect(aiLine('anthropic', 'disabled_in_settings')).toContain('switched off in Settings');
+    expect(aiLine('anthropic', 'not_configured')).toContain('not available');
+  });
+
+  it('keeps the wording for no provider at all', () => {
+    expect(aiLine('none', 'not_configured')).toBe('AI classification: not configured (built-in parsing)');
   });
 });

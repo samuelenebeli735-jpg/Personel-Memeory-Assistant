@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../hooks/useToast";
 import { notesApi, type NoteDto } from "../lib/api";
-import { getTimeZone } from "../lib/date";
+import { useTimeZone } from "../hooks/useTimeZone";
 import {
   Button,
   Input,
@@ -34,7 +34,7 @@ export function NotesPage() {
   const [createLoading, setCreateLoading] = useState(false);
   const [createErrors, setCreateErrors] = useState<{ body?: string }>({});
 
-  const timeZone = getTimeZone();
+  const timeZone = useTimeZone().timeZone;
   const page = parseInt(searchParams.get("page") || "1", 10);
   const limit = 25;
 

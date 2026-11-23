@@ -25,6 +25,7 @@ import { createIdea } from '../../src/services/idea-service.js';
 import { createNote } from '../../src/services/note-service.js';
 import { createProject } from '../../src/services/project-service.js';
 import { createTask, updateTask } from '../../src/services/task-service.js';
+import { updateSettings } from '../../src/services/settings-service.js';
 
 let testDb: TestDb;
 
@@ -156,6 +157,32 @@ describe('/tasks, /today and /overdue', () => {
     const { adapter, fake } = setup();
     const reply = await command(adapter, fake, '/tasks');
     expect(reply).toMatch(/Open tasks[\s\S]*Nothing here/);
+  });
+});
+
+describe('/inbox', () => {
+  it('shows capture times in the owner Settings zone, not the server default', async () => {
+    const { ctx, adapter, fake } = setup();
+    // Captured at 2026-10-17T10:00Z: 6:00 AM in New York, 11:00 AM in Lagos.
+    await testDb.db.capture.create({
+      data: {
+        source: 'TELEGRAM',
+        rawText: 'something to decide later',
+        kind: 'OTHER',
+        status: 'NEEDS_REVIEW',
+        needsReview: true,
+        capturedAt: new Date('2026-10-17T10:00:00.000Z'),
+      },
+    });
+
+    await updateSettings(ctx.db, { timeZone: 'America/New_York' }, ctx.defaults);
+    const newYork = await command(adapter, fake, '/inbox');
+    expect(newYork).toContain('Sat 17 Oct, 6:00 AM');
+    expect(newYork).not.toContain('11:00 AM');
+
+    await updateSettings(ctx.db, { timeZone: 'Africa/Lagos' }, ctx.defaults);
+    const lagos = await command(adapter, fake, '/inbox');
+    expect(lagos).toContain('Sat 17 Oct, 11:00 AM');
   });
 });
 

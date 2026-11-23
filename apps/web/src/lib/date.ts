@@ -54,21 +54,27 @@ export function formatLocalTime(isoString: string | null | undefined, timeZone: 
   }
 }
 
-export function formatRelative(isoString: string | null | undefined, timeZone: string): string {
+export function formatRelative(
+  isoString: string | null | undefined,
+  timeZone: string,
+  now: Date = new Date(),
+): string {
   if (!isoString) return '—'
   try {
     const date = new Date(isoString)
     if (isNaN(date.getTime())) return '—'
-    const now = new Date()
     const diffMs = date.getTime() - now.getTime()
     const diffMinutes = Math.round(diffMs / 60000)
     const diffHours = Math.round(diffMs / 3600000)
-    const diffDays = Math.round(diffMs / 86400000)
+    // "Today", "tomorrow" and weekday names are calendar dates in the owner's
+    // zone, not rounded 24-hour periods: 23:00 Monday to 05:00 Wednesday is
+    // 30 hours, but it is Wednesday, not "tomorrow".
+    const diffDays = calendarDayDifference(now, date, timeZone)
 
     if (Math.abs(diffMinutes) < 60) {
       return diffMinutes >= 0 ? `in ${diffMinutes} min` : `${Math.abs(diffMinutes)} min ago`
     }
-    if (Math.abs(diffHours) < 24) {
+    if (Math.abs(diffHours) < 24 && diffDays === 0) {
       return diffHours >= 0 ? `in ${diffHours} hr` : `${Math.abs(diffHours)} hr ago`
     }
     if (diffDays === 0) {
@@ -104,10 +110,81 @@ export function isOverdue(isoString: string | null | undefined): boolean {
   }
 }
 
-export function getTimeZone(): string {
-  // In a real app, this would come from settings
-  // For now, default to Africa/Lagos as per the backend default
-  return 'Africa/Lagos'
+/** True when the runtime knows this IANA zone. */
+export function isValidTimeZone(timeZone: unknown): timeZone is string {
+  if (typeof timeZone !== 'string' || timeZone.trim().length === 0) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The zone the browser reports, or UTC when it reports none. */
+export function browserTimeZone(): string {
+  try {
+    const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone
+    return isValidTimeZone(zone) ? zone : 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
+export interface DisplayZone {
+  timeZone: string
+  /** `settings` when the owner's configured zone is in use. */
+  source: 'settings' | 'browser'
+}
+
+/**
+ * The dashboard's single time-zone decision.
+ *
+ * The owner's Settings zone always wins. Only when it is unavailable (the
+ * settings request failed) or unusable does the dashboard fall back to the
+ * browser's zone, and it says so (`source: 'browser'`) so the page can tell
+ * the owner. No particular zone is ever assumed.
+ */
+export function resolveDisplayZone(settingsZone: unknown, fallback: string = browserTimeZone()): DisplayZone {
+  if (isValidTimeZone(settingsZone)) return { timeZone: settingsZone, source: 'settings' }
+  return { timeZone: isValidTimeZone(fallback) ? fallback : 'UTC', source: 'browser' }
+}
+
+/** `YYYY-MM-DD` of an instant in a zone. */
+export function localDateKey(date: Date, timeZone: string): string {
+  const parts = partsInTimeZone(date, timeZone)
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+/**
+ * The UTC instant of a wall-clock time `dayOffset` local calendar days from
+ * `now`, in `timeZone` ("tomorrow at 09:00"). Calendar arithmetic is done on
+ * the local date, so a DST change between now and then cannot shift the hour.
+ */
+export function localDayAtTime(
+  now: Date,
+  timeZone: string,
+  dayOffset: number,
+  hhmm: string,
+): string | null {
+  const [y, m, d] = localDateKey(now, timeZone).split('-').map(Number) as [number, number, number]
+  const target = new Date(Date.UTC(y, m - 1, d + dayOffset))
+  const key = target.toISOString().slice(0, 10)
+  const converted = localDateTimeToUtcIso(`${key}T${hhmm}`, timeZone)
+  return converted.ok ? converted.value : null
+}
+
+/**
+ * Whole calendar days from `from` to `to` in a zone: 0 for the same local
+ * date, 1 for the next local date. A DST change never shifts the result,
+ * because only the local dates are compared.
+ */
+export function calendarDayDifference(from: Date, to: Date, timeZone: string): number {
+  const toUtcMidnight = (key: string) => {
+    const [y, m, d] = key.split('-').map(Number) as [number, number, number]
+    return Date.UTC(y, m - 1, d)
+  }
+  return Math.round((toUtcMidnight(localDateKey(to, timeZone)) - toUtcMidnight(localDateKey(from, timeZone))) / 86_400_000)
 }
 
 export type LocalDateTimeConversion =
