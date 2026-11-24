@@ -1,4 +1,5 @@
-import { forwardRef, type ReactNode, useEffect, useRef } from "react";
+import { forwardRef, type ReactNode } from "react";
+import { Dialog } from "./Dialog";
 
 export const Button = forwardRef<
   HTMLButtonElement,
@@ -236,6 +237,10 @@ export const EmptyState = ({
   </div>
 );
 
+/**
+ * Kept for existing callers; built on the shared Dialog so focus, Escape,
+ * stacking and focus return behave the same everywhere.
+ */
 export const Modal = ({
   isOpen,
   onClose,
@@ -248,115 +253,9 @@ export const Modal = ({
   title: string;
   children: ReactNode;
   footer?: ReactNode;
-}) => {
-  const modalRef = useRef<HTMLDivElement>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!isOpen || !modalRef.current) return;
-
-    previouslyFocused.current = document.activeElement as HTMLElement | null;
-
-    // Prefer the first form control so keyboard users land on the content they
-    // came to edit; fall back to any focusable element (e.g. a close button).
-    const firstField = modalRef.current.querySelector(
-      'input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled])',
-    ) as HTMLElement | null;
-    const firstFocusable =
-      firstField ??
-      (modalRef.current.querySelector(
-        'button, [href], [tabindex]:not([tabindex="-1"])',
-      ) as HTMLElement | null);
-    if (firstFocusable) {
-      firstFocusable.focus();
-    }
-
-    return () => {
-      // Restore focus to the element that opened the dialog.
-      previouslyFocused.current?.focus?.();
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-
-      if (event.key !== "Tab" || !modalRef.current) return;
-
-      const focusable = Array.from(
-        modalRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter(
-        (element) =>
-          element.offsetParent !== null || element === document.activeElement,
-      );
-
-      if (focusable.length === 0) return;
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-
-      const active = document.activeElement;
-
-      if (event.shiftKey) {
-        if (active === first || !modalRef.current.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !modalRef.current.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      className="modal-overlay"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-title"
-    >
-      <div
-        className="modal"
-        ref={modalRef}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-header">
-          <h2 id="modal-title" className="modal-title">
-            {title}
-          </h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-        <div className="modal-body">{children}</div>
-        {footer && <div className="modal-footer">{footer}</div>}
-      </div>
-    </div>
-  );
-};
+}) => (
+  <Dialog open={isOpen} title={title} onRequestClose={onClose}>
+    <div className="modal-body">{children}</div>
+    {footer && <div className="modal-footer">{footer}</div>}
+  </Dialog>
+);

@@ -7,6 +7,8 @@ import { LoginPage } from "./pages/Login";
 import { APP_ROUTES } from "./routes";
 import { useAuth } from "./hooks/useAuth";
 import { TimeZoneProvider, useTimeZone } from "./hooks/useTimeZone";
+import { OnlineProvider } from "./hooks/useOnline";
+import { OfflineBanner } from "./components/patterns";
 
 /** Shown only when Settings could not be read and the browser zone is in use. */
 function TimeZoneFallbackNotice() {
@@ -64,6 +66,7 @@ function AppLayout() {
           onToggleMobileNav={() => setMobileNavOpen((open) => !open)}
         />
         <main className="page" role="main">
+          <OfflineBanner />
           <TimeZoneFallbackNotice />
           <Routes>
             {APP_ROUTES.map((route) => (
@@ -84,19 +87,21 @@ function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/*"
-            element={
-              <ProtectedRoute>
-                <TimeZoneProvider>
-                  <AppLayout />
-                </TimeZoneProvider>
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
+        <OnlineProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/*"
+              element={
+                <ProtectedRoute>
+                  <TimeZoneProvider>
+                    <AppLayout />
+                  </TimeZoneProvider>
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
+        </OnlineProvider>
       </ToastProvider>
     </AuthProvider>
   );

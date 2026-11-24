@@ -988,13 +988,23 @@ test.describe('Desktop and Mobile Viewports', () => {
     const dialog = page.getByRole('dialog', { name: 'Create Task' });
     await expect(dialog).toBeVisible();
 
-    // Dialog should fit in mobile viewport
+    // On a phone the dialog is a bottom sheet: full width, inside the
+    // viewport, anchored to the bottom edge (Round 2 design, decision D1).
     const modal = page.locator('.modal');
+    // Wait for the short slide-up animation to settle before measuring.
+    await expect
+      .poll(async () => {
+        const box = await modal.boundingBox();
+        return box ? Math.round(box.y + box.height) : null;
+      })
+      .toBe(667);
     const modalBox = await modal.boundingBox();
     expect(modalBox).toBeTruthy();
     if (modalBox) {
-      expect(modalBox.width).toBeLessThanOrEqual(375 - 32); // Account for padding
+      expect(modalBox.x).toBeGreaterThanOrEqual(0);
+      expect(modalBox.width).toBeLessThanOrEqual(375);
     }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     // Fill form on mobile
     await page.getByLabel('Title').fill(uniqueLabel('e2e-mobile-task'));
