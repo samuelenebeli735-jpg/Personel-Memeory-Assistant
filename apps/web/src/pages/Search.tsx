@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { SearchEntityType, TaskStatus } from "@recall/shared";
 import { useToast } from "../hooks/useToast";
@@ -24,6 +24,9 @@ import {
 import { detailPath, type RecordDetailType } from "../lib/routes";
 import { SearchIcon } from "../components/Layout";
 import { describeError } from "../lib/errors";
+import { ErrorState, PageHeader, Pagination } from "../components/patterns";
+import { PAGE_SIZE, SEARCH_MAX_OFFSET, pageToOffset, parsePageParam } from "../lib/pagination";
+import { resolveFetchedPage, withPage } from "../hooks/usePagedQuery";
 import {
   canFilterByStatus,
   parseSearchStatus,
@@ -116,11 +119,24 @@ function SearchResultRow({
   );
 }
 
+/** Reads the search criteria from the URL; null when there is nothing to search for. */
+function criteriaFromUrl(params: URLSearchParams) {
+  const q = params.get("q") ?? "";
+  const types = parseSearchTypes(params.getAll("t"));
+  const status = canFilterByStatus(types) ? parseSearchStatus(params.get("status")) : "";
+  const from = params.get("from") ?? "";
+  const to = params.get("to") ?? "";
+  if (!q.trim() && types.length === 0 && !from && !to) return null;
+  return { q, types, status, from, to };
+}
+
 export function SearchPage() {
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [results, setResults] = useState<SearchResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [rerun, setRerun] = useState(0);
   const [query, setQuery] = useState(searchParams.get("q") || "");
   const [types, setTypes] = useState<SearchEntityType[]>(() =>
     parseSearchTypes(searchParams.getAll("t")),
@@ -134,11 +150,77 @@ export function SearchPage() {
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
   const [queryError, setQueryError] = useState("");
+  const resultsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusResults = useRef(false);
 
   const timeZone = useTimeZone().timeZone;
   const statusAvailable = canFilterByStatus(types);
+  const page = parsePageParam(searchParams.get("page"));
+  const urlKey = searchParams.toString();
 
-  const handleSearch = async (e: FormEvent) => {
+  // The URL is the search (R2-05): refresh, Back and shared links run the
+  // same search and show the same page. The form follows the URL.
+  useEffect(() => {
+    const criteria = criteriaFromUrl(searchParams);
+    setQuery(criteria?.q ?? "");
+    setTypes(criteria?.types ?? []);
+    setStatus(criteria?.status ?? "");
+    setFrom(criteria?.from ?? "");
+    setTo(criteria?.to ?? "");
+    if (!criteria) {
+      setResults(null);
+      setLoadState("idle");
+      return undefined;
+    }
+    const fromResult = localDateTimeToUtcIso(criteria.from, timeZone);
+    const toResult = localDateTimeToUtcIso(criteria.to, timeZone);
+    const searchQuery: SearchQuery = {
+      q: criteria.q,
+      limit: PAGE_SIZE,
+      // The API reads at most 10,000 rows deep.
+      offset: Math.min(pageToOffset(page), SEARCH_MAX_OFFSET),
+      sort: "relevance",
+      order: "desc",
+      includeDeleted: false,
+    };
+    if (criteria.types.length > 0) searchQuery.types = criteria.types;
+    if (criteria.status) searchQuery.status = criteria.status;
+    if (fromResult.ok && fromResult.value) searchQuery.from = fromResult.value;
+    if (toResult.ok && toResult.value) searchQuery.to = toResult.value;
+
+    let cancelled = false;
+    setLoadState("loading");
+    searchApi
+      .searchGet(searchQuery)
+      .then((data) => {
+        if (cancelled) return;
+        const decision = resolveFetchedPage(page, Math.min(data.total, SEARCH_MAX_OFFSET + PAGE_SIZE));
+        if (!decision.show) {
+          setSearchParams((prev) => withPage(prev, decision.redirectTo), { replace: true });
+          return;
+        }
+        setResults(data);
+        setLoadError(null);
+        setLoadState("ready");
+        if (focusResults.current) {
+          focusResults.current = false;
+          resultsHeadingRef.current?.focus();
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setLoadError(err);
+        setLoadState("error");
+        const described = describeError(err, "Search");
+        showToast(described.retryAfter !== undefined ? "warning" : "error", "Search failed", described.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // urlKey stands for searchParams; rerun repeats an identical search.
+  }, [urlKey, timeZone, rerun]);
+
+  const handleSearch = (e: FormEvent) => {
     e.preventDefault();
 
     if (!query.trim() && types.length === 0 && !from && !to) {
@@ -157,68 +239,30 @@ export function SearchPage() {
       showToast("error", "Invalid To date", toResult.error);
       return;
     }
-    if (
-      fromResult.value &&
-      toResult.value &&
-      fromResult.value > toResult.value
-    ) {
-      showToast(
-        "error",
-        "Invalid date range",
-        "The From date must be before the To date.",
-      );
+    if (fromResult.value && toResult.value && fromResult.value > toResult.value) {
+      showToast("error", "Invalid date range", "The From date must be before the To date.");
       return;
     }
 
     const effectiveStatus = statusAvailable ? status : "";
-    const searchQuery: SearchQuery = {
-      q: query,
-      limit: 50,
-      offset: 0,
-      sort: "relevance",
-      order: "desc",
-      includeDeleted: false,
-    };
-    if (types.length > 0) searchQuery.types = types;
-    if (effectiveStatus) searchQuery.status = effectiveStatus;
-    if (fromResult.value) searchQuery.from = fromResult.value;
-    if (toResult.value) searchQuery.to = toResult.value;
-
-    setIsLoading(true);
-    try {
-      const data = await searchApi.searchGet(searchQuery);
-      setResults(data);
-      const params = new URLSearchParams();
-      if (query) params.set("q", query);
-      if (types.length > 0) types.forEach((t) => params.append("t", t));
-      if (effectiveStatus) params.set("status", effectiveStatus);
-      // Keep the wall-clock values in URL state so reloading reopens the same
-      // datetime-local controls; only the API request uses UTC.
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
-      setSearchParams(params);
-    } catch (err) {
-      const described = describeError(err, "Search");
-      showToast(described.retryAfter !== undefined ? "warning" : "error", "Search failed", described.message);
-    } finally {
-      setIsLoading(false);
-    }
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    if (types.length > 0) types.forEach((t) => params.append("t", t));
+    if (effectiveStatus) params.set("status", effectiveStatus);
+    // Keep the wall-clock values in URL state so reloading reopens the same
+    // datetime-local controls; only the API request uses UTC.
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    // A new search always starts on page 1.
+    if (params.toString() === withPage(searchParams, 1).toString() && page === 1) setRerun((n) => n + 1);
+    setSearchParams(params);
   };
+
+  const reachableTotal = results ? Math.min(results.total, SEARCH_MAX_OFFSET + PAGE_SIZE) : 0;
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "24px",
-        }}
-      >
-        <h1 style={{ fontSize: "24px", fontWeight: "600", margin: 0 }}>
-          Search
-        </h1>
-      </div>
+      <PageHeader title="Search" />
 
       <Card style={{ marginBottom: "24px" }}>
         <div className="card-content">
@@ -274,6 +318,7 @@ export function SearchPage() {
                 type="datetime-local"
                 value={from}
                 onChange={(e) => setFrom(e.target.value)}
+                hint={`Time zone: ${timeZone}`}
               />
               <Input
                 label="To"
@@ -282,31 +327,31 @@ export function SearchPage() {
                 onChange={(e) => setTo(e.target.value)}
               />
             </div>
-            <Button type="submit" size="lg" loading={isLoading}>
+            <Button type="submit" size="lg" loading={loadState === "loading"}>
               <SearchIcon style={{ marginRight: "8px" }} /> Search
             </Button>
           </form>
         </div>
       </Card>
 
+      {loadState === "error" && !results && (
+        <ErrorState
+          title="Couldn’t search"
+          message={describeError(loadError, "Search").message}
+          code={describeError(loadError, "Search").code}
+          onRetry={() => setRerun((n) => n + 1)}
+        />
+      )}
+
       {results && (
         <Card>
           <div className="card-header">
-            <h2 className="card-title">Results ({results.total})</h2>
+            <h2 className="card-title" ref={resultsHeadingRef} tabIndex={-1}>
+              Results ({results.total})
+            </h2>
           </div>
           <div className="card-content" style={{ padding: 0 }}>
-            {isLoading ? (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "32px",
-                }}
-              >
-                <div className="loading-spinner" aria-hidden="true" />
-              </div>
-            ) : results.items.length === 0 ? (
+            {results.items.length === 0 ? (
               <EmptyState
                 icon={<SearchIcon />}
                 title="No results found"
@@ -315,6 +360,7 @@ export function SearchPage() {
             ) : (
               <div
                 className="list"
+                aria-busy={loadState === "loading"}
                 style={{ borderTop: "1px solid var(--color-border)" }}
               >
                 {results.items.map((item) => (
@@ -325,6 +371,22 @@ export function SearchPage() {
                   />
                 ))}
               </div>
+            )}
+          </div>
+          <div style={{ padding: "0 16px 12px" }}>
+            <Pagination
+              page={page}
+              total={reachableTotal}
+              pageSize={PAGE_SIZE}
+              onPageChange={(next) => {
+                focusResults.current = true;
+                setSearchParams((prev) => withPage(prev, next));
+              }}
+            />
+            {results.total > reachableTotal && (
+              <p className="page-header-sub">
+                Showing the first {reachableTotal.toLocaleString()} results. Narrow the search to see the rest.
+              </p>
             )}
           </div>
         </Card>

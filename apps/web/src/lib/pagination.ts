@@ -8,8 +8,9 @@
 
 export const PAGE_SIZE = 25
 
-/** Largest offset the search API accepts. */
+/** Largest offset the list and search APIs accept. */
 export const SEARCH_MAX_OFFSET = 10_000
+export const LIST_MAX_OFFSET = 10_000
 
 export function totalPages(total: number, pageSize = PAGE_SIZE): number {
   if (!Number.isFinite(total) || total <= 0) return 1

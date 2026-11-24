@@ -6,7 +6,7 @@ import { usePagedQuery } from "../hooks/usePagedQuery";
 import { localDayAtTime } from "../lib/date";
 import { describeError } from "../lib/errors";
 import { Button, Select, Card, EmptyState, Modal } from "../components/ui";
-import { ConfirmDialog, ListState, PageHeader } from "../components/patterns";
+import { ConfirmDialog, clampedPageMessage, ListState, PageHeader, Pagination } from "../components/patterns";
 import { RecordFormDialog, reminderFormSpec } from "../components/record-forms";
 import { ReminderRow } from "../components/record-rows";
 import { RemindersIcon } from "../components/Layout";
@@ -34,7 +34,7 @@ export function RemindersPage() {
   const query = usePagedQuery<ReminderDto>(
     (page) => remindersApi.list({ status: status ? [status] : undefined, order: "asc", ...page }),
     [status],
-    { headingRef },
+    { headingRef, onClamp: (from, to) => showToast("info", clampedPageMessage(from, to)) },
   );
 
   const handleSnooze = async (e: React.FormEvent) => {
@@ -132,6 +132,7 @@ export function RemindersPage() {
           </ListState>
         </div>
       </Card>
+      <Pagination page={query.page} total={query.total} pageSize={query.pageSize} onPageChange={query.setPage} />
 
       <RecordFormDialog
         spec={reminderFormSpec}

@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Paginated } from '../lib/api'
-import { PAGE_SIZE, pageAfterRemoval, pageToOffset, parsePageParam, totalPages } from '../lib/pagination'
+import { LIST_MAX_OFFSET, PAGE_SIZE, pageAfterRemoval, pageToOffset, parsePageParam, totalPages } from '../lib/pagination'
 
 /** Returns new search params with `page` set (or removed for page 1). */
 export function withPage(params: URLSearchParams, page: number): URLSearchParams {
@@ -65,7 +65,12 @@ export function usePagedQuery<T>(
   fetchPage: (query: { limit: number; offset: number }) => Promise<Paginated<T>>,
   /** Values (usually from the URL) that define the result set, such as filters. */
   deps: ReadonlyArray<unknown>,
-  options: { pageSize?: number; headingRef?: RefObject<HTMLElement | null> } = {},
+  options: {
+    pageSize?: number
+    headingRef?: RefObject<HTMLElement | null>
+    /** Called when the requested page no longer exists and the list moved to `to`. */
+    onClamp?: (from: number, to: number) => void
+  } = {},
 ): PagedQuery<T> {
   const pageSize = options.pageSize ?? PAGE_SIZE
   const [params, setParams] = useSearchParams()
@@ -78,6 +83,8 @@ export function usePagedQuery<T>(
   fetchRef.current = fetchPage
   const focusHeadingNext = useRef(false)
   const headingRef = options.headingRef
+  const onClampRef = useRef(options.onClamp)
+  onClampRef.current = options.onClamp
 
   const writePage = useCallback(
     (next: number, replace: boolean) => setParams((prev) => withPage(prev, next), { replace }),
@@ -88,11 +95,15 @@ export function usePagedQuery<T>(
     let cancelled = false
     setStatus('loading')
     fetchRef
-      .current({ limit: pageSize, offset: pageToOffset(page, pageSize) })
+      // A page far past the end still returns the total (the API caps offset
+      // at 10,000), so the list can clamp to the last page.
+      .current({ limit: pageSize, offset: Math.min(pageToOffset(page, pageSize), LIST_MAX_OFFSET) })
       .then((result) => {
         if (cancelled) return
         const decision = resolveFetchedPage(page, result.total, pageSize)
         if (!decision.show) {
+          focusHeadingNext.current = true
+          onClampRef.current?.(page, decision.redirectTo)
           writePage(decision.redirectTo, true)
           return
         }

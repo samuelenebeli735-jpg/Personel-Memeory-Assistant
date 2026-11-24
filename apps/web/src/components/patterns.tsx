@@ -110,6 +110,11 @@ export function Pagination({
   )
 }
 
+/** Toast text for a list that moved because its page no longer exists. */
+export function clampedPageMessage(from: number, to: number): string {
+  return `Page ${from} no longer exists, so you’re now on page ${to}.`
+}
+
 /* -------------------------------------------------------------------------- */
 /* State views                                                                 */
 /* -------------------------------------------------------------------------- */

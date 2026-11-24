@@ -6,7 +6,8 @@ import { useRef, useState, type ReactNode } from 'react'
 import type { Paginated } from '../lib/api'
 import { usePagedQuery, type PagedQuery } from '../hooks/usePagedQuery'
 import { Button, Card, EmptyState } from './ui'
-import { ListState, PageHeader } from './patterns'
+import { clampedPageMessage, ListState, PageHeader, Pagination } from './patterns'
+import { useToast } from '../hooks/useToast'
 import { RecordFormDialog, type RecordFormSpec } from './record-forms'
 
 export function ListPage<T extends { id: string }>({
@@ -35,7 +36,11 @@ export function ListPage<T extends { id: string }>({
 }) {
   const headingRef = useRef<HTMLHeadingElement>(null)
   const [createOpen, setCreateOpen] = useState(false)
-  const query = usePagedQuery<T>(fetchPage, deps, { headingRef })
+  const { showToast } = useToast()
+  const query = usePagedQuery<T>(fetchPage, deps, {
+    headingRef,
+    onClamp: (from, to) => showToast('info', clampedPageMessage(from, to)),
+  })
 
   return (
     <div>
@@ -79,6 +84,7 @@ export function ListPage<T extends { id: string }>({
           </ListState>
         </div>
       </Card>
+      <Pagination page={query.page} total={query.total} pageSize={query.pageSize} onPageChange={query.setPage} />
 
       <RecordFormDialog
         spec={spec}

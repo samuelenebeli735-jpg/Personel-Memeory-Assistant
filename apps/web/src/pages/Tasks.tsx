@@ -6,7 +6,7 @@ import { useTimeZone } from "../hooks/useTimeZone";
 import { usePagedQuery } from "../hooks/usePagedQuery";
 import { describeError } from "../lib/errors";
 import { Button, Card, EmptyState } from "../components/ui";
-import { ListState, PageHeader } from "../components/patterns";
+import { clampedPageMessage, ListState, PageHeader, Pagination } from "../components/patterns";
 import { RecordFormDialog, taskFormSpec } from "../components/record-forms";
 import { TaskRow } from "../components/record-rows";
 import { TasksIcon } from "../components/Layout";
@@ -36,7 +36,7 @@ export function TasksPage() {
         ...page,
       }),
     [status],
-    { headingRef },
+    { headingRef, onClamp: (from, to) => showToast("info", clampedPageMessage(from, to)) },
   );
 
   const changeStatus = async (task: TaskDto, next: TaskStatus) => {
@@ -138,6 +138,7 @@ export function TasksPage() {
           </ListState>
         </div>
       </Card>
+      <Pagination page={query.page} total={query.total} pageSize={query.pageSize} onPageChange={query.setPage} />
 
       <RecordFormDialog
         spec={taskFormSpec}
