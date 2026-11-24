@@ -1,12 +1,16 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { Button, Input, Card } from '../components/ui'
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login } = useAuth()
+  // Return to the page the owner was on when the session ended.
+  const from = (location.state as { from?: unknown } | null)?.from
+  const returnTo = typeof from === 'string' && from.startsWith('/') && !from.startsWith('//') && from !== '/login' ? from : '/'
   const { showToast } = useToast()
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -20,7 +24,7 @@ export function LoginPage() {
     try {
       await login(password)
       showToast('success', 'Welcome back!')
-      navigate('/')
+      navigate(returnTo, { replace: true })
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Login failed'
       setError(message)

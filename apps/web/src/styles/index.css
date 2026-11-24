@@ -1120,3 +1120,12 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .skeleton span, .toast, .modal, .modal-overlay { animation: none; }
 }
+
+.center-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+.center-screen .card { display: grid; gap: 12px; padding: 20px; }

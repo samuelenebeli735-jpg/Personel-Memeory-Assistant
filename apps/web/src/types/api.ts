@@ -27,6 +27,13 @@ export type {
   Paginated,
   ExportBundleDto,
   RestoreReportDto,
+  RestoreFileReportDto,
+  BriefingDto,
+  BriefingItemDto,
+  BriefingSectionDto,
+  BriefingConfigDto,
+  BriefingResponseDto,
+  AskPeriod,
   CaptureInput,
   TaskCreateInput,
   TaskUpdateInput,
@@ -42,6 +49,9 @@ export type {
   ReminderUpdateInput,
   SnoozeInput,
   CaptureAckDto,
+  CaptureLinkDto,
+  CaptureConvertResultDto,
+  CaptureRemovalResultDto,
   AskResponse,
 } from '@recall/shared'
 
