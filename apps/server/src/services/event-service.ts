@@ -41,7 +41,7 @@ export async function findEvents(db: Db, filter: EventFilter = {}): Promise<Even
   const rows = await db.event.findMany({
     where,
     include: eventInclude,
-    orderBy: { startsAt: filter.order ?? 'asc' },
+    orderBy: [{ startsAt: filter.order ?? 'asc' }, { id: filter.order ?? 'asc' }],
     take: filter.limit ?? 100,
     skip: filter.offset ?? 0,
   });

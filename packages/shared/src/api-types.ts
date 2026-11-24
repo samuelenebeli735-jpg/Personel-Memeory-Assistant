@@ -378,6 +378,11 @@ export interface RestoreFileReportDto extends RestoreReportDto {
     bytes: number;
     schemaVersion: number;
     exportedAt: string;
+    /**
+     * Returned by a dry run only: proof that the server checked these exact
+     * bytes. Applying the restore requires sending it back.
+     */
+    checkToken: string | null;
   };
 }
 

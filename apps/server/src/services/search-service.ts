@@ -290,24 +290,27 @@ function dbOrderBy(
   order: SearchQuery['order'],
 ): Record<string, unknown>[] {
   const direction = order;
+  // Every per-type window ends with id so ties are cut at the same place on
+  // every request (S4); the merged list breaks ties on type, then id.
+  const byId = { id: direction };
   switch (sort) {
     case 'title':
-      return [{ [type === 'PROJECT' ? 'name' : 'title']: direction }];
+      return [{ [type === 'PROJECT' ? 'name' : 'title']: direction }, byId];
     case 'updatedAt':
-      return [{ updatedAt: direction }];
+      return [{ updatedAt: direction }, byId];
     case 'dueAt':
       // Only tasks and events have a comparable "when"; everything else falls
       // back to its creation time so the window is still meaningful.
-      if (type === 'TASK') return [{ dueAt: direction }];
-      if (type === 'EVENT') return [{ startsAt: direction }];
-      return [{ createdAt: direction }];
+      if (type === 'TASK') return [{ dueAt: direction }, byId];
+      if (type === 'EVENT') return [{ startsAt: direction }, byId];
+      return [{ createdAt: direction }, byId];
     case 'remindAt':
-      if (type === 'REMINDER') return [{ remindAt: direction }];
-      return [{ createdAt: direction }];
+      if (type === 'REMINDER') return [{ remindAt: direction }, byId];
+      return [{ createdAt: direction }, byId];
     case 'createdAt':
     case 'relevance':
     default:
-      return [{ createdAt: direction }];
+      return [{ createdAt: direction }, byId];
   }
 }
 

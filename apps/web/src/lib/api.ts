@@ -304,8 +304,9 @@ export const capturesApi = {
   }) =>
     request<Paginated<CaptureDto>>(`/captures${queryString(params ?? {})}`),
 
-  inbox: (limit = 25) =>
-    request<CaptureDto[]>(`/captures/inbox${queryString({ limit })}`),
+  /** Captures that need a decision, oldest first; `total` counts all of them (S1). */
+  inbox: (params: { limit?: number; offset?: number } = {}) =>
+    request<Paginated<CaptureDto>>(`/captures/inbox${queryString({ limit: params.limit ?? 25, offset: params.offset ?? 0 })}`),
 
   get: (id: string) => request<CaptureDto>(`/captures/${id}`),
 
@@ -491,11 +492,12 @@ export const eventsApi = {
 
 // Projects
 export const projectsApi = {
+  /** Paginated (S2). Archived projects are listed only when asked for. */
   list: (params?: {
-    status?: string
+    includeArchived?: 'true' | 'false'
     limit?: number
     offset?: number
-  }) => request<ProjectDto[]>(`/projects${queryString(params ?? {})}`),
+  }) => request<Paginated<ProjectDto>>(`/projects${queryString(params ?? {})}`),
 
   get: (id: string) => request<ProjectDto>(`/projects/${id}`),
 
@@ -621,11 +623,12 @@ export const restoreApi = {
       timeoutMs: 120_000,
     }),
   /**
-   * Applies the restore. `sha256` must be the value the server returned from
-   * the check, so the server itself confirms these are the bytes it checked.
+   * Applies the restore. `sha256` and `checkToken` are the values the server
+   * returned from the check; the server recomputes both from the bytes it
+   * receives now and refuses with 409 if this is not the file it checked.
    */
-  apply: (bytes: ArrayBuffer, sha256: string) =>
-    request<RestoreFileReportDto>(`/restore/file${queryString({ dryRun: 'false', sha256 })}`, {
+  apply: (bytes: ArrayBuffer, sha256: string, checkToken: string) =>
+    request<RestoreFileReportDto>(`/restore/file${queryString({ dryRun: 'false', sha256, checkToken })}`, {
       method: 'POST',
       body: bytes,
       headers: { 'Content-Type': 'application/json' },

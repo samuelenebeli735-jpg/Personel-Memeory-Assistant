@@ -48,7 +48,7 @@ export async function findReminders(db: Db, filter: ReminderFilter = {}): Promis
 
   const rows = await db.reminder.findMany({
     where,
-    orderBy: { remindAt: filter.order ?? 'asc' },
+    orderBy: [{ remindAt: filter.order ?? 'asc' }, { id: filter.order ?? 'asc' }],
     take: filter.limit ?? 100,
     skip: filter.offset ?? 0,
   });

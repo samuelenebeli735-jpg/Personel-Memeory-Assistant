@@ -37,13 +37,22 @@ export async function findProjectByName(
   return partial ?? null;
 }
 
+function projectListWhere(options: { includeArchived?: boolean }): Record<string, unknown> {
+  return options.includeArchived ? {} : { status: 'ACTIVE' };
+}
+
+/** Counts with the same filter as `listProjects` (S2). */
+export async function countProjects(db: Db, options: { includeArchived?: boolean } = {}): Promise<number> {
+  return db.project.count({ where: projectListWhere(options) });
+}
+
 export async function listProjects(
   db: Db,
   options: { includeArchived?: boolean; limit?: number; offset?: number } = {},
 ): Promise<ProjectDto[]> {
   const rows = await db.project.findMany({
-    where: options.includeArchived ? {} : { status: 'ACTIVE' },
-    orderBy: [{ status: 'asc' }, { name: 'asc' }],
+    where: projectListWhere(options),
+    orderBy: [{ status: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     skip: options.offset ?? 0,
     take: options.limit ?? 200,
     include: projectCountInclude,

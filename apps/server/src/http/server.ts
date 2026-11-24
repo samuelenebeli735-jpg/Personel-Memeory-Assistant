@@ -15,8 +15,9 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { HealthDto } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
-import { AppError, toAppError } from '../lib/errors.js';
-import { extractToken, sessionCookieOptions, verifySession } from './auth.js';
+import { toAppError } from '../lib/errors.js';
+import { sessionCookieOptions } from './auth.js';
+import { createSessionGuard } from './session-guard.js';
 import { registerPublicRoutes, type PublicRouteOptions } from './routes/public-routes.js';
 import { registerProtectedRoutes } from './routes/index.js';
 
@@ -145,30 +146,10 @@ export async function buildServer(
 
   await registerPublicRoutes(app, ctx, runtime, options);
 
+  const requireSession = createSessionGuard(ctx);
   await app.register(
     async (api) => {
-      api.addHook('preHandler', async (request) => {
-        const token = extractToken(
-          request.headers.cookie,
-          typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined,
-        );
-        if (!token) throw new AppError('UNAUTHORIZED', 'Sign in to continue', { httpStatus: 401 });
-        const secret = ctx.config.dashboard.sessionSecret;
-        if (!secret) {
-          throw new AppError('UNAUTHORIZED', 'Dashboard authentication is not configured', {
-            httpStatus: 503,
-          });
-        }
-        const verified = verifySession(token, secret, ctx.clock.now());
-        if (!verified.valid) {
-          throw new AppError(
-            'UNAUTHORIZED',
-            verified.reason === 'expired' ? 'Your session has expired' : 'Sign in to continue',
-            { httpStatus: 401, details: { reason: verified.reason } },
-          );
-        }
-        request.session = { sub: 'owner', exp: verified.payload!.exp };
-      });
+      api.addHook('preHandler', requireSession);
       await registerProtectedRoutes(api, ctx, runtime);
     },
     { prefix: '/api' },

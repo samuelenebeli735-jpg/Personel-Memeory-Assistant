@@ -41,8 +41,8 @@ export function ProjectsPage() {
           limit,
           offset: (page - 1) * limit,
         });
-        setProjects(data);
-        setTotal(data.length);
+        setProjects(data.items);
+        setTotal(data.total);
       } catch (err) {
         console.error(err);
       } finally {
@@ -74,8 +74,8 @@ export function ProjectsPage() {
         limit,
         offset: (page - 1) * limit,
       });
-      setProjects(data);
-      setTotal(data.length);
+      setProjects(data.items);
+      setTotal(data.total);
     } catch (err) {
       console.error(err);
     } finally {

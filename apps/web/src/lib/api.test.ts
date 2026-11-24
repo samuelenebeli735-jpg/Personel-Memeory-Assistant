@@ -117,9 +117,9 @@ describe('API client contracts', () => {
     const calls = stubFetch([jsonResponse(200, {}), jsonResponse(200, {})])
     const bytes = new TextEncoder().encode('{"schemaVersion":1}').buffer
     await restoreApi.check(bytes, 'abc123')
-    await restoreApi.apply(bytes, 'abc123')
+    await restoreApi.apply(bytes, 'abc123', 'tok456')
     expect(calls[0]?.url).toBe('/api/restore/file?dryRun=true&sha256=abc123')
-    expect(calls[1]?.url).toBe('/api/restore/file?dryRun=false&sha256=abc123')
+    expect(calls[1]?.url).toBe('/api/restore/file?dryRun=false&sha256=abc123&checkToken=tok456')
     expect(calls[0]?.init.body).toBe(bytes)
     expect(calls[0]?.init.method).toBe('POST')
   })

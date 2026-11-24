@@ -557,10 +557,11 @@ test.describe('Empty States, Failed API Requests, Missing-Record Detail Pages', 
   test('empty projects list shows empty state', async ({ page }) => {
     const errors = captureConsoleErrors(page);
 
+    // GET /api/projects is paginated (Round 2, S2).
     await page.route('**/api/projects*', (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([]),
+      body: JSON.stringify({ items: [], total: 0, limit: 25, offset: 0 }),
     }));
     await page.goto('/projects');
     await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
