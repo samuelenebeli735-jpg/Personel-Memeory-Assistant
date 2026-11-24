@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
-import { useAuth } from '../hooks/useAuth'
+import { useOnline } from '../hooks/useOnline'
+import { describeError } from '../lib/errors'
 import { useToast } from '../hooks/useToast'
 import { capturesApi, type CaptureDto, type CaptureInput } from '../lib/api'
 import { useTimeZone } from '../hooks/useTimeZone'
@@ -16,6 +17,7 @@ export function CapturePage() {
   const [isLoadingCaptures, setIsLoadingCaptures] = useState(true)
 
   const timeZone = useTimeZone().timeZone
+  const { online } = useOnline()
 
   const loadRecent = async () => {
     try {
@@ -47,7 +49,9 @@ export function CapturePage() {
       setText('')
       loadRecent()
     } catch (err) {
-      showToast('error', 'Failed to save capture', err instanceof Error ? err.message : 'Unknown error')
+      // The typed text stays in the box so nothing is lost.
+      const described = describeError(err, 'Saving the capture', true)
+      showToast(described.retryAfter !== undefined ? 'warning' : 'error', 'Failed to save capture', described.message)
     } finally {
       setIsLoading(false)
     }
@@ -71,7 +75,7 @@ export function CapturePage() {
               disabled={isLoading}
             />
             <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
-              <Button type="submit" size="lg" loading={isLoading} disabled={!text.trim()}>
+              <Button type="submit" size="lg" loading={isLoading} disabled={!text.trim() || !online}>
                 <CaptureIcon style={{ marginRight: '8px' }} /> Save Capture
               </Button>
             </div>

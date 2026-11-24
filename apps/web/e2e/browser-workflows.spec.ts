@@ -704,8 +704,8 @@ test.describe('Dialog Open/Close/Action Buttons', () => {
     const dialog = page.getByRole('dialog', { name: 'Create Task' });
     await expect(dialog).toBeVisible();
 
-    // Close with Cancel button
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    // Close with Cancel button (scoped: the page also has a Cancelled filter)
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).not.toBeVisible();
 
     // Open again

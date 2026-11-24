@@ -162,3 +162,16 @@ describe('localDateTimeToUtcIso around a fall-back DST change', () => {
     expect(['2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z']).toContain(result.value)
   })
 })
+
+describe('utcIsoToLocalInput', () => {
+  it('shows a UTC instant as a wall-clock value in the Settings zone', async () => {
+    const { utcIsoToLocalInput, localDateTimeToUtcIso } = await import('./date')
+    expect(utcIsoToLocalInput('2026-11-24T08:30:00.000Z', 'Africa/Lagos')).toBe('2026-11-24T09:30')
+    expect(utcIsoToLocalInput('2026-07-01T13:00:00.000Z', 'America/New_York')).toBe('2026-07-01T09:00')
+    expect(utcIsoToLocalInput(null, 'UTC')).toBe('')
+    expect(utcIsoToLocalInput('not a date', 'UTC')).toBe('')
+    // Round trip with the converter used on save.
+    const local = utcIsoToLocalInput('2026-03-29T00:59:00.000Z', 'Europe/London')
+    expect(localDateTimeToUtcIso(local, 'Europe/London')).toEqual({ ok: true, value: '2026-03-29T00:59:00.000Z' })
+  })
+})

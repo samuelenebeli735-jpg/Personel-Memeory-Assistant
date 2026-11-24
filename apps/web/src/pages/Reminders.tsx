@@ -1,21 +1,16 @@
-import { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
-import { useAuth } from "../hooks/useAuth";
+import { useRef, useState } from "react";
 import { useToast } from "../hooks/useToast";
 import { remindersApi, type ReminderDto, type SnoozeInput } from "../lib/api";
 import { useTimeZone } from "../hooks/useTimeZone";
-import { localDateTimeToUtcIso, localDayAtTime } from "../lib/date";
-import {
-  Button,
-  Input,
-  Textarea,
-  Select,
-  Card,
-  EmptyState,
-  Modal,
-} from "../components/ui";
+import { usePagedQuery } from "../hooks/usePagedQuery";
+import { localDayAtTime } from "../lib/date";
+import { describeError } from "../lib/errors";
+import { Button, Select, Card, EmptyState, Modal } from "../components/ui";
+import { ConfirmDialog, ListState, PageHeader } from "../components/patterns";
+import { RecordFormDialog, reminderFormSpec } from "../components/record-forms";
 import { ReminderRow } from "../components/record-rows";
 import { RemindersIcon } from "../components/Layout";
+import { useSearchParams } from "react-router-dom";
 
 const SNOOZE_OPTIONS = [
   { value: "10m", label: "10 minutes" },
@@ -25,196 +20,90 @@ const SNOOZE_OPTIONS = [
 
 export function RemindersPage() {
   const { showToast } = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [reminders, setReminders] = useState<ReminderDto[]>([]);
-  const [total, setTotal] = useState(0);
-  const [isLoading, setIsLoading] = useState(true);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createForm, setCreateForm] = useState<{
-    title: string;
-    body: string;
-    remindAt: string;
-    recurrence: string;
-  }>({
-    title: "",
-    body: "",
-    remindAt: "",
-    recurrence: "",
-  });
-  const [createLoading, setCreateLoading] = useState(false);
-  const [createErrors, setCreateErrors] = useState<{
-    title?: string;
-    remindAt?: string;
-  }>({});
+  const { timeZone } = useTimeZone();
+  const [searchParams] = useSearchParams();
+  const status = searchParams.get("status") || "";
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [snoozeReminderId, setSnoozeReminderId] = useState<string | null>(null);
   const [snoozeForm, setSnoozeForm] = useState<SnoozeInput>({ minutes: 10 });
+  const [snoozing, setSnoozing] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<ReminderDto | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
-  const timeZone = useTimeZone().timeZone;
-  const status = searchParams.get("status") || "";
-  const page = parseInt(searchParams.get("page") || "1", 10);
-  const limit = 25;
-
-  useEffect(() => {
-    const load = async () => {
-      setIsLoading(true);
-      try {
-        const data = await remindersApi.list({
-          status: status ? [status] : undefined,
-          limit,
-          offset: (page - 1) * limit,
-          order: "asc",
-        });
-        setReminders(data.items);
-        setTotal(data.total);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    load();
-  }, [page, status]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    const nextErrors: { title?: string; remindAt?: string } = {};
-    if (!createForm.title.trim()) {
-      nextErrors.title = "Title is required";
-    }
-    // The wall-clock time is read in the owner's Settings zone, never the
-    // browser's, so the reminder fires at the time the owner typed.
-    const remindAt = localDateTimeToUtcIso(createForm.remindAt, timeZone);
-    if (!createForm.remindAt.trim()) {
-      nextErrors.remindAt = "Remind At is required";
-    } else if (!remindAt.ok) {
-      nextErrors.remindAt = remindAt.error;
-    }
-    if (Object.keys(nextErrors).length > 0 || !remindAt.ok || !remindAt.value) {
-      setCreateErrors(nextErrors);
-      return;
-    }
-    setCreateErrors({});
-
-    setCreateLoading(true);
-    try {
-      await remindersApi.create({
-        title: createForm.title.trim(),
-        body: createForm.body.trim() || null,
-        remindAt: remindAt.value,
-        recurrence: createForm.recurrence
-          ? JSON.parse(createForm.recurrence)
-          : null,
-        captureId: null,
-        taskId: null,
-      });
-      showToast("success", "Reminder created");
-      setShowCreateModal(false);
-      setCreateErrors({});
-      setCreateForm({ title: "", body: "", remindAt: "", recurrence: "" });
-      const data = await remindersApi.list({
-        status: status ? [status] : undefined,
-        limit,
-        offset: (page - 1) * limit,
-        order: "asc",
-      });
-      setReminders(data.items);
-      setTotal(data.total);
-    } catch (err) {
-      console.error(err);
-      showToast(
-        "error",
-        "Failed to create reminder",
-        err instanceof Error ? err.message : "Unknown error",
-      );
-    } finally {
-      setCreateLoading(false);
-    }
-  };
+  const query = usePagedQuery<ReminderDto>(
+    (page) => remindersApi.list({ status: status ? [status] : undefined, order: "asc", ...page }),
+    [status],
+    { headingRef },
+  );
 
   const handleSnooze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!snoozeReminderId) return;
-
-    setCreateLoading(true);
+    setSnoozing(true);
     try {
       await remindersApi.snooze(snoozeReminderId, snoozeForm);
       showToast("success", "Reminder snoozed");
       setSnoozeReminderId(null);
-      const data = await remindersApi.list({
-        status: status ? [status] : undefined,
-        limit,
-        offset: (page - 1) * limit,
-        order: "asc",
-      });
-      setReminders(data.items);
-      setTotal(data.total);
+      query.reload();
     } catch (err) {
-      showToast(
-        "error",
-        "Failed to snooze",
-        err instanceof Error ? err.message : "Unknown error",
-      );
+      showToast("error", "Failed to snooze", describeError(err, "Snoozing", true).message);
     } finally {
-      setCreateLoading(false);
+      setSnoozing(false);
+    }
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      await remindersApi.cancel(cancelTarget.id);
+      showToast("success", "Reminder cancelled", cancelTarget.title);
+      setCancelTarget(null);
+      query.reload();
+    } catch (err) {
+      showToast("error", "Reminder not cancelled", describeError(err, "Cancelling", true).message);
+    } finally {
+      setCancelling(false);
     }
   };
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "24px",
-        }}
-      >
-        <h1 style={{ fontSize: "24px", fontWeight: "600", margin: 0 }}>
-          Reminders
-        </h1>
-        <Button
-          variant="primary"
-          size="lg"
-          onClick={() => setShowCreateModal(true)}
-        >
-          <RemindersIcon style={{ marginRight: "8px" }} /> New Reminder
-        </Button>
-      </div>
+      <PageHeader
+        ref={headingRef}
+        title="Reminders"
+        sub={query.status === "ready" ? `${query.total} reminder${query.total === 1 ? "" : "s"}` : undefined}
+        actions={
+          <Button variant="primary" size="lg" onClick={() => setCreateOpen(true)}>
+            <RemindersIcon style={{ marginRight: "8px" }} /> New Reminder
+          </Button>
+        }
+      />
 
       <Card>
         <div className="card-content" style={{ padding: 0 }}>
-          {isLoading ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "32px",
-              }}
-            >
-              <div className="loading-spinner" aria-hidden="true" />
-            </div>
-          ) : reminders.length === 0 ? (
-            <EmptyState
-              icon={<RemindersIcon />}
-              title="No reminders yet"
-              text="Create a reminder to get notified on time."
-              action={
-                <Button
-                  variant="primary"
-                  onClick={() => setShowCreateModal(true)}
-                >
-                  Create Reminder
-                </Button>
-              }
-            />
-          ) : (
-            <>
-              <div
-                className="list"
-                style={{ borderTop: "1px solid var(--color-border)" }}
-              >
+          <ListState
+            status={query.status}
+            error={query.error}
+            items={query.items}
+            noun="reminders"
+            onRetry={query.reload}
+            empty={
+              <EmptyState
+                icon={<RemindersIcon />}
+                title="No reminders yet"
+                text="Create a reminder to get notified on time."
+                action={
+                  <Button variant="primary" onClick={() => setCreateOpen(true)}>
+                    Create Reminder
+                  </Button>
+                }
+              />
+            }
+          >
+            {(reminders) => (
+              <div className="list" style={{ borderTop: "1px solid var(--color-border)" }}>
                 {reminders.map((reminder) => (
                   <ReminderRow
                     key={reminder.id}
@@ -223,21 +112,13 @@ export function RemindersPage() {
                     actions={
                       reminder.status === "SCHEDULED" ? (
                         <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSnoozeReminderId(reminder.id)}
-                          >
+                          <Button variant="ghost" size="sm" onClick={() => setSnoozeReminderId(reminder.id)}>
                             Snooze
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={async () => {
-                              if (confirm("Cancel this reminder?")) {
-                                await remindersApi.cancel(reminder.id);
-                              }
-                            }}
+                            onClick={() => setCancelTarget(reminder)}
                           >
                             Cancel
                           </Button>
@@ -247,142 +128,27 @@ export function RemindersPage() {
                   />
                 ))}
               </div>
-              {total > reminders.length && (
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "center",
-                    gap: "8px",
-                    padding: "16px",
-                  }}
-                >
-                  <span
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      color: "var(--color-text-muted)",
-                      fontSize: "13px",
-                    }}
-                  >
-                    Showing {reminders.length} of {total}
-                  </span>
-                </div>
-              )}
-            </>
-          )}
+            )}
+          </ListState>
         </div>
       </Card>
 
-      <Modal
-        isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
-        title="Create Reminder"
-      >
-        <form onSubmit={handleCreate} noValidate>
-          <Input
-            label="Title"
-            placeholder="Reminder title"
-            value={createForm.title}
-            onChange={(e) => {
-              setCreateForm({ ...createForm, title: e.target.value });
-              if (createErrors.title) {
-                setCreateErrors((prev) => ({ ...prev, title: undefined }));
-              }
-            }}
-            error={createErrors.title}
-            required
-          />
-          <Textarea
-            label="Body (optional)"
-            placeholder="Optional details"
-            value={createForm.body}
-            onChange={(e) =>
-              setCreateForm({ ...createForm, body: e.target.value })
-            }
-            rows={3}
-          />
-          <Input
-            label="Remind At"
-            type="datetime-local"
-            value={createForm.remindAt}
-            onChange={(e) => {
-              setCreateForm({ ...createForm, remindAt: e.target.value });
-              if (createErrors.remindAt) {
-                setCreateErrors((prev) => ({ ...prev, remindAt: undefined }));
-              }
-            }}
-            error={createErrors.remindAt}
-            hint={`Time zone: ${timeZone}`}
-            required
-          />
-          <Select
-            label="Recurrence"
-            options={[
-              { value: "", label: "None" },
-              {
-                value: JSON.stringify({
-                  frequency: "DAILY",
-                  weekdays: [],
-                  until: null,
-                  maxOccurrences: 52,
-                }),
-                label: "Daily",
-              },
-              {
-                value: JSON.stringify({
-                  frequency: "WEEKLY",
-                  weekdays: [],
-                  until: null,
-                  maxOccurrences: 52,
-                }),
-                label: "Weekly",
-              },
-              {
-                value: JSON.stringify({
-                  frequency: "MONTHLY",
-                  weekdays: [],
-                  until: null,
-                  maxOccurrences: 24,
-                }),
-                label: "Monthly",
-              },
-            ]}
-            value={createForm.recurrence}
-            onChange={(e) =>
-              setCreateForm({ ...createForm, recurrence: e.target.value })
-            }
-          />
-          <div className="modal-footer">
-            <Button
-              variant="secondary"
-              type="button"
-              onClick={() => setShowCreateModal(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" loading={createLoading}>
-              Create Reminder
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      <RecordFormDialog
+        spec={reminderFormSpec}
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onSaved={() => {
+          setCreateOpen(false);
+          query.reload();
+        }}
+      />
 
-      <Modal
-        isOpen={!!snoozeReminderId}
-        onClose={() => setSnoozeReminderId(null)}
-        title="Snooze Reminder"
-      >
+      <Modal isOpen={!!snoozeReminderId} onClose={() => setSnoozeReminderId(null)} title="Snooze Reminder">
         <form onSubmit={handleSnooze}>
           <Select
             label="Snooze for"
             options={SNOOZE_OPTIONS}
-            value={
-              snoozeForm.until
-                ? "tomorrow 9am"
-                : snoozeForm.minutes === 60
-                  ? "1h"
-                  : "10m"
-            }
+            value={snoozeForm.until ? "tomorrow 9am" : snoozeForm.minutes === 60 ? "1h" : "10m"}
             onChange={(e) => {
               const val = e.target.value;
               if (val === "10m") setSnoozeForm({ minutes: 10 });
@@ -395,19 +161,27 @@ export function RemindersPage() {
             }}
           />
           <div className="modal-footer">
-            <Button
-              variant="secondary"
-              type="button"
-              onClick={() => setSnoozeReminderId(null)}
-            >
+            <Button variant="secondary" type="button" onClick={() => setSnoozeReminderId(null)}>
               Cancel
             </Button>
-            <Button type="submit" loading={createLoading}>
+            <Button type="submit" loading={snoozing}>
               Snooze
             </Button>
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={cancelTarget !== null}
+        title={`Cancel reminder “${cancelTarget?.title ?? ""}”?`}
+        confirmLabel="Cancel reminder"
+        cancelLabel="Keep reminder"
+        busy={cancelling}
+        onConfirm={() => void confirmCancel()}
+        onCancel={() => setCancelTarget(null)}
+      >
+        <p>It won’t be sent. The reminder stays in your list as cancelled.</p>
+      </ConfirmDialog>
     </div>
   );
 }

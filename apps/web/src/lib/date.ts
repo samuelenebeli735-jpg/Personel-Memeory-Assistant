@@ -329,3 +329,20 @@ export function localDateTimeToUtcIso(
     return { ok: false, error: 'The configured time zone is not supported.' }
   }
 }
+/**
+ * The inverse of `localDateTimeToUtcIso`: shows a stored UTC instant as the
+ * `YYYY-MM-DDTHH:mm` wall-clock value a `datetime-local` field expects, in
+ * the owner's Settings zone (used to pre-fill edit forms). Empty for null.
+ */
+export function utcIsoToLocalInput(isoString: string | null | undefined, timeZone: string): string {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  if (Number.isNaN(date.getTime())) return ''
+  try {
+    const parts = partsInTimeZone(date, timeZone)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`
+  } catch {
+    return ''
+  }
+}

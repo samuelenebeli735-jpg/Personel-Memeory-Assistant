@@ -8,6 +8,7 @@ import { Button } from './ui'
 import { Dialog } from './Dialog'
 import { useOnline } from '../hooks/useOnline'
 import { pageWindow, rangeLabel, totalPages } from '../lib/pagination'
+import { describeError } from '../lib/errors'
 
 /* -------------------------------------------------------------------------- */
 /* Page header                                                                 */
@@ -153,6 +154,48 @@ export function ErrorState({
       )}
     </div>
   )
+}
+
+/**
+ * The body of a list: first-load skeleton, an error panel with Retry (never a
+ * silent console error), the empty state, or the rows. While a later page
+ * loads, the previous rows stay visible.
+ */
+export function ListState<T>({
+  status,
+  error,
+  items,
+  noun,
+  empty,
+  onRetry,
+  children,
+}: {
+  status: 'loading' | 'ready' | 'error'
+  error: unknown
+  items: T[]
+  /** Plural, lower case: "tasks". */
+  noun: string
+  empty: ReactNode
+  onRetry: () => void
+  children: (items: T[]) => ReactNode
+}) {
+  if (status === 'error') {
+    const described = describeError(error, `Loading ${noun}`)
+    return (
+      <div style={{ padding: 16 }}>
+        <ErrorState title={`Couldn’t load ${noun}`} message={described.message} code={described.code} onRetry={onRetry} />
+      </div>
+    )
+  }
+  if (status === 'loading' && items.length === 0) {
+    return (
+      <div style={{ padding: 16 }}>
+        <LoadingState label={`Loading ${noun}…`} />
+      </div>
+    )
+  }
+  if (items.length === 0) return <>{empty}</>
+  return <div aria-busy={status === 'loading'}>{children(items)}</div>
 }
 
 /* -------------------------------------------------------------------------- */

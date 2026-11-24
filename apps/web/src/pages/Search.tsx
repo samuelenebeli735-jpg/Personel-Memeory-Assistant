@@ -23,6 +23,7 @@ import {
 } from "../components/ui";
 import { detailPath, type RecordDetailType } from "../lib/routes";
 import { SearchIcon } from "../components/Layout";
+import { describeError } from "../lib/errors";
 import {
   canFilterByStatus,
   parseSearchStatus,
@@ -197,12 +198,8 @@ export function SearchPage() {
       if (to) params.set("to", to);
       setSearchParams(params);
     } catch (err) {
-      console.error(err);
-      showToast(
-        "error",
-        "Search failed",
-        err instanceof Error ? err.message : "Unknown error",
-      );
+      const described = describeError(err, "Search");
+      showToast(described.retryAfter !== undefined ? "warning" : "error", "Search failed", described.message);
     } finally {
       setIsLoading(false);
     }
