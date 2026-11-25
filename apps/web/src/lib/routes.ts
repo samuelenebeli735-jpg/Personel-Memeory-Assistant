@@ -8,6 +8,8 @@
 
 export const APP_PATHS = {
   overview: '/',
+  today: '/briefing',
+  ask: '/ask',
   login: '/login',
   capture: '/capture',
   inbox: '/inbox',

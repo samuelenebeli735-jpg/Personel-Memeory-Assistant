@@ -30,6 +30,9 @@ test('the sidebar reaches every top-level dashboard page', async ({ page }) => {
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
 
   const targets: Target[] = [
+    { label: 'Today', text: 'Sections and their order come from' },
+    { label: 'Ask', heading: 'Ask' },
+    { label: 'Inbox', heading: 'Inbox' },
     { label: 'Overview', text: 'Open Tasks' },
     { label: 'Quick Capture', heading: 'Quick Capture' },
     { label: 'Search', heading: 'Search' },
