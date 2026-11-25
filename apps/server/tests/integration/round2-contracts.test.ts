@@ -168,9 +168,9 @@ describe('S1: inbox pagination', () => {
 
 describe('S2: paginated projects', () => {
   it('pages projects with a total and keeps archived ones out unless asked', async () => {
-    for (let i = 0; i < 27; i += 1) {
-      await testDb.db.project.create({ data: { name: `Project ${String(i).padStart(2, '0')}`, createdAt: SAME_TIME } });
-    }
+    await testDb.db.project.createMany({
+      data: Array.from({ length: 27 }, (_, i) => ({ name: `Project ${String(i).padStart(2, '0')}`, createdAt: SAME_TIME })),
+    });
     await testDb.db.project.create({ data: { name: 'Old project', status: 'ARCHIVED', archivedAt: SAME_TIME } });
 
     await readAllPages('/api/projects', 27);
@@ -181,14 +181,16 @@ describe('S2: paginated projects', () => {
 describe('S4: stable order with equal sort values', () => {
   it('never repeats or drops a row across pages of every list', async () => {
     const db = testDb.db;
-    for (let i = 0; i < 62; i += 1) {
-      const task = await db.task.create({ data: { title: `Task ${i}`, dueAt: SAME_TIME, createdAt: SAME_TIME } });
-      await db.note.create({ data: { body: `Note ${i}`, createdAt: SAME_TIME } });
-      await db.idea.create({ data: { title: `Idea ${i}`, createdAt: SAME_TIME } });
-      await db.event.create({ data: { title: `Event ${i}`, startsAt: SAME_TIME, createdAt: SAME_TIME } });
-      await db.reminder.create({ data: { title: `Reminder ${i}`, remindAt: SAME_TIME, taskId: task.id, createdAt: SAME_TIME } });
-      await db.capture.create({ data: { source: 'API', rawText: `Capture ${i}`, status: 'PROCESSED', capturedAt: SAME_TIME } });
-    }
+    // Bulk inserts keep this fast on slow CI machines; every row shares one time.
+    const n = Array.from({ length: 62 }, (_, i) => i);
+    await db.task.createMany({ data: n.map((i) => ({ id: `s4-task-${i}`, title: `Task ${i}`, dueAt: SAME_TIME, createdAt: SAME_TIME })) });
+    await db.note.createMany({ data: n.map((i) => ({ body: `Note ${i}`, createdAt: SAME_TIME })) });
+    await db.idea.createMany({ data: n.map((i) => ({ title: `Idea ${i}`, createdAt: SAME_TIME })) });
+    await db.event.createMany({ data: n.map((i) => ({ title: `Event ${i}`, startsAt: SAME_TIME, createdAt: SAME_TIME })) });
+    await db.reminder.createMany({
+      data: n.map((i) => ({ title: `Reminder ${i}`, remindAt: SAME_TIME, taskId: `s4-task-${i}`, createdAt: SAME_TIME })),
+    });
+    await db.capture.createMany({ data: n.map((i) => ({ source: 'API', rawText: `Capture ${i}`, status: 'PROCESSED', capturedAt: SAME_TIME })) });
 
     await readAllPages('/api/tasks', 62);
     await readAllPages('/api/tasks?sort=priority', 62);
@@ -201,9 +203,9 @@ describe('S4: stable order with equal sort values', () => {
   });
 
   it('returns the same page twice in the same order', async () => {
-    for (let i = 0; i < 30; i += 1) {
-      await testDb.db.note.create({ data: { body: `Same time ${i}`, createdAt: SAME_TIME } });
-    }
+    await testDb.db.note.createMany({
+      data: Array.from({ length: 30 }, (_, i) => ({ body: `Same time ${i}`, createdAt: SAME_TIME })),
+    });
     const first = await getJson<{ items: Array<{ id: string }> }>('/api/notes?limit=25&offset=0');
     const second = await getJson<{ items: Array<{ id: string }> }>('/api/notes?limit=25&offset=0');
     expect(second.items.map((n) => n.id)).toEqual(first.items.map((n) => n.id));
@@ -214,17 +216,20 @@ describe('S4: stable order with equal sort values', () => {
     // Explicit ids inserted out of order, so insertion (rowid) order differs
     // from id order and only an id tie-breaker gives the expected sequence.
     const shuffled = [7, 2, 11, 0, 9, 4, 1, 10, 5, 3, 8, 6];
-    for (const n of shuffled) {
-      const id = `tie-${String(n).padStart(2, '0')}`;
-      await db.note.create({ data: { id: `note-${id}`, body: `Tie ${n}`, createdAt: SAME_TIME } });
-      await db.event.create({ data: { id: `event-${id}`, title: `Tie ${n}`, startsAt: SAME_TIME } });
-      await db.capture.create({
-        data: { id: `capture-${id}`, source: 'API', rawText: `Tie ${n}`, status: 'NEEDS_REVIEW', capturedAt: SAME_TIME },
-      });
-      await db.idea.create({ data: { id: `idea-${id}`, title: `Tie ${n}`, createdAt: SAME_TIME } });
-      await db.task.create({ data: { id: `task-${id}`, title: `Tie ${n}`, dueAt: SAME_TIME, createdAt: SAME_TIME } });
-      await db.reminder.create({ data: { id: `reminder-${id}`, title: `Tie ${n}`, remindAt: SAME_TIME, taskId: `task-${id}` } });
-    }
+    // createMany inserts in array order, so rows still go in shuffled.
+    const tie = (n: number) => `tie-${String(n).padStart(2, '0')}`;
+    await db.note.createMany({ data: shuffled.map((n) => ({ id: `note-${tie(n)}`, body: `Tie ${n}`, createdAt: SAME_TIME })) });
+    await db.event.createMany({ data: shuffled.map((n) => ({ id: `event-${tie(n)}`, title: `Tie ${n}`, startsAt: SAME_TIME })) });
+    await db.capture.createMany({
+      data: shuffled.map((n) => ({ id: `capture-${tie(n)}`, source: 'API', rawText: `Tie ${n}`, status: 'NEEDS_REVIEW', capturedAt: SAME_TIME })),
+    });
+    await db.idea.createMany({ data: shuffled.map((n) => ({ id: `idea-${tie(n)}`, title: `Tie ${n}`, createdAt: SAME_TIME })) });
+    await db.task.createMany({
+      data: shuffled.map((n) => ({ id: `task-${tie(n)}`, title: `Tie ${n}`, dueAt: SAME_TIME, createdAt: SAME_TIME })),
+    });
+    await db.reminder.createMany({
+      data: shuffled.map((n) => ({ id: `reminder-${tie(n)}`, title: `Tie ${n}`, remindAt: SAME_TIME, taskId: `task-${tie(n)}` })),
+    });
     const ids = async (url: string) => (await getJson<{ items: Array<{ id: string }> }>(url)).items.map((r) => r.id);
     const ascending = (list: string[]) => [...list].sort((a, b) => a.localeCompare(b));
     const descending = (list: string[]) => [...list].sort((a, b) => b.localeCompare(a));

@@ -186,6 +186,24 @@ describe('correcting', () => {
     expect(await testDb.db.idea.count()).toBe(1);
   });
 
+  it('keeping a question as a task creates the task and leaves the inbox', async () => {
+    const ack = await capture('Is the dentist on Friday or Monday?');
+    expect(ack.capture.status).toBe('NEEDS_REVIEW');
+    expect(await testDb.db.task.count()).toBe(0);
+
+    const response = await authed(`/api/captures/${ack.capture.id}/convert`, {
+      method: 'POST',
+      payload: { kind: 'TASK' },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { capture: CaptureDto; created: Array<{ type: string }> };
+    expect(body.capture.status).toBe('CLASSIFIED');
+    expect(body.capture.needsReview).toBe(false);
+    expect(body.created.map((c) => c.type)).toEqual(['TASK']);
+    const inbox = (await authed('/api/captures/inbox')).json() as Paginated<CaptureDto>;
+    expect(inbox.items.map((item) => item.id)).not.toContain(ack.capture.id);
+  });
+
   it('reprocesses a capture that was stored without classification', async () => {
     const ack = await capture('I need to ring the dentist tomorrow', { captureOnly: true });
     expect(ack.capture.status).toBe('RECEIVED');

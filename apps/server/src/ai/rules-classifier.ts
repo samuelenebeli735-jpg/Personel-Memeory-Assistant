@@ -191,8 +191,10 @@ export function createRuleClassifier(options: RuleClassifierOptions = {}): RuleC
         }
       }
 
-      // A question is never a task to store; keep it for review instead.
-      if (looksLikeQuestion(text)) {
+      // A question is never a task to store; keep it for review instead. When
+      // the owner has chosen the kind (a command or "Keep as" in the inbox),
+      // that decision wins: they have reviewed it.
+      if (!forced && looksLikeQuestion(text)) {
         return {
           kind: 'UNKNOWN',
           title: null,

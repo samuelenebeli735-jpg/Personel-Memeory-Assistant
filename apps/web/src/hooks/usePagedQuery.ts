@@ -57,8 +57,11 @@ export interface PagedQuery<T> {
   setPage: (page: number) => void
   setFilters: (update: Record<string, string | null | undefined>) => void
   reload: () => void
-  /** Call after deleting rows; moves to the new last page when needed. */
-  afterRemoval: (count?: number) => { page: number; moved: boolean }
+  /**
+   * Call after deleting rows; moves to the new last page when needed. Focus goes
+   * to the list heading unless `focusHeading` is false (the caller moves it).
+   */
+  afterRemoval: (count?: number, focusHeading?: boolean) => { page: number; moved: boolean }
 }
 
 export function usePagedQuery<T>(
@@ -142,9 +145,9 @@ export function usePagedQuery<T>(
   const reload = useCallback(() => setReloadToken((token) => token + 1), [])
 
   const afterRemoval = useCallback(
-    (count = 1) => {
+    (count = 1, focusHeading = true) => {
       const result = pageAfterRemoval(page, data?.total ?? 0, count, pageSize)
-      focusHeadingNext.current = true
+      focusHeadingNext.current = focusHeading
       if (result.moved) writePage(result.page, true)
       else setReloadToken((token) => token + 1)
       return result

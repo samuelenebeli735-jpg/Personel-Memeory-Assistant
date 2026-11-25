@@ -25,6 +25,7 @@
   --color-warning-light: #f8edd3;
   --color-danger: #b3261e;
   --color-danger-light: #fbe2df;
+  --color-danger-text: #ffffff;
   --color-overdue: #b3261e;
   --color-overdue-light: #fbe2df;
   /* Badge text is small (11px); each pairs with its tinted background at 4.5:1 or better. */
@@ -69,6 +70,8 @@
     --color-warning-light: #382b0f;
     --color-danger: #f29b92;
     --color-danger-light: #3b1b18;
+    /* Dark ink on the light coral danger colour. */
+    --color-danger-text: #2a0e0c;
     --color-overdue: #f29b92;
     --color-overdue-light: #3b1b18;
     --color-badge-primary-text: #b0bfff;
@@ -283,9 +286,12 @@ select {
   font-size: 14px;
   font-weight: 500;
   border: 1px solid transparent;
-  transition: all var(--transition);
+  /* Opacity is not animated, so a button becoming enabled is never caught
+     half-faded. */
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
   cursor: pointer;
 }
+.btn[aria-disabled='true'] { cursor: progress; }
 
 .btn:disabled {
   opacity: 0.5;
@@ -326,7 +332,7 @@ select {
 
 .btn-danger {
   background: var(--color-danger);
-  color: white;
+  color: var(--color-danger-text);
   border-color: var(--color-danger);
 }
 
@@ -1133,4 +1139,48 @@ select {
 .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 
 .detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-bottom: 20px; }
+
+/* Inbox (R2-03): two panes on wide screens, list then detail on narrow ones. */
+.inbox-layout { container-type: inline-size; }
+.inbox { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr); gap: 14px; align-items: start; }
+.inbox-list-wrap { padding: 6px; }
+.inbox-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.inbox-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  color: inherit;
+  font: inherit;
+}
+.inbox-row:hover { background: var(--color-bg); }
+.inbox-row[aria-current='true'] { background: var(--color-primary-light); font-weight: 600; }
+.inbox-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning); }
+.inbox-row-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-row-time { color: var(--color-text-muted); font-size: 12.5px; white-space: nowrap; }
+.inbox-detail { display: grid; gap: 12px; padding: 16px; }
+.inbox-raw {
+  margin: 0;
+  border-left: 3px solid var(--color-border-strong);
+  padding: 2px 0 2px 12px;
+  font-size: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.inbox-reason { margin: 0; color: var(--color-text-muted); }
+.inbox-reason strong { color: var(--color-text); }
+.inbox-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.inbox-back { display: none !important; }
+@container (max-width: 760px) {
+  .inbox { grid-template-columns: minmax(0, 1fr); }
+  .inbox.detail-open .inbox-list-wrap { display: none; }
+  .inbox:not(.detail-open) .inbox-detail { display: none; }
+  .inbox-back { display: inline-flex !important; }
+}
 

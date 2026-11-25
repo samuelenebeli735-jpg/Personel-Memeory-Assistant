@@ -17,6 +17,7 @@ export const Button = forwardRef<
       loading = false,
       disabled,
       children,
+      onClick,
       ...props
     },
     ref,
@@ -35,7 +36,18 @@ export const Button = forwardRef<
       <button
         ref={ref}
         className={classNames}
-        disabled={disabled || loading}
+        disabled={disabled}
+        aria-disabled={loading || undefined}
+        aria-busy={loading || undefined}
+        onClick={(event) => {
+          // While busy the button keeps focus but ignores clicks (and, for a
+          // submit button, the form submission).
+          if (loading) {
+            event.preventDefault();
+            return;
+          }
+          onClick?.(event);
+        }}
         {...props}
       >
         {loading && <span className="loading-spinner" aria-hidden="true" />}

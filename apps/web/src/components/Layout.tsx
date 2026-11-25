@@ -1,10 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, NavLink } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { capturesApi } from "../lib/api";
+import { INBOX_CHANGED_EVENT } from "../lib/inbox";
 import { Button } from "./ui";
 
 // Navigation items
 const NAV_SECTIONS = [
+  {
+    title: "Now",
+    items: [
+      { path: "/inbox", label: "Inbox", icon: InboxIcon },
+    ],
+  },
   {
     title: "Core",
     items: [
@@ -261,6 +269,51 @@ function SettingsIcon({
   );
 }
 
+function InboxIcon({
+  className = "",
+  style,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    </svg>
+  );
+}
+
+/**
+ * How many captures need a decision. Refreshed on navigation and whenever an
+ * inbox action reports a change; a failed count simply hides the badge.
+ */
+function useInboxCount(): number | null {
+  const location = useLocation();
+  const [count, setCount] = useState<number | null>(null);
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((v) => v + 1);
+    window.addEventListener(INBOX_CHANGED_EVENT, bump);
+    return () => window.removeEventListener(INBOX_CHANGED_EVENT, bump);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    capturesApi
+      .inbox({ limit: 1 })
+      .then((page) => {
+        if (!cancelled) setCount(page.total);
+      })
+      .catch(() => {
+        if (!cancelled) setCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname, version]);
+  return count;
+}
+
 // Individual exports are already declared with 'export function' above
 
 function Header({
@@ -319,6 +372,7 @@ function Sidebar({
   onCloseMobileNav: () => void;
 }) {
   const location = useLocation();
+  const inboxCount = useInboxCount();
 
   return (
     <>
@@ -343,14 +397,25 @@ function Sidebar({
                   aria-current={
                     location.pathname === item.path ? "page" : undefined
                   }
+                  aria-describedby={item.path === "/inbox" && inboxCount ? "inbox-count-desc" : undefined}
                 >
                   <item.icon className="nav-icon" aria-hidden="true" />
                   <span>{item.label}</span>
+                  {item.path === "/inbox" && inboxCount !== null && inboxCount > 0 && (
+                    <span className="nav-badge" aria-hidden="true">
+                      {inboxCount}
+                    </span>
+                  )}
                 </NavLink>
               ))}
             </div>
           ))}
         </nav>
+        {inboxCount ? (
+          <span id="inbox-count-desc" className="sr-only">
+            {inboxCount} {inboxCount === 1 ? "capture needs" : "captures need"} a decision
+          </span>
+        ) : null}
       </aside>
       <div
         className={`sidebar-overlay ${mobileOpen ? "open" : ""}`}

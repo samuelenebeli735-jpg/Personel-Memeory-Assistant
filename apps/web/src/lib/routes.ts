@@ -10,6 +10,7 @@ export const APP_PATHS = {
   overview: '/',
   login: '/login',
   capture: '/capture',
+  inbox: '/inbox',
   tasks: '/tasks',
   reminders: '/reminders',
   notes: '/notes',

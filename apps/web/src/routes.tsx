@@ -9,6 +9,7 @@ import type { ReactNode } from 'react'
 import { APP_PATHS, DETAIL_ROUTE_PATTERNS, type RecordDetailType } from './lib/routes'
 import { OverviewPage } from './pages/Overview'
 import { CapturePage } from './pages/Capture'
+import { InboxPage } from './pages/Inbox'
 import { TasksPage } from './pages/Tasks'
 import { RemindersPage } from './pages/Reminders'
 import { NotesPage } from './pages/Notes'
@@ -45,6 +46,7 @@ const detailElements: Record<RecordDetailType, ReactNode> = {
 export const APP_ROUTES: AppRoute[] = [
   { path: APP_PATHS.overview, element: <OverviewPage /> },
   { path: APP_PATHS.capture, element: <CapturePage /> },
+  { path: APP_PATHS.inbox, element: <InboxPage /> },
   { path: APP_PATHS.tasks, element: <TasksPage /> },
   { path: APP_PATHS.reminders, element: <RemindersPage /> },
   { path: APP_PATHS.notes, element: <NotesPage /> },
