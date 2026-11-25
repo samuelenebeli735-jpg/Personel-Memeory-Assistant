@@ -874,11 +874,11 @@ test.describe('Dialog Open/Close/Action Buttons', () => {
     // Click delete
     await page.getByRole('button', { name: 'Delete' }).click();
 
-    const deleteDialog = page.getByRole('dialog', { name: 'Delete Task' });
+    const deleteDialog = page.getByRole('alertdialog', { name: 'Delete Task' });
     await expect(deleteDialog).toBeVisible();
 
-    // Cancel deletion
-    await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
+    // Keep the task (the safe choice names the record type)
+    await deleteDialog.getByRole('button', { name: 'Keep task' }).click();
     await expect(deleteDialog).not.toBeVisible();
 
     // Confirm deletion
@@ -1083,7 +1083,7 @@ test.describe('Browser Console Errors During Workflows', () => {
 
     // Delete
     await page.getByRole('button', { name: 'Delete' }).click();
-    const deleteDialog = page.getByRole('dialog', { name: 'Delete Task' });
+    const deleteDialog = page.getByRole('alertdialog', { name: 'Delete Task' });
     await expect(deleteDialog).toBeVisible();
     await deleteDialog.getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByText('Task deleted')).toBeVisible();

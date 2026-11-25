@@ -453,8 +453,12 @@ export const ideasApi = {
       body: JSON.stringify(input),
     }),
 
+  /** Makes a task from the idea; the idea is kept. */
   promote: (id: string) =>
-    request<TaskDto>(`/ideas/${id}/promote`, { method: 'POST' }),
+    request<{ idea: IdeaDto; taskId: string }>(`/ideas/${id}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   delete: (id: string) =>
     request<{ deleted: true }>(`/ideas/${id}`, { method: 'DELETE' }),

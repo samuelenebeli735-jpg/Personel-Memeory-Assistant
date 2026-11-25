@@ -465,9 +465,12 @@ export function RecordFormDialog<R extends { id: string }>({
     setBusy(true)
     try {
       const saved = record ? await spec.update(record.id, payload) : await spec.create(payload)
-      showToast('success', `${spec.noun} ${record ? 'updated' : 'created'}`, undefined, {
-        action: { label: `Open ${spec.noun.toLowerCase()}`, to: detailPath(spec.type, saved.id) },
-      })
+      showToast(
+        'success',
+        `${spec.noun} ${record ? 'updated' : 'created'}`,
+        undefined,
+        record ? undefined : { action: { label: `Open ${spec.noun.toLowerCase()}`, to: detailPath(spec.type, saved.id) } },
+      )
       onSaved(saved, mode)
     } catch (error) {
       const described = describeError(error, record ? `Saving the ${spec.noun.toLowerCase()}` : `Creating the ${spec.noun.toLowerCase()}`, true)
