@@ -20,6 +20,7 @@ import { EventsPage } from './pages/Events'
 import { ProjectsPage } from './pages/Projects'
 import { SearchPage } from './pages/Search'
 import { SettingsPage } from './pages/Settings'
+import { YourDataPage } from './pages/YourData'
 import {
   CaptureDetailPage,
   EventDetailPage,
@@ -59,6 +60,7 @@ export const APP_ROUTES: AppRoute[] = [
   { path: APP_PATHS.projects, element: <ProjectsPage /> },
   { path: APP_PATHS.search, element: <SearchPage /> },
   { path: APP_PATHS.settings, element: <SettingsPage /> },
+  { path: APP_PATHS.yourData, element: <YourDataPage /> },
   ...(Object.keys(DETAIL_ROUTE_PATTERNS) as RecordDetailType[]).map((type) => ({
     path: DETAIL_ROUTE_PATTERNS[type],
     element: detailElements[type],

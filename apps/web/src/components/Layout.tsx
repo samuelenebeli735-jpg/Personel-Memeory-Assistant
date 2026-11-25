@@ -36,7 +36,10 @@ const NAV_SECTIONS = [
   },
   {
     title: "Settings",
-    items: [{ path: "/settings", label: "Settings", icon: SettingsIcon }],
+    items: [
+      { path: "/settings", label: "Settings", icon: SettingsIcon },
+      { path: "/settings/data", label: "Your data", icon: DataIcon },
+    ],
   },
 ] as const;
 
@@ -298,6 +301,22 @@ function AskIcon({
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
       <path d="M9.5 9a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.3-2.4 2.3" />
       <path d="M12 14.5h.01" />
+    </svg>
+  );
+}
+
+function DataIcon({
+  className = "",
+  style,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
     </svg>
   );
 }

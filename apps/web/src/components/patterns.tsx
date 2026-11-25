@@ -208,12 +208,20 @@ export function ListState<T>({
 /* -------------------------------------------------------------------------- */
 
 export function OfflineBanner() {
-  const { online, reason } = useOnline()
+  const { online, reason, checkNow } = useOnline()
   if (online) return null
   return (
     <div className="offline-banner" role="status">
       <strong>{reason === 'device' ? 'You’re offline.' : 'Can’t reach Recall.'}</strong>{' '}
       Changes are paused; what you’ve already loaded is still here.
+      {reason === 'unreachable' && (
+        <>
+          {' '}
+          <Button type="button" variant="secondary" size="sm" onClick={checkNow}>
+            Check again
+          </Button>
+        </>
+      )}
     </div>
   )
 }

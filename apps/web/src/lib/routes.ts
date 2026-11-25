@@ -21,6 +21,7 @@ export const APP_PATHS = {
   projects: '/projects',
   search: '/search',
   settings: '/settings',
+  yourData: '/settings/data',
 } as const
 
 export type RecordDetailType =

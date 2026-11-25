@@ -43,6 +43,7 @@ test('the sidebar reaches every top-level dashboard page', async ({ page }) => {
     { label: 'Events', heading: 'Events' },
     { label: 'Projects', heading: 'Projects' },
     { label: 'Settings', heading: 'Settings' },
+    { label: 'Your data', heading: 'Your data' },
   ];
 
   for (const target of targets) {
