@@ -204,6 +204,10 @@ function AskAnswer({ question, result, timeZone }: { question: string; result: A
                 </li>
               ))}
             </ol>
+          ) : result.period ? (
+            <p className="page-header-sub">
+              No records fall in {result.period.label} ({result.period.timeZone}).
+            </p>
           ) : (
             <p className="page-header-sub">
               No records matched “{question}”. Searched: tasks, notes, ideas, events, reminders, projects and

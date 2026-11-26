@@ -107,12 +107,10 @@ export function TodayPage() {
               {shortDayLabel(addDays(dateKey, -1))}
               <span className="sr-only">, previous day, {longDateLabel(addDays(dateKey, -1), todayKey)}</span>
             </Button>
-            <label className="sr-only" htmlFor="today-date">
-              Pick a date
-            </label>
             <input
               id="today-date"
               type="date"
+              aria-label="Pick a date"
               className="today-date"
               value={dateKey}
               onChange={(event) => {

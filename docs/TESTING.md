@@ -601,8 +601,61 @@ click-throughs and accessibility audit.
   - a lost connection explained with "Check the same file again";
   - a server 409 shown with nothing restored.
 
-**Manual (not automated):** the screen-reader pass with NVDA and Edge
-(refinement 6) still has to be done by the owner. Record its findings here.
+### Round 2 accessibility verification record (2026-11-26)
+
+**NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
+development PC, and installing it is a system install (about a 40 MB download).
+A screen-reader test also needs a person listening to speech while driving the
+keyboard at the operating-system level, which the automated session cannot do. No
+NVDA result is claimed. The owner's checklist is below.
+
+**What was verified instead (automated, Edge via Playwright):**
+
+| Area | Result | How |
+| --- | --- | --- |
+| Landmarks: one `main`, one banner, labelled "Main navigation", "Notifications" region | **Passed** | `a11y-structure.spec.ts` on Today, Ask (answered), Inbox (detail open), Tasks and Your data |
+| One `h1` per page; heading levels never skip | **Passed** | `a11y-structure.spec.ts` |
+| Accessibility tree read through for names, roles and reading order | **Passed after fixes** | Trees dumped with `A11Y_TREE_DIR` and reviewed; fixes below |
+| WCAG 2.0/2.1 A and AA in light and dark (axe) | **Passed** | `accessibility.spec.ts` on 14 routes, plus dialogs and states in the Round 2 specs |
+| Form labels, descriptions, `aria-invalid`, error summary, focus to the first invalid field | **Passed** | `edit-delete.spec.ts`, `errors.spec.ts`, existing workflow tests |
+| Dialogs: name, initial focus (field or safe button), focus trap, Escape, focus returned | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts`, `edit-delete.spec.ts` |
+| Toasts: success/info `role=status`, errors `role=alert`, errors stay | **Passed** (DOM roles) | `inbox.spec.ts`, `errors.spec.ts`, unit tests |
+| Pagination: labelled nav, `aria-current="page"`, focus to the heading | **Passed** | `pagination.spec.ts` |
+| Inbox: convert, convert-anyway, Undo inside and after the window, typed purge | **Passed** | `inbox.spec.ts` |
+| Keyboard: Tab order, J/K, modifiers and fields ignored | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts` |
+| Offline, 429, 5xx, 401 and loading states | **Passed** | `errors.spec.ts`, `today-ask.spec.ts`, `edit-delete.spec.ts`, `your-data.spec.ts` |
+| Reflow at 320 px and at 200% zoom (640 CSS px) without sideways scrolling | **Passed** | `errors.spec.ts`, `a11y-structure.spec.ts` |
+| What NVDA actually speaks, and whether toasts are announced once | **Not tested** | Needs NVDA (see below) |
+
+**Defects found by the review and fixed:**
+
+1. **Relative times:** a capture made moments ago read "in 0 min" (a server clock
+   a few seconds ahead looked like the future). It now reads "just now"; unit test
+   added.
+2. **Today's date picker:** a visually hidden label was read as text and again as
+   the field name. The field now has one accessible name.
+3. **Ask, empty period:** a date question with nothing in the period said "No
+   records matched … Try other words". It now says no records fall in that period.
+
+**Risk to check with NVDA:** each toast carries its own `status`/`alert` role
+inside an always-present live region, which some screen readers announce twice.
+
+**Owner's NVDA + Edge checklist** (record each item as passed or failed, with notes):
+
+- Landmarks list (NVDA+F7) shows Main navigation, main and Notifications on every page.
+- Headings (H, 1) read in order on Today, Ask, Inbox, Tasks and Your data.
+- Today: the previous/next day buttons speak the full date; "Pick a date" is read once.
+- Ask: after asking, the answer is announced once; sources read "Source 1: …".
+- Inbox: the badge description ("n captures need a decision") is read on the Inbox
+  link; J/K move and the selected row is announced; each dialog's name and text are
+  read on opening; focus returns to the opener.
+- Forms: a missing title is announced; the summary link moves to the field.
+- Toasts: a success toast is spoken once; an error toast is spoken once and stays.
+- Pagination: "Page 2, current page" is announced; focus moves to the list heading.
+- Your data: the steps list reads the current step; a refused file's message is
+  announced; the restore report table reads its headers.
+- Offline and "Can't reach Recall" banners are announced; "Check again" works.
+- 200% zoom in Edge (Ctrl and +): nothing is cut off and nothing scrolls sideways.
 
 ### Atomicity of derivation
 

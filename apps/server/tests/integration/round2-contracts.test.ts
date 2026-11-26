@@ -261,6 +261,35 @@ describe('S4: stable order with equal sort values', () => {
 
 /* -------------------------------------------------------------------------- */
 
+describe('logs never carry query strings', () => {
+  it('logs a failed request by path, without search words or restore credentials', async () => {
+    const entries: Array<{ message: string; fields: unknown }> = [];
+    const logger = app.ctx.logger as unknown as Record<string, (message: string, fields?: unknown) => void>;
+    const originals = { warn: logger.warn, error: logger.error, info: logger.info };
+    for (const level of ['warn', 'error', 'info'] as const) {
+      logger[level] = (message: string, fields?: unknown) => entries.push({ message, fields });
+    }
+    try {
+      // A failed search (invalid sort) whose query holds personal words.
+      const search = await get('/api/search?q=my%20secret%20diagnosis&sort=nonsense');
+      expect(search.statusCode).toBe(400);
+      // A refused restore whose query holds a hash and a check token.
+      const bytes = Buffer.from('{}');
+      const refused = await postFile(bytes, { dryRun: 'false', sha256: sha256(bytes), checkToken: 'f'.repeat(64) });
+      expect(refused.statusCode).toBe(409);
+    } finally {
+      Object.assign(logger, originals);
+    }
+    const logged = JSON.stringify(entries);
+    expect(entries.some((e) => e.message === 'http request failed')).toBe(true);
+    expect(logged).toContain('/api/search');
+    expect(logged).not.toContain('secret');
+    expect(logged).not.toContain('diagnosis');
+    expect(logged).not.toContain('f'.repeat(64));
+    expect(logged).not.toContain(sha256(Buffer.from('{}')));
+  });
+});
+
 describe('restore file contract', () => {
   it('checks then applies exactly the same bytes, and a repeated restore adds nothing', async () => {
     await seedForExport();

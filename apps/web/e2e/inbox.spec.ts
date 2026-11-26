@@ -178,7 +178,8 @@ test('J and K move through the list; modifiers and fields are ignored', async ({
   await seedQuestion(page, 'e2e-inbox-k');
   await openInbox(page);
   const rows = page.locator('.inbox-row');
-  expect(await rows.count()).toBeGreaterThanOrEqual(2);
+  // Wait for the list to load before counting (count() does not wait).
+  await expect(rows.nth(1)).toBeVisible();
 
   await rows.nth(0).focus();
   await rows.nth(0).click();

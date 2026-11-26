@@ -71,6 +71,9 @@ export function formatRelative(
     // 30 hours, but it is Wednesday, not "tomorrow".
     const diffDays = calendarDayDifference(now, date, timeZone)
 
+    // Within a minute either way is "just now": a server clock a few seconds
+    // ahead would otherwise make a new capture read "in 0 min".
+    if (Math.abs(diffMs) < 60_000) return 'just now'
     if (Math.abs(diffMinutes) < 60) {
       return diffMinutes >= 0 ? `in ${diffMinutes} min` : `${Math.abs(diffMinutes)} min ago`
     }

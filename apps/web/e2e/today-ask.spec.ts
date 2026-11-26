@@ -128,6 +128,11 @@ test('a date question shows the period and zone as returned', async ({ page }) =
   await page.getByRole('button', { name: 'What do I have tomorrow?' }).click();
   await expect(page.locator('.ask-answer .kind-label')).toContainText(`· ${ZONE}`);
   await expect(page.locator('.ask-answer .kind-label')).toContainText(/Tomorrow/);
+  // An empty period is an answer, not a failed match: no "Try other words".
+  if ((await page.locator('.ask-sources').count()) === 0) {
+    await expect(page.getByText(/^No records fall in Tomorrow/)).toBeVisible();
+    await expect(page.getByText('Try other words.')).toHaveCount(0);
+  }
 });
 
 test('a rate-limited question keeps the text and says how long to wait', async ({ page }) => {

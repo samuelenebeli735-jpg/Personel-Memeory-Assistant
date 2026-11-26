@@ -132,6 +132,14 @@ describe('formatRelative', () => {
     expect(formatRelative('2026-07-07T09:00:00.000Z', 'America/New_York', now)).toMatch(/^tomorrow at /)
   })
 
+  it('says "just now" within a minute either way, never "in 0 min"', () => {
+    const now = new Date('2026-11-24T10:00:00.000Z')
+    expect(formatRelative('2026-11-24T10:00:20.000Z', 'UTC', now)).toBe('just now')
+    expect(formatRelative('2026-11-24T09:59:31.000Z', 'UTC', now)).toBe('just now')
+    expect(formatRelative('2026-11-24T09:58:00.000Z', 'UTC', now)).toBe('2 min ago')
+    expect(formatRelative('2026-11-24T10:05:00.000Z', 'UTC', now)).toBe('in 5 min')
+  })
+
   it('gives different answers for the same instants in different zones', () => {
     const now = new Date('2026-06-30T20:00:00.000Z') // 16:00 NY / 21:00 Lagos
     const target = '2026-07-01T03:00:00.000Z' // 23:00 NY (same day) / 04:00 Lagos (next day)

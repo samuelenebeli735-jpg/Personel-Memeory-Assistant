@@ -711,8 +711,45 @@ and one pull request; not merged.
   nothing.
 - No migration and no new dependency.
 
-**Still to do by the owner:** a screen-reader pass with NVDA and Edge (refinement 6);
-record its findings in TESTING.
+**Final review fixes (2026-11-26):**
+
+- The API error log records the path only. It used to include query strings,
+  which hold search words and, for restore, the file hash and check token.
+- Relative times read "just now" instead of "in 0 min".
+- Today's date field has one accessible name.
+- Ask says when a period simply has no records.
+
+**Still to do by the owner:**
+
+- A screen-reader pass with NVDA and Edge (refinement 6). It was **blocked** in the
+  automated review because NVDA is not installed; the checklist is in TESTING.
+- Production access logs. Caddy's default JSON access log records full request
+  URIs, including search text in `?q=` and the restore hash and token. This is
+  deployment work for R4: filter or drop query strings in `deploy/Caddyfile`.
+
+### Product boundary: ALIVE and Recall
+
+- **ALIVE** is the primary conversational intelligence, planning and
+  orchestration layer.
+- **Recall** provides structured memory, retrieval, tasks, reminders, events and
+  the supporting execution APIs.
+- **Recall Ask** is a lightweight, single-question information-retrieval feature.
+  It answers from stored records with sources. It is **not** ALIVE's
+  conversational interface:
+  - it keeps no conversation state;
+  - it does not plan;
+  - it does not create or change records.
+
+Round 2 adds no multi-turn conversation, no intent-planning engine and no
+conversational task creation to Recall, and none of these is claimed to exist.
+
+**Deferred ALIVE requirements** (not part of Recall Round 2, not implemented):
+
+- multi-turn conversation with context carried across turns;
+- intent recognition and planning across tools;
+- creating or changing tasks, reminders and events through conversation;
+- the native Windows and Android clients, with native notifications replacing the
+  temporary Telegram bridge (see the ALIVE architecture decision).
 
 ## Master completion checklist
 

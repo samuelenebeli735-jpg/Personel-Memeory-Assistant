@@ -100,7 +100,9 @@ export async function buildServer(
     const level = appError.httpStatus >= 500 ? 'error' : 'warn';
     ctx.logger[level]('http request failed', {
       method: request.method,
-      url: request.url,
+      // The path only: query strings can hold personal text (search words) and
+      // restore credentials, exactly like the access log below.
+      path: request.url.split('?')[0],
       status: appError.httpStatus,
       code: appError.code,
       reason: appError.message,
