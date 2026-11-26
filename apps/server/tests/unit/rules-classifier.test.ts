@@ -42,6 +42,13 @@ describe('deterministic kind detection', () => {
     expect(result.dueAt).toBeNull();
   });
 
+  it('lets the owner keep a question as a task when they choose the kind', () => {
+    const result = classify('Is the dentist on Friday or Monday?', 'TASK');
+    expect(result.kind).toBe('TASK');
+    expect(result.needsReview).toBe(false);
+    expect(result.title).toBeTruthy();
+  });
+
   it('honours an explicit kind hint from a command', () => {
     const result = classify('Postgres full text search notes', 'IDEA');
     expect(result.kind).toBe('IDEA');

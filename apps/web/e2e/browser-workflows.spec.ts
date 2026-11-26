@@ -557,10 +557,11 @@ test.describe('Empty States, Failed API Requests, Missing-Record Detail Pages', 
   test('empty projects list shows empty state', async ({ page }) => {
     const errors = captureConsoleErrors(page);
 
+    // GET /api/projects is paginated (Round 2, S2).
     await page.route('**/api/projects*', (route) => route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([]),
+      body: JSON.stringify({ items: [], total: 0, limit: 25, offset: 0 }),
     }));
     await page.goto('/projects');
     await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
@@ -703,8 +704,8 @@ test.describe('Dialog Open/Close/Action Buttons', () => {
     const dialog = page.getByRole('dialog', { name: 'Create Task' });
     await expect(dialog).toBeVisible();
 
-    // Close with Cancel button
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    // Close with Cancel button (scoped: the page also has a Cancelled filter)
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).not.toBeVisible();
 
     // Open again
@@ -873,11 +874,11 @@ test.describe('Dialog Open/Close/Action Buttons', () => {
     // Click delete
     await page.getByRole('button', { name: 'Delete' }).click();
 
-    const deleteDialog = page.getByRole('dialog', { name: 'Delete Task' });
+    const deleteDialog = page.getByRole('alertdialog', { name: 'Delete Task' });
     await expect(deleteDialog).toBeVisible();
 
-    // Cancel deletion
-    await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
+    // Keep the task (the safe choice names the record type)
+    await deleteDialog.getByRole('button', { name: 'Keep task' }).click();
     await expect(deleteDialog).not.toBeVisible();
 
     // Confirm deletion
@@ -988,13 +989,23 @@ test.describe('Desktop and Mobile Viewports', () => {
     const dialog = page.getByRole('dialog', { name: 'Create Task' });
     await expect(dialog).toBeVisible();
 
-    // Dialog should fit in mobile viewport
+    // On a phone the dialog is a bottom sheet: full width, inside the
+    // viewport, anchored to the bottom edge (Round 2 design, decision D1).
     const modal = page.locator('.modal');
+    // Wait for the short slide-up animation to settle before measuring.
+    await expect
+      .poll(async () => {
+        const box = await modal.boundingBox();
+        return box ? Math.round(box.y + box.height) : null;
+      })
+      .toBe(667);
     const modalBox = await modal.boundingBox();
     expect(modalBox).toBeTruthy();
     if (modalBox) {
-      expect(modalBox.width).toBeLessThanOrEqual(375 - 32); // Account for padding
+      expect(modalBox.x).toBeGreaterThanOrEqual(0);
+      expect(modalBox.width).toBeLessThanOrEqual(375);
     }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     // Fill form on mobile
     await page.getByLabel('Title').fill(uniqueLabel('e2e-mobile-task'));
@@ -1072,7 +1083,7 @@ test.describe('Browser Console Errors During Workflows', () => {
 
     // Delete
     await page.getByRole('button', { name: 'Delete' }).click();
-    const deleteDialog = page.getByRole('dialog', { name: 'Delete Task' });
+    const deleteDialog = page.getByRole('alertdialog', { name: 'Delete Task' });
     await expect(deleteDialog).toBeVisible();
     await deleteDialog.getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByText('Task deleted')).toBeVisible();

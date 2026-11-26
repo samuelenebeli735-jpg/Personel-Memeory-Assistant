@@ -81,6 +81,7 @@ import {
   createProject,
   deleteProject,
   getProject,
+  countProjects,
   listProjects,
   updateProject,
 } from '../../services/project-service.js';
@@ -384,13 +385,15 @@ export async function registerLibraryRoutes(app: FastifyInstance, ctx: AppContex
   /* Projects                                                                */
   /* ---------------------------------------------------------------------- */
 
-  app.get('/projects', async (request): Promise<ProjectDto[]> => {
+  /** Paginated like every other list (S2, decision D4). */
+  app.get('/projects', async (request): Promise<Paginated<ProjectDto>> => {
     const query = parseQuery(projectListQuery, request.query);
-    return listProjects(ctx.db, {
-      includeArchived: query.includeArchived === 'true',
-      limit: query.limit,
-      offset: query.offset,
-    });
+    const includeArchived = query.includeArchived === 'true';
+    const [items, total] = await Promise.all([
+      listProjects(ctx.db, { includeArchived, limit: query.limit, offset: query.offset }),
+      countProjects(ctx.db, { includeArchived }),
+    ]);
+    return { items, total, limit: query.limit, offset: query.offset };
   });
 
   app.post('/projects', async (request, reply): Promise<ProjectDto> => {

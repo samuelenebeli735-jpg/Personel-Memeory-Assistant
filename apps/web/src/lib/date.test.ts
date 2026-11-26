@@ -132,6 +132,14 @@ describe('formatRelative', () => {
     expect(formatRelative('2026-07-07T09:00:00.000Z', 'America/New_York', now)).toMatch(/^tomorrow at /)
   })
 
+  it('says "just now" within a minute either way, never "in 0 min"', () => {
+    const now = new Date('2026-11-24T10:00:00.000Z')
+    expect(formatRelative('2026-11-24T10:00:20.000Z', 'UTC', now)).toBe('just now')
+    expect(formatRelative('2026-11-24T09:59:31.000Z', 'UTC', now)).toBe('just now')
+    expect(formatRelative('2026-11-24T09:58:00.000Z', 'UTC', now)).toBe('2 min ago')
+    expect(formatRelative('2026-11-24T10:05:00.000Z', 'UTC', now)).toBe('in 5 min')
+  })
+
   it('gives different answers for the same instants in different zones', () => {
     const now = new Date('2026-06-30T20:00:00.000Z') // 16:00 NY / 21:00 Lagos
     const target = '2026-07-01T03:00:00.000Z' // 23:00 NY (same day) / 04:00 Lagos (next day)
@@ -160,5 +168,18 @@ describe('localDateTimeToUtcIso around a fall-back DST change', () => {
     expect(result.ok).toBe(true)
     if (!result.ok || !result.value) return
     expect(['2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z']).toContain(result.value)
+  })
+})
+
+describe('utcIsoToLocalInput', () => {
+  it('shows a UTC instant as a wall-clock value in the Settings zone', async () => {
+    const { utcIsoToLocalInput, localDateTimeToUtcIso } = await import('./date')
+    expect(utcIsoToLocalInput('2026-11-24T08:30:00.000Z', 'Africa/Lagos')).toBe('2026-11-24T09:30')
+    expect(utcIsoToLocalInput('2026-07-01T13:00:00.000Z', 'America/New_York')).toBe('2026-07-01T09:00')
+    expect(utcIsoToLocalInput(null, 'UTC')).toBe('')
+    expect(utcIsoToLocalInput('not a date', 'UTC')).toBe('')
+    // Round trip with the converter used on save.
+    const local = utcIsoToLocalInput('2026-03-29T00:59:00.000Z', 'Europe/London')
+    expect(localDateTimeToUtcIso(local, 'Europe/London')).toEqual({ ok: true, value: '2026-03-29T00:59:00.000Z' })
   })
 })

@@ -25,6 +25,7 @@ import { AppError, NotFoundError } from '../../lib/errors.js';
 import {
   convertCaptureKind,
   countCaptures,
+  countInbox,
   getCapture,
   ingestCapture,
   listCaptures,
@@ -52,6 +53,11 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
   order: z.enum(['asc', 'desc']).default('desc'),
+});
+
+const inboxQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
 });
 
 const ingestBodySchema = z.object({
@@ -121,14 +127,16 @@ export async function registerCaptureRoutes(app: FastifyInstance, ctx: AppContex
     };
   }
 
-  /** Captures awaiting a human decision. Registered before `/:id`. */
+  /**
+   * Captures awaiting a human decision, oldest first. `total` counts every
+   * capture that needs review, not just this page (S1). Registered before `/:id`.
+   */
   app.get('/captures/inbox', async (request): Promise<Paginated<CaptureDto>> => {
-    const limit = z.coerce.number().int().min(1).max(100).default(25).safeParse(
-      (request.query as Record<string, unknown> | undefined)?.limit,
-    );
-    const take = limit.success ? limit.data : 25;
-    const items = await listInbox(ctx.db, take);
-    return { items, total: items.length, limit: take, offset: 0 };
+    const parsed = inboxQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) throw validationError(parsed.error);
+    const { limit, offset } = parsed.data;
+    const [items, total] = await Promise.all([listInbox(ctx.db, limit, offset), countInbox(ctx.db)]);
+    return { items, total, limit, offset };
   });
 
   app.get('/captures', async (request): Promise<Paginated<CaptureDto>> => {

@@ -90,7 +90,10 @@ test('a time inside the spring-forward gap is refused with an explanation', asyn
   // New York skips 02:00-03:00 on 14 March 2027.
   await dialog.getByLabel('Remind At').fill('2027-03-14T02:30');
   await dialog.getByRole('button', { name: 'Create Reminder' }).click();
-  await expect(dialog.getByText('That local time does not exist in the configured time zone.')).toBeVisible();
+  // The message is on the field (and repeated in the form's error summary).
+  const field = dialog.getByLabel('Remind At');
+  await expect(field).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog.locator('.form-error', { hasText: 'That local time does not exist in the configured time zone.' })).toBeVisible();
 });
 
 test('saving a new zone in Settings changes the dashboard immediately', async ({ page }) => {

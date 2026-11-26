@@ -6,6 +6,8 @@
  * nothing in this file logs them.
  */
 import fs from 'node:fs';
+import AxeBuilder from '@axe-core/playwright';
+import { expect, type Page } from '@playwright/test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,4 +38,25 @@ export const authStatePath = path.join(tmpDir, 'auth-state.json');
 export function uniqueLabel(prefix: string): string {
   const suffix = Math.random().toString(36).slice(2, 7);
   return `${prefix}-${suffix}`;
+}
+
+/** Runs axe against the live DOM and reports every violation it finds. */
+export async function expectNoAxeViolations(page: Page) {
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+
+  const report = results.violations
+    .map((violation) => {
+      const nodes = violation.nodes
+        .map((node) => {
+          const summary = node.failureSummary ? `\n${node.failureSummary}` : '';
+          return `${node.target.join(' ')}${summary}\n${node.html}`;
+        })
+        .join('\n');
+      return `${violation.id} [${violation.impact ?? 'unknown'}] ${violation.help}\n${nodes}`;
+    })
+    .join('\n---\n');
+
+  expect(report, report).toBe('');
 }

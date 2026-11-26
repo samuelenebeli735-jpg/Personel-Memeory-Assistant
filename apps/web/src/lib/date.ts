@@ -71,6 +71,9 @@ export function formatRelative(
     // 30 hours, but it is Wednesday, not "tomorrow".
     const diffDays = calendarDayDifference(now, date, timeZone)
 
+    // Within a minute either way is "just now": a server clock a few seconds
+    // ahead would otherwise make a new capture read "in 0 min".
+    if (Math.abs(diffMs) < 60_000) return 'just now'
     if (Math.abs(diffMinutes) < 60) {
       return diffMinutes >= 0 ? `in ${diffMinutes} min` : `${Math.abs(diffMinutes)} min ago`
     }
@@ -327,5 +330,22 @@ export function localDateTimeToUtcIso(
     return { ok: true, value: result.toISOString() }
   } catch {
     return { ok: false, error: 'The configured time zone is not supported.' }
+  }
+}
+/**
+ * The inverse of `localDateTimeToUtcIso`: shows a stored UTC instant as the
+ * `YYYY-MM-DDTHH:mm` wall-clock value a `datetime-local` field expects, in
+ * the owner's Settings zone (used to pre-fill edit forms). Empty for null.
+ */
+export function utcIsoToLocalInput(isoString: string | null | undefined, timeZone: string): string {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  if (Number.isNaN(date.getTime())) return ''
+  try {
+    const parts = partsInTimeZone(date, timeZone)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`
+  } catch {
+    return ''
   }
 }

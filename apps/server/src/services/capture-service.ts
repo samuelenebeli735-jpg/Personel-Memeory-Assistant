@@ -160,7 +160,8 @@ export async function listCaptures(db: Db, filter: CaptureFilter = {}): Promise<
   const rows = await db.capture.findMany({
     where: captureWhere(filter),
     include: captureInclude,
-    orderBy: { capturedAt: filter.order ?? 'desc' },
+    // id breaks ties so equal timestamps never swap between pages (S4).
+    orderBy: [{ capturedAt: filter.order ?? 'desc' }, { id: filter.order ?? 'desc' }],
     take: filter.limit ?? 50,
     skip: filter.offset ?? 0,
   });
@@ -171,15 +172,23 @@ export async function countCaptures(db: Db, filter: CaptureFilter = {}): Promise
   return db.capture.count({ where: captureWhere(filter) });
 }
 
-/** Captures that still need a human decision. */
-export async function listInbox(db: Db, limit = 25): Promise<CaptureDto[]> {
+const INBOX_WHERE = { deletedAt: null, status: { in: ['NEEDS_REVIEW', 'FAILED'] } };
+
+/** Captures that still need a human decision, oldest first. */
+export async function listInbox(db: Db, limit = 25, offset = 0): Promise<CaptureDto[]> {
   const rows = await db.capture.findMany({
-    where: { deletedAt: null, status: { in: ['NEEDS_REVIEW', 'FAILED'] } },
+    where: INBOX_WHERE,
     include: captureInclude,
-    orderBy: { capturedAt: 'asc' },
+    orderBy: [{ capturedAt: 'asc' }, { id: 'asc' }],
     take: limit,
+    skip: offset,
   });
   return rows.map((row) => toCaptureDto(row as CaptureRow));
+}
+
+/** Every capture that needs a decision, with the same filter as `listInbox` (S1). */
+export async function countInbox(db: Db): Promise<number> {
+  return db.capture.count({ where: INBOX_WHERE });
 }
 
 /* -------------------------------------------------------------------------- */

@@ -8,8 +8,11 @@
 
 export const APP_PATHS = {
   overview: '/',
+  today: '/briefing',
+  ask: '/ask',
   login: '/login',
   capture: '/capture',
+  inbox: '/inbox',
   tasks: '/tasks',
   reminders: '/reminders',
   notes: '/notes',
@@ -18,6 +21,7 @@ export const APP_PATHS = {
   projects: '/projects',
   search: '/search',
   settings: '/settings',
+  yourData: '/settings/data',
 } as const
 
 export type RecordDetailType =

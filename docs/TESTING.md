@@ -139,6 +139,7 @@ apps/server/tests/
     ├── search-api.test.ts          cross-entity matching, filters, pagination
     ├── telegram-library.test.ts    /tasks, /today, /overdue, /search, /ideas, /notes, /projects
     ├── export-restore.test.ts      bundle shape, round trip, dry run, identity reuse
+    ├── round2-contracts.test.ts    inbox/projects paging, id tie-breakers, restore by file bytes
     ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
     ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
     ├── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
@@ -209,6 +210,21 @@ file is checkpointed before the template is published, so a plain copy is
 complete.
 
 ## Current results
+
+**Round 2 branch (`feat/round2-dashboard`), 2026-11-26**, Node v24.17.0, Windows:
+
+- Server: 784/784, with the test host at UTC+14 and at UTC.
+- Dashboard: 124/124.
+- Browser (Edge, axe in light and dark): 115/115, run alone with zero retries.
+- Typechecks, Prisma validation, the migration drift check and the production
+  builds all pass.
+
+Run the server and browser suites one at a time on Windows. Running them together
+on this machine made SQLite writes and Playwright actions time out (those failures
+went away when each suite ran alone). The slowest Round 2 contract tests now seed
+with `createMany` for the same reason.
+
+The figures below are from Round 1.
 
 Executed 2026-11-22 on Node v24.17.0, npm 11.13.0, Windows (win32), for the
 Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
@@ -509,6 +525,137 @@ against the same route patterns the app registers. It also checks that every
 top-level navigation path and every `detailPath` output is registered. This is a
 component/navigation test; the separate Playwright suite performs the real-browser
 click-throughs and accessibility audit.
+
+### Round 2 dashboard (R2-01 to R2-07)
+
+**Server contracts** (`round2-contracts.test.ts`, real app and SQLite):
+
+- **S1:** the inbox pages with a real total.
+- **S2:** projects are paginated.
+- **S4:** 62 rows per list with identical timestamps page with no repeats or
+  gaps. Rows given out-of-order explicit ids prove each list's id tie-breaker in
+  the direction of its main sort (the test fails when a tie-breaker is removed).
+- **Restore by file bytes:**
+  - a dry run then an apply of the same bytes;
+  - a repeated restore against the real server adds nothing and changes no
+    table count;
+  - mismatched bytes, unchecked files, swapped and forged check tokens are
+    refused with 409 and write nothing;
+  - non-JSON, non-UTF-8, non-export and newer-schema files are refused;
+  - a BOM is accepted;
+  - 3 MB is accepted, 26 MB is refused, and 2.5 MB is still refused on
+    `/api/restore` and `/api/notes` (the global 2 MB limit is unchanged);
+  - an unauthenticated 30 MB upload gets 401, not 413 (the session is checked
+    before the body is read);
+  - `text/plain` gets 415;
+  - an interrupted restore re-run adds only what is missing;
+  - a table over the row limit is skipped while the others restore.
+- **Classifier:** keeping a question as a task (the owner's explicit kind) now
+  creates the task and clears the inbox.
+
+**Dashboard unit tests** (Vitest; server rendering, no DOM):
+
+- **API client:**
+  - reads retry at most twice on a network failure or 5xx;
+  - writes are never retried, and 429 and 4xx are not retried;
+  - Retry-After is parsed and 15 s timeouts are reported;
+  - convert sends `{ kind, force }` and the capture update method is gone;
+  - the Ask question stays out of the URL;
+  - restore sends raw bytes with the hash and check token.
+- **Session bootstrap:**
+  - only an explicit "not authenticated" answer or a 401 signs out;
+  - 429, 5xx and network failures get 1 attempt plus up to 3 retries at
+    1 s, 2 s and 4 s, honouring Retry-After up to 60 s, then "unreachable".
+- **Other units:**
+  - pagination arithmetic and URL rules (clamping, filters reset the page);
+  - form rules for every record type: required fields, Settings-zone times,
+    a DST gap, end after start, shared-schema validation, changed-fields-only
+    edits, and a reminder series kept when its frequency is unchanged;
+  - inbox rules: Undo minutes, J/K eligibility, the next selection;
+  - Today date arithmetic and labels in the zone;
+  - restore file checks: size, encoding, JSON, export shape, schema version,
+    and SHA-256 against the FIPS test vector;
+  - SSR checks of the shared dialog, pager, state and toast patterns.
+
+**Browser** (Playwright, Edge, axe in light and dark):
+
+- `pagination.spec.ts`: 62 seeded ideas, refresh, Back, a clamped page,
+  filter reset, search paging and the phone pager.
+- `edit-delete.spec.ts`: edit and delete per record type, an edit in
+  Asia/Tokyo with the browser in UTC, idea to task, the project detach count,
+  the unsaved-changes guard, a PATCH with only the changed field, and a 500
+  that keeps the form.
+- `inbox.spec.ts`: keep as task with the badge countdown, Undo inside and
+  outside the window, convert anyway with force, typed purge, J/K, and the
+  phone layout.
+- `today-ask.spec.ts`:
+  - Today: zone day and time, next, previous, picker and Back, links, and an
+    invalid date;
+  - Ask: numbered sources linked to records, the question never in the URL,
+    ungrounded answers, the period and zone, and a 429 that keeps the
+    question.
+- `your-data.spec.ts`:
+  - a dated export download;
+  - bad files refused with nothing uploaded;
+  - check, then restore only what is missing, then nothing on repeat;
+  - a lost connection explained with "Check the same file again";
+  - a server 409 shown with nothing restored.
+
+### Round 2 accessibility verification record (2026-11-26)
+
+**NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
+development PC, and installing it is a system install (about a 40 MB download).
+A screen-reader test also needs a person listening to speech while driving the
+keyboard at the operating-system level, which the automated session cannot do. No
+NVDA result is claimed. The owner's checklist is below.
+
+**What was verified instead (automated, Edge via Playwright):**
+
+| Area | Result | How |
+| --- | --- | --- |
+| Landmarks: one `main`, one banner, labelled "Main navigation", "Notifications" region | **Passed** | `a11y-structure.spec.ts` on Today, Ask (answered), Inbox (detail open), Tasks and Your data |
+| One `h1` per page; heading levels never skip | **Passed** | `a11y-structure.spec.ts` |
+| Accessibility tree read through for names, roles and reading order | **Passed after fixes** | Trees dumped with `A11Y_TREE_DIR` and reviewed; fixes below |
+| WCAG 2.0/2.1 A and AA in light and dark (axe) | **Passed** | `accessibility.spec.ts` on 14 routes, plus dialogs and states in the Round 2 specs |
+| Form labels, descriptions, `aria-invalid`, error summary, focus to the first invalid field | **Passed** | `edit-delete.spec.ts`, `errors.spec.ts`, existing workflow tests |
+| Dialogs: name, initial focus (field or safe button), focus trap, Escape, focus returned | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts`, `edit-delete.spec.ts` |
+| Toasts: success/info `role=status`, errors `role=alert`, errors stay | **Passed** (DOM roles) | `inbox.spec.ts`, `errors.spec.ts`, unit tests |
+| Pagination: labelled nav, `aria-current="page"`, focus to the heading | **Passed** | `pagination.spec.ts` |
+| Inbox: convert, convert-anyway, Undo inside and after the window, typed purge | **Passed** | `inbox.spec.ts` |
+| Keyboard: Tab order, J/K, modifiers and fields ignored | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts` |
+| Offline, 429, 5xx, 401 and loading states | **Passed** | `errors.spec.ts`, `today-ask.spec.ts`, `edit-delete.spec.ts`, `your-data.spec.ts` |
+| Reflow at 320 px and at 200% zoom (640 CSS px) without sideways scrolling | **Passed** | `errors.spec.ts`, `a11y-structure.spec.ts` |
+| What NVDA actually speaks, and whether toasts are announced once | **Not tested** | Needs NVDA (see below) |
+
+**Defects found by the review and fixed:**
+
+1. **Relative times:** a capture made moments ago read "in 0 min" (a server clock
+   a few seconds ahead looked like the future). It now reads "just now"; unit test
+   added.
+2. **Today's date picker:** a visually hidden label was read as text and again as
+   the field name. The field now has one accessible name.
+3. **Ask, empty period:** a date question with nothing in the period said "No
+   records matched … Try other words". It now says no records fall in that period.
+
+**Risk to check with NVDA:** each toast carries its own `status`/`alert` role
+inside an always-present live region, which some screen readers announce twice.
+
+**Owner's NVDA + Edge checklist** (record each item as passed or failed, with notes):
+
+- Landmarks list (NVDA+F7) shows Main navigation, main and Notifications on every page.
+- Headings (H, 1) read in order on Today, Ask, Inbox, Tasks and Your data.
+- Today: the previous/next day buttons speak the full date; "Pick a date" is read once.
+- Ask: after asking, the answer is announced once; sources read "Source 1: …".
+- Inbox: the badge description ("n captures need a decision") is read on the Inbox
+  link; J/K move and the selected row is announced; each dialog's name and text are
+  read on opening; focus returns to the opener.
+- Forms: a missing title is announced; the summary link moves to the field.
+- Toasts: a success toast is spoken once; an error toast is spoken once and stays.
+- Pagination: "Page 2, current page" is announced; focus moves to the list heading.
+- Your data: the steps list reads the current step; a refused file's message is
+  announced; the restore report table reads its headers.
+- Offline and "Can't reach Recall" banners are announced; "Check again" works.
+- 200% zoom in Edge (Ctrl and +): nothing is cut off and nothing scrolls sideways.
 
 ### Atomicity of derivation
 

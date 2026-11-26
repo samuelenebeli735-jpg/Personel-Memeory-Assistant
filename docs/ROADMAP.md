@@ -667,6 +667,90 @@ durable dead-letter record; a command can run twice in a narrow restart window; 
 voice note can be transcribed again; an acknowledged dead letter is not recovered
 automatically; the answer on a dead-lettered button press is best effort.
 
+## Round 2 — Dashboard  ·  **In review**
+
+Source: the approved Round 2 design (v2, decisions D1–D8, refinements 1–7) and the
+clickable prototype, verified in a real browser on 2026-11-23 (179/179 checks after
+fixing seven prototype-only issues). Delivered as one branch, `feat/round2-dashboard`,
+and one pull request; not merged.
+
+| ID | Task | Commit(s) | Audit finding |
+| --- | --- | --- | --- |
+| — | Almanac tokens and base styles (D1, D2, D7) | `6fb5df9` | — |
+| — | Shared dialog, pagination, state and toast patterns | `1dd812f` | — |
+| R2-07 | API client and session: timeouts, bounded read retries, no write retries, 401-only sign-out, start-up retries (D6) | `0321941` | N9 |
+| R2-03, R2-05, R2-06 | Server: S1 inbox total, S2 paginated projects, S3 25 MB restore route, S4 id tie-breakers, restore by file bytes with a check token | `7b1568e` | — |
+| R2-07 | One form and error pattern for every create form | `cec74c4` | N8 |
+| R2-05 | Pagination on every list and search, in the URL | `0f93ac5` | N7 |
+| R2-04 | Edit and delete every record type; idea to task | `a90dcdf` | N7 |
+| R2-03 | Inbox review (keep, reprocess, Undo, purge, J/K, badge) | `dac919a` | N7 |
+| R2-01, R2-02 | Ask and Today; "Now" navigation | `c5328fa` | N7 |
+| R2-06 | Settings → Your data: export and the restore wizard | `dd604f6` | N7 |
+| — | Error, accessibility and reflow tests; docs | step 11 commit | — |
+
+**Contracts confirmed in code and tests:**
+
+- **Restore identity:** the server applies only the exact bytes it checked. It
+  hashes what it receives and requires the dry run's `checkToken` (an HMAC of
+  that hash), so a client-side hash alone is never trusted.
+- **Repeated restores:** a restore repeated against the real server adds
+  nothing.
+- **Start-up session check:** 1 initial attempt plus up to 3 retries
+  (1 s, 2 s, 4 s).
+- **Retries:** writes are never retried automatically.
+- **Pagination order:** every paginated list ends with an id tie-breaker.
+- **Sign-out:** only a 401 signs the dashboard out.
+- **Limits:** the global 2 MB body limit and the login rate limit are unchanged.
+- **Undo and purge:** capture Undo (soft, not reversible from the dashboard) and
+  permanent purge keep their distinct semantics.
+
+**Changes beyond the dashboard:**
+
+- The rules classifier now lets the owner's explicit kind override its "a question
+  is never a task" heuristic. Before this, "Keep as task" on a question created
+  nothing.
+- No migration and no new dependency.
+
+**Final review fixes (2026-11-26):**
+
+- The API error log records the path only. It used to include query strings,
+  which hold search words and, for restore, the file hash and check token.
+- Relative times read "just now" instead of "in 0 min".
+- Today's date field has one accessible name.
+- Ask says when a period simply has no records.
+
+**Still to do by the owner:**
+
+- A screen-reader pass with NVDA and Edge (refinement 6). It was **blocked** in the
+  automated review because NVDA is not installed; the checklist is in TESTING.
+- Production access logs. Caddy's default JSON access log records full request
+  URIs, including search text in `?q=` and the restore hash and token. This is
+  deployment work for R4: filter or drop query strings in `deploy/Caddyfile`.
+
+### Product boundary: ALIVE and Recall
+
+- **ALIVE** is the primary conversational intelligence, planning and
+  orchestration layer.
+- **Recall** provides structured memory, retrieval, tasks, reminders, events and
+  the supporting execution APIs.
+- **Recall Ask** is a lightweight, single-question information-retrieval feature.
+  It answers from stored records with sources. It is **not** ALIVE's
+  conversational interface:
+  - it keeps no conversation state;
+  - it does not plan;
+  - it does not create or change records.
+
+Round 2 adds no multi-turn conversation, no intent-planning engine and no
+conversational task creation to Recall, and none of these is claimed to exist.
+
+**Deferred ALIVE requirements** (not part of Recall Round 2, not implemented):
+
+- multi-turn conversation with context carried across turns;
+- intent recognition and planning across tools;
+- creating or changing tasks, reminders and events through conversation;
+- the native Windows and Android clients, with native notifications replacing the
+  temporary Telegram bridge (see the ALIVE architecture decision).
+
 ## Master completion checklist
 
 Moved here from §19 of the 2026-11-17 audit; this file is now the source of truth.
@@ -680,8 +764,8 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 - [x] Ask answers date and time questions (N3) — R1-03
 - [x] AI provider transports correct and tested against mocks (N4, N6) — R1-04; live calls not yet made
 - [x] Telegram mode switch self-heals (N5) — R1-05
-- [x] Playwright suite green after Round 1 (80/80) — not yet extended to Round 2 features
-- [ ] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2
+- [x] Playwright suite green after Round 1 (80/80), extended for Round 2 on `feat/round2-dashboard`
+- [x] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2, in review on `feat/round2-dashboard` (not yet merged)
 - [x] CI workflow reproducing the checks on pull requests — `.github/workflows/ci.yml` (PR #4, with the test-only rate-limit fix in PR #5)
   - Verified 2026-11-23 by the first run on `main` (run `45137724098`, commit `08454cb`):
     server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
@@ -695,15 +779,17 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 - [ ] Monitoring and alerting in place (N14, R4-04)
 - [ ] Docs reconciled and release tagged (R4-05)
 
-**Still open from the audit:** N7 dashboard gaps; N8 silent create-modal failures;
-N9 `capturesApi` contract drift; N11 `db:seed` points at a missing file; N13
+**Resolved by Round 2 (in review):** N7 dashboard gaps, N8 silent create-modal
+failures, N9 `capturesApi` contract drift.
+
+**Still open from the audit:** N11 `db:seed` points at a missing file; N13
 MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
 N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
 failed once under load (not seen since; cause unknown).
 
-**Later rounds:** Round 2 (R2-01 to R2-07) is not started. Round 3 is not
-started except in part: R3-01's re-run of the existing Playwright suite passed
-(80/80) but is not yet extended to Round 2 features, and R3-02's briefing window
+**Later rounds:** Round 2 (R2-01 to R2-07) is implemented and in review as one PR.
+Round 3 is not started except in part: R3-01's browser suite was extended for
+Round 2 features on the Round 2 branch, and R3-02's briefing window
 was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.

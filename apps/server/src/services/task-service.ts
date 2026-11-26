@@ -118,7 +118,7 @@ export async function findTasks(db: Db, filter: TaskFilter, now: Date): Promise<
   // so the final ordering happens in application code over a bounded window.
   if (sort === 'dueAt' || sort === 'priority') {
     const orderBy: Record<string, unknown>[] =
-      sort === 'priority' ? [{ priority: order }] : [{ dueAt: order }];
+      sort === 'priority' ? [{ priority: order }, { id: order }] : [{ dueAt: order }, { id: order }];
     const window = Math.min(offset + limit, NULL_SORT_WINDOW);
     const rows = await db.task.findMany({ where, include: taskInclude, orderBy });
     const tasks = rows.slice(0, window).map((row) => toTaskDto(row as TaskRow, now));
@@ -130,19 +130,24 @@ export async function findTasks(db: Db, filter: TaskFilter, now: Date): Promise<
         if (rankA !== rankB) return order === 'asc' ? rankA - rankB : rankB - rankA;
         const due = compareNullable(a.dueAt, b.dueAt);
         if (due !== null) return due;
-        return (a.dueAt ?? '').localeCompare(b.dueAt ?? '');
+        const byDue = (a.dueAt ?? '').localeCompare(b.dueAt ?? '');
+        if (byDue !== 0) return byDue;
+        return order === 'asc' ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
       }
       const nulls = compareNullable(a.dueAt, b.dueAt);
       if (nulls !== null) return nulls;
       const byDue = (a.dueAt ?? '').localeCompare(b.dueAt ?? '');
       if (byDue !== 0) return order === 'asc' ? byDue : -byDue;
-      return a.createdAt.localeCompare(b.createdAt);
+      const byCreated = a.createdAt.localeCompare(b.createdAt);
+      if (byCreated !== 0) return byCreated;
+      // id breaks the last tie so pages never overlap (S4).
+      return order === 'asc' ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
     });
 
     return tasks.slice(offset, offset + limit);
   }
 
-  const orderBy: Record<string, unknown>[] = [{ [sort]: order }, { createdAt: 'desc' }];
+  const orderBy: Record<string, unknown>[] = [{ [sort]: order }, { createdAt: 'desc' }, { id: order }];
   const rows = await db.task.findMany({
     where,
     include: taskInclude,

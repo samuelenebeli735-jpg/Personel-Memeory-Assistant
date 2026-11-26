@@ -39,7 +39,7 @@ export async function findNotes(db: Db, filter: NoteFilter = {}): Promise<NoteDt
   const rows = await db.note.findMany({
     where,
     include: noteInclude,
-    orderBy: { [filter.sort ?? 'createdAt']: filter.order ?? 'desc' },
+    orderBy: [{ [filter.sort ?? 'createdAt']: filter.order ?? 'desc' }, { id: filter.order ?? 'desc' }],
     take: filter.limit ?? 100,
     skip: filter.offset ?? 0,
   });

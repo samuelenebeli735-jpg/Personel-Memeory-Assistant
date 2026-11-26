@@ -7,7 +7,7 @@
  * internal voice placeholder as if it were user content.
  */
 import { useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useToast } from "../hooks/useToast";
 import {
   capturesApi,
@@ -29,20 +29,23 @@ import { captureContent, captureDisplayTitle } from "../lib/capture-content";
 import { formatLocalDateTime } from "../lib/date";
 import { useTimeZone } from "../hooks/useTimeZone";
 import {
+  APP_PATHS,
   DETAIL_BACK_LINKS,
   detailPath,
   type RecordDetailType,
 } from "../lib/routes";
+import { Badge, Button, Card, EmptyState } from "../components/ui";
+import { DetailActions, EditableDetail, type DeleteCopy } from "../components/EditableDetail";
 import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  Input,
-  Modal,
-  Select,
-  Textarea,
-} from "../components/ui";
+  eventFormSpec,
+  ideaFormSpec,
+  noteFormSpec,
+  projectFormSpec,
+  reminderFormSpec,
+  taskFormSpec,
+} from "../components/record-forms";
+import { useOnline } from "../hooks/useOnline";
+import { describeError } from "../lib/errors";
 import { CaptureIcon } from "../components/Layout";
 import {
   DetailField,
@@ -279,11 +282,7 @@ export function TaskDetailView({
           </>
         }
       />
-      {actions && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginBottom: "20px" }}>
-          {actions}
-        </div>
-      )}
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Description">
           {task.description ? (
@@ -325,132 +324,107 @@ export function TaskDetailView({
   );
 }
 
-function TaskDetailInteractiveView({
-  task,
-  timeZone,
-}: {
-  task: TaskDto;
-  timeZone: string;
-}) {
-  const navigate = useNavigate();
+/* Delete confirmations name the record and say what happens (R2-04, D3). */
+
+const CANT_UNDO = <p>This can’t be undone.</p>;
+
+function taskDeleteCopy(task: TaskDto): DeleteCopy {
+  return {
+    title: `Delete task “${task.title}”?`,
+    body: (
+      <>
+        <p>
+          This permanently deletes the task and any reminders set for it.
+          {task.captureId ? " The capture it came from stays." : ""}
+        </p>
+        {CANT_UNDO}
+      </>
+    ),
+    confirmLabel: "Delete task",
+    cancelLabel: "Keep task",
+  };
+}
+
+function reminderDeleteCopy(reminder: ReminderDto): DeleteCopy {
+  return {
+    title: `Delete reminder “${reminder.title}”?`,
+    body: (
+      <>
+        <p>
+          {reminder.recurrence
+            ? "This permanently deletes the reminder, its delivery history and every later reminder in its series."
+            : "This permanently deletes the reminder and its delivery history."}{" "}
+          To stop it but keep the record, cancel it from the Reminders list instead.
+        </p>
+        {CANT_UNDO}
+      </>
+    ),
+    confirmLabel: "Delete reminder",
+    cancelLabel: "Keep reminder",
+  };
+}
+
+function simpleDeleteCopy(noun: string, title: string, extra?: string): DeleteCopy {
+  return {
+    title: `Delete ${noun} “${title}”?`,
+    body: (
+      <>
+        <p>
+          This permanently deletes the {noun}.{extra ? ` ${extra}` : ""}
+        </p>
+        {CANT_UNDO}
+      </>
+    ),
+    confirmLabel: `Delete ${noun}`,
+    cancelLabel: `Keep ${noun}`,
+  };
+}
+
+function projectDeleteCopy(project: ProjectDto): DeleteCopy {
+  const items = project.counts.tasks + project.counts.notes + project.counts.ideas + project.counts.events;
+  return {
+    title: `Delete project “${project.name}”?`,
+    body: (
+      <>
+        <p>
+          {items === 0
+            ? "The project has no tasks, notes, ideas or events."
+            : `${items} ${items === 1 ? "item" : "items"} (tasks, notes, ideas and events) stay, but are no longer in a project.`}
+        </p>
+        {CANT_UNDO}
+      </>
+    ),
+    confirmLabel: "Delete project",
+    cancelLabel: "Keep project",
+  };
+}
+
+/** Idea → task: the idea is kept; the toast links to the new task. */
+function PromoteIdeaButton({ idea }: { idea: IdeaDto }) {
   const { showToast } = useToast();
-  const [currentTask, setCurrentTask] = useState(task);
-  const [editOpen, setEditOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [editForm, setEditForm] = useState({
-    title: task.title,
-    description: task.description ?? "",
-    priority: task.priority ?? "",
-  });
-
-  const openEdit = () => {
-    setEditForm({
-      title: currentTask.title,
-      description: currentTask.description ?? "",
-      priority: currentTask.priority ?? "",
-    });
-    setEditOpen(true);
-  };
-
-  const saveEdit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!editForm.title.trim()) return;
-
-    setSaving(true);
-    try {
-      const updated = await tasksApi.update(currentTask.id, {
-        title: editForm.title.trim(),
-        description: editForm.description.trim() || null,
-        priority: editForm.priority
-          ? (editForm.priority as "LOW" | "MEDIUM" | "HIGH" | "URGENT")
-          : null,
-      });
-      setCurrentTask(updated);
-      setEditOpen(false);
-      showToast("success", "Task updated");
-    } catch (error) {
-      showToast(
-        "error",
-        "Failed to update task",
-        error instanceof Error ? error.message : "Unknown error",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const confirmDelete = async () => {
-    setSaving(true);
-    try {
-      await tasksApi.delete(currentTask.id);
-      showToast("success", "Task deleted");
-      navigate("/tasks");
-    } catch (error) {
-      showToast(
-        "error",
-        "Failed to delete task",
-        error instanceof Error ? error.message : "Unknown error",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  const { online } = useOnline();
+  const [busy, setBusy] = useState(false);
   return (
-    <>
-      <TaskDetailView
-        task={currentTask}
-        timeZone={timeZone}
-        actions={
-          <>
-            <Button variant="secondary" onClick={openEdit}>Edit</Button>
-            <Button variant="danger" onClick={() => setDeleteOpen(true)}>Delete</Button>
-          </>
+    <Button
+      variant="secondary"
+      loading={busy}
+      disabled={!online}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const result = await ideasApi.promote(idea.id);
+          showToast("success", "Task created from idea", idea.title, {
+            action: { label: "Open task", to: detailPath("task", result.taskId) },
+          });
+        } catch (error) {
+          showToast("error", "Task not created", describeError(error, "Making a task", true).message);
+        } finally {
+          setBusy(false);
         }
-      />
-
-      <Modal isOpen={editOpen} onClose={() => setEditOpen(false)} title="Edit Task">
-        <form onSubmit={saveEdit}>
-          <Input
-            label="Title"
-            value={editForm.title}
-            onChange={(event) => setEditForm({ ...editForm, title: event.target.value })}
-            required
-          />
-          <Textarea
-            label="Description"
-            value={editForm.description}
-            onChange={(event) => setEditForm({ ...editForm, description: event.target.value })}
-            rows={3}
-          />
-          <Select
-            label="Priority"
-            options={[
-              { value: "", label: "None" },
-              { value: "LOW", label: "Low" },
-              { value: "MEDIUM", label: "Medium" },
-              { value: "HIGH", label: "High" },
-              { value: "URGENT", label: "Urgent" },
-            ]}
-            value={editForm.priority}
-            onChange={(event) => setEditForm({ ...editForm, priority: event.target.value })}
-          />
-          <div className="modal-footer">
-            <Button variant="secondary" type="button" onClick={() => setEditOpen(false)}>Cancel</Button>
-            <Button type="submit" loading={saving}>Save</Button>
-          </div>
-        </form>
-      </Modal>
-
-      <Modal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete Task">
-        <p>Delete this task? This action cannot be undone.</p>
-        <div className="modal-footer">
-          <Button variant="secondary" type="button" onClick={() => setDeleteOpen(false)}>Cancel</Button>
-          <Button variant="danger" onClick={() => void confirmDelete()} loading={saving}>Delete</Button>
-        </div>
-      </Modal>
-    </>
+      }}
+    >
+      Make it a task
+    </Button>
   );
 }
 
@@ -461,9 +435,11 @@ function TaskDetailInteractiveView({
 export function ReminderDetailView({
   reminder,
   timeZone,
+  actions,
 }: {
   reminder: ReminderDto;
   timeZone: string;
+  actions?: ReactNode;
 }) {
   return (
     <div>
@@ -472,6 +448,7 @@ export function ReminderDetailView({
         title={reminder.title}
         badges={statusBadge(reminder.status)}
       />
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Body">
           {reminder.body ? (
@@ -515,13 +492,16 @@ export function ReminderDetailView({
 export function NoteDetailView({
   note,
   timeZone,
+  actions,
 }: {
   note: NoteDto;
   timeZone: string;
+  actions?: ReactNode;
 }) {
   return (
     <div>
       <DetailHeading eyebrow="Note" title={note.title || "Untitled note"} />
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Body">
           <DetailText>{note.body}</DetailText>
@@ -562,13 +542,16 @@ export function NoteDetailView({
 export function IdeaDetailView({
   idea,
   timeZone,
+  actions,
 }: {
   idea: IdeaDto;
   timeZone: string;
+  actions?: ReactNode;
 }) {
   return (
     <div>
       <DetailHeading eyebrow="Idea" title={idea.title} />
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Body">
           {idea.body ? (
@@ -604,13 +587,16 @@ export function IdeaDetailView({
 export function EventDetailView({
   event,
   timeZone,
+  actions,
 }: {
   event: EventDto;
   timeZone: string;
+  actions?: ReactNode;
 }) {
   return (
     <div>
       <DetailHeading eyebrow="Event" title={event.title} />
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Description">
           {event.description ? (
@@ -646,9 +632,11 @@ export function EventDetailView({
 export function ProjectDetailView({
   project,
   timeZone,
+  actions,
 }: {
   project: ProjectDto;
   timeZone: string;
+  actions?: ReactNode;
 }) {
   return (
     <div>
@@ -657,6 +645,7 @@ export function ProjectDetailView({
         title={project.name}
         badges={statusBadge(project.status)}
       />
+      <DetailActions>{actions}</DetailActions>
       <Card>
         <Section title="Description">
           {project.description ? (
@@ -749,7 +738,16 @@ export function TaskDetailPage() {
     <LoadedOrEmpty
       type="task"
       {...record}
-      render={(task) => <TaskDetailInteractiveView task={task} timeZone={timeZone} />}
+      render={(task) => (
+        <EditableDetail
+          record={task}
+          spec={taskFormSpec}
+          remove={(t) => tasksApi.delete(t.id)}
+          deleteCopy={taskDeleteCopy}
+          listPath={APP_PATHS.tasks}
+          render={(current, actions) => <TaskDetailView task={current} timeZone={timeZone} actions={actions} />}
+        />
+      )}
     />
   );
 }
@@ -762,7 +760,14 @@ export function ReminderDetailPage() {
       type="reminder"
       {...record}
       render={(reminder) => (
-        <ReminderDetailView reminder={reminder} timeZone={timeZone} />
+        <EditableDetail
+          record={reminder}
+          spec={reminderFormSpec}
+          remove={(r) => remindersApi.delete(r.id)}
+          deleteCopy={reminderDeleteCopy}
+          listPath={APP_PATHS.reminders}
+          render={(current, actions) => <ReminderDetailView reminder={current} timeZone={timeZone} actions={actions} />}
+        />
       )}
     />
   );
@@ -775,7 +780,16 @@ export function NoteDetailPage() {
     <LoadedOrEmpty
       type="note"
       {...record}
-      render={(note) => <NoteDetailView note={note} timeZone={timeZone} />}
+      render={(note) => (
+        <EditableDetail
+          record={note}
+          spec={noteFormSpec}
+          remove={(n) => notesApi.delete(n.id)}
+          deleteCopy={(n) => simpleDeleteCopy("note", n.title || "Untitled note")}
+          listPath={APP_PATHS.notes}
+          render={(current, actions) => <NoteDetailView note={current} timeZone={timeZone} actions={actions} />}
+        />
+      )}
     />
   );
 }
@@ -787,7 +801,17 @@ export function IdeaDetailPage() {
     <LoadedOrEmpty
       type="idea"
       {...record}
-      render={(idea) => <IdeaDetailView idea={idea} timeZone={timeZone} />}
+      render={(idea) => (
+        <EditableDetail
+          record={idea}
+          spec={ideaFormSpec}
+          remove={(i) => ideasApi.delete(i.id)}
+          deleteCopy={(i) => simpleDeleteCopy("idea", i.title, "Tasks made from it stay.")}
+          listPath={APP_PATHS.ideas}
+          extraActions={(current) => <PromoteIdeaButton idea={current} />}
+          render={(current, actions) => <IdeaDetailView idea={current} timeZone={timeZone} actions={actions} />}
+        />
+      )}
     />
   );
 }
@@ -799,7 +823,16 @@ export function EventDetailPage() {
     <LoadedOrEmpty
       type="event"
       {...record}
-      render={(event) => <EventDetailView event={event} timeZone={timeZone} />}
+      render={(event) => (
+        <EditableDetail
+          record={event}
+          spec={eventFormSpec}
+          remove={(e) => eventsApi.delete(e.id)}
+          deleteCopy={(e) => simpleDeleteCopy("event", e.title)}
+          listPath={APP_PATHS.events}
+          render={(current, actions) => <EventDetailView event={current} timeZone={timeZone} actions={actions} />}
+        />
+      )}
     />
   );
 }
@@ -812,7 +845,17 @@ export function ProjectDetailPage() {
       type="project"
       {...record}
       render={(project) => (
-        <ProjectDetailView project={project} timeZone={timeZone} />
+        <EditableDetail
+          record={project}
+          spec={projectFormSpec}
+          remove={(p) => projectsApi.delete(p.id)}
+          deleteCopy={projectDeleteCopy}
+          deletedMessage={(_p, result) =>
+            result.detached > 0 ? `${result.detached} ${result.detached === 1 ? "item is" : "items are"} no longer in a project.` : undefined
+          }
+          listPath={APP_PATHS.projects}
+          render={(current, actions) => <ProjectDetailView project={current} timeZone={timeZone} actions={actions} />}
+        />
       )}
     />
   );

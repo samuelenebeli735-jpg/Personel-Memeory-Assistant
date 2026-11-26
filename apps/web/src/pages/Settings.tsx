@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useToast } from '../hooks/useToast'
 import { useTimeZone } from '../hooks/useTimeZone'
@@ -251,7 +252,10 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 style={{ fontSize: '24px', fontWeight: '600', marginBottom: '24px' }}>Settings</h1>
+      <h1 style={{ fontSize: '24px', fontWeight: '600', marginBottom: '8px' }}>Settings</h1>
+      <p className="page-header-sub" style={{ marginBottom: '24px' }}>
+        Export or restore everything on the <Link to="/settings/data">Your data</Link> page.
+      </p>
 
       <form onSubmit={handleSubmit} noValidate>
         <Card style={{ marginBottom: '24px' }}>

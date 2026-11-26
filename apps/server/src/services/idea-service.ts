@@ -39,7 +39,7 @@ export async function findIdeas(db: Db, filter: IdeaFilter = {}): Promise<IdeaDt
   const rows = await db.idea.findMany({
     where,
     include: ideaInclude,
-    orderBy: { [filter.sort ?? 'createdAt']: filter.order ?? 'desc' },
+    orderBy: [{ [filter.sort ?? 'createdAt']: filter.order ?? 'desc' }, { id: filter.order ?? 'desc' }],
     take: filter.limit ?? 100,
     skip: filter.offset ?? 0,
   });

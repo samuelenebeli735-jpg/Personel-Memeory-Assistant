@@ -306,6 +306,26 @@ export interface CaptureAckDto {
   message: string;
 }
 
+/** A record created from (or removed with) a capture. */
+export interface CaptureLinkDto {
+  type: 'TASK' | 'NOTE' | 'IDEA' | 'EVENT';
+  id: string;
+  title: string;
+}
+
+/** `POST /captures/:id/convert`. */
+export interface CaptureConvertResultDto {
+  capture: CaptureDto;
+  removed: CaptureLinkDto[];
+  created: CaptureLinkDto[];
+}
+
+/** `POST /captures/:id/undo` and `DELETE /captures/:id`. */
+export interface CaptureRemovalResultDto {
+  captureId: string;
+  removed: CaptureLinkDto[];
+}
+
 export interface Paginated<T> {
   items: T[];
   total: number;
@@ -343,4 +363,67 @@ export interface RestoreReportDto {
   inserted: Record<string, number>;
   skipped: Record<string, number>;
   errors: string[];
+}
+
+/**
+ * Report from `POST /api/restore/file`, which takes the export file's raw
+ * bytes. `file.sha256` is computed by the server over exactly the bytes it
+ * received; applying a restore requires sending the same value back, so the
+ * server itself guarantees the applied file is the checked file.
+ */
+export interface RestoreFileReportDto extends RestoreReportDto {
+  file: {
+    /** Lower-case hex SHA-256 of the received bytes. */
+    sha256: string;
+    bytes: number;
+    schemaVersion: number;
+    exportedAt: string;
+    /**
+     * Returned by a dry run only: proof that the server checked these exact
+     * bytes. Applying the restore requires sending it back.
+     */
+    checkToken: string | null;
+  };
+}
+
+/* ---------------------------------------------------------------- Briefing */
+
+/** Must match BRIEFING_SECTION_IDS in the server's briefing service. */
+export type BriefingSectionId = 'today' | 'overdue' | 'upcoming' | 'ideas' | 'deadlines';
+
+export interface BriefingItemDto {
+  type: 'TASK' | 'NOTE' | 'IDEA' | 'EVENT' | 'REMINDER' | 'CAPTURE' | 'PROJECT';
+  id: string;
+  title: string;
+  snippet: string;
+  /** ISO-8601 instant: the deadline for a task, the start for an event. */
+  timestamp: string;
+  status: string | null;
+}
+
+export interface BriefingSectionDto {
+  id: string;
+  title: string;
+  items: BriefingItemDto[];
+}
+
+export interface BriefingDto {
+  /** Local calendar date the briefing covers (YYYY-MM-DD). */
+  date: string;
+  /** IANA zone the date and every boundary was resolved in. */
+  timeZone: string;
+  sections: BriefingSectionDto[];
+  summary: string;
+  itemCount: number;
+}
+
+export interface BriefingConfigDto {
+  enabled: boolean;
+  time: string;
+  sections: string[];
+}
+
+export interface BriefingResponseDto {
+  briefing: BriefingDto;
+  config: BriefingConfigDto;
 }
