@@ -667,12 +667,20 @@ durable dead-letter record; a command can run twice in a narrow restart window; 
 voice note can be transcribed again; an acknowledged dead letter is not recovered
 automatically; the answer on a dead-lettered button press is best effort.
 
-## Round 2 — Dashboard  ·  **In review**
+## Round 2 — Dashboard  ·  **Done**
 
 Source: the approved Round 2 design (v2, decisions D1–D8, refinements 1–7) and the
 clickable prototype, verified in a real browser on 2026-11-23 (179/179 checks after
 fixing seven prototype-only issues). Delivered as one branch, `feat/round2-dashboard`,
-and one pull request; not merged.
+and one pull request: merged into `main` on 2026-11-26 as PR #7 (merge commit
+`5c8f9a4`; reviewed head `900af51`). The feature branch is kept.
+
+**Verification evidence:** CI on the merge commit (run `45828544855`, push to
+`main`) passed all four jobs: typechecks, Prisma validation and drift check, web
+tests and production builds; the server suite with the test host at UTC and at
+UTC+14; and the browser suite in Edge with axe, 117/117 with zero retries. Locally at
+`900af51`: server 785/785 in both zones and web 125/125. The manual NVDA + Edge pass
+is still outstanding (see TESTING).
 
 | ID | Task | Commit(s) | Audit finding |
 | --- | --- | --- | --- |
@@ -686,7 +694,8 @@ and one pull request; not merged.
 | R2-03 | Inbox review (keep, reprocess, Undo, purge, J/K, badge) | `dac919a` | N7 |
 | R2-01, R2-02 | Ask and Today; "Now" navigation | `c5328fa` | N7 |
 | R2-06 | Settings → Your data: export and the restore wizard | `dd604f6` | N7 |
-| — | Error, accessibility and reflow tests; docs | step 11 commit | — |
+| — | Error, accessibility and reflow tests; docs | `3e018bf` | — |
+| — | Final review: error log without query strings; accessibility fixes | `900af51` | — |
 
 **Contracts confirmed in code and tests:**
 
@@ -765,7 +774,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 - [x] AI provider transports correct and tested against mocks (N4, N6) — R1-04; live calls not yet made
 - [x] Telegram mode switch self-heals (N5) — R1-05
 - [x] Playwright suite green after Round 1 (80/80), extended for Round 2 on `feat/round2-dashboard`
-- [x] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2, in review on `feat/round2-dashboard` (not yet merged)
+- [x] Dashboard: Ask, Briefing, inbox review, edit/delete, pagination, export (N7) — Round 2, merged as PR #7 (`5c8f9a4`)
 - [x] CI workflow reproducing the checks on pull requests — `.github/workflows/ci.yml` (PR #4, with the test-only rate-limit fix in PR #5)
   - Verified 2026-11-23 by the first run on `main` (run `45137724098`, commit `08454cb`):
     server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
@@ -779,7 +788,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 - [ ] Monitoring and alerting in place (N14, R4-04)
 - [ ] Docs reconciled and release tagged (R4-05)
 
-**Resolved by Round 2 (in review):** N7 dashboard gaps, N8 silent create-modal
+**Resolved by Round 2 (merged, PR #7):** N7 dashboard gaps, N8 silent create-modal
 failures, N9 `capturesApi` contract drift.
 
 **Still open from the audit:** N11 `db:seed` points at a missing file; N13
@@ -787,9 +796,10 @@ MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
 N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
 failed once under load (not seen since; cause unknown).
 
-**Later rounds:** Round 2 (R2-01 to R2-07) is implemented and in review as one PR.
-Round 3 is not started except in part: R3-01's browser suite was extended for
-Round 2 features on the Round 2 branch, and R3-02's briefing window
+**Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`); its
+manual NVDA + Edge pass is still outstanding. Round 3 is not started except in part:
+R3-01's browser suite was extended for Round 2 features (now on `main`), and R3-02's
+briefing window
 was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.

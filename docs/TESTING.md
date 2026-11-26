@@ -211,7 +211,10 @@ complete.
 
 ## Current results
 
-**Round 2 branch (`feat/round2-dashboard`), 2026-11-26**, Node v24.17.0, Windows:
+**Round 2, merged into `main` as PR #7 (`5c8f9a4`), 2026-11-26**, Node v24.17.0, Windows. The
+figures below are from the branch before the final review; at `900af51` the server suite
+is 785/785, the web suite 125/125, and CI on the merge commit (run `45828544855`)
+passed 117/117 browser tests with zero retries:
 
 - Server: 784/784, with the test host at UTC+14 and at UTC.
 - Dashboard: 124/124.
@@ -602,6 +605,10 @@ click-throughs and accessibility audit.
   - a server 409 shown with nothing restored.
 
 ### Round 2 accessibility verification record (2026-11-26)
+
+**Status: OUTSTANDING. The manual NVDA + Microsoft Edge test has not been done.** It
+remains open after the PR #7 merge and is the owner's to perform with the checklist
+below; record each item's result here.
 
 **NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
 development PC, and installing it is a system install (about a 40 MB download).
