@@ -259,11 +259,11 @@ owner session (the server enforces this, not the UI).
 | --- | --- | --- |
 | `POST` | `/api/captures` | Store a capture (`externalId` makes it idempotent) |
 | `GET` | `/api/captures` | List with filters, sorting and pagination |
-| `GET` | `/api/captures/inbox` | Captures waiting for review |
+| `GET` | `/api/captures/inbox` | Captures waiting for review, oldest first; paginated with a real `total` |
 | `GET` | `/api/captures/:id` | One capture |
 | `POST` | `/api/captures/:id/reprocess` | Classify a capture that failed earlier |
-| `POST` | `/api/captures/:id/convert` | Change the kind (guarded) |
-| `POST` | `/api/captures/:id/undo` | Reversible removal |
+| `POST` | `/api/captures/:id/convert` | Keep as another kind (`{kind, force}`; refused without `force` if a derived record was edited) |
+| `POST` | `/api/captures/:id/undo` | Removes what the capture created and hides it (15 minutes, or `force`); not reversible from the dashboard |
 | `DELETE` | `/api/captures/:id` | Permanent; requires `{"force": true}` |
 
 ### Library, search, export
@@ -281,11 +281,12 @@ The same session protects everything below; the server enforces it, never the UI
 | `GET`/`POST` | `/api/ideas` | Ideas |
 | `POST` | `/api/ideas/:id/promote` | Turn an idea into a task (the idea is kept) |
 | `GET`/`POST` | `/api/events` | Appointments |
-| `GET`/`POST` | `/api/projects` | Projects (`DELETE` detaches members, never deletes them) |
+| `GET`/`POST` | `/api/projects` | Projects, paginated (`DELETE` detaches members, never deletes them) |
 | `GET` | `/api/tags`, `POST /api/tags/prune` | Labels, and removal of unused ones |
 | `GET` | `/api/search` | One query across every entity; results state the matched field |
 | `GET` | `/api/export` | Versioned JSON bundle of the whole database |
-| `POST` | `/api/restore` | Additive restore; **dry-run unless `{"dryRun": false}`** |
+| `POST` | `/api/restore` | Additive restore of a JSON bundle (2 MB limit); **dry-run unless `{"dryRun": false}`** |
+| `POST` | `/api/restore/file` | Restore an export file's raw bytes (25 MB); applying needs the dry run's `sha256` and `checkToken` |
 
 Search accepts `q`, `types`, `status`, `kind`, `projectId`, `tag`, `priority`,
 `from`, `to`, `includeDeleted`, `sort`, `order`, `limit` and `offset`. A

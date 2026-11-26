@@ -139,6 +139,7 @@ apps/server/tests/
     ├── search-api.test.ts          cross-entity matching, filters, pagination
     ├── telegram-library.test.ts    /tasks, /today, /overdue, /search, /ideas, /notes, /projects
     ├── export-restore.test.ts      bundle shape, round trip, dry run, identity reuse
+    ├── round2-contracts.test.ts    inbox/projects paging, id tie-breakers, restore by file bytes
     ├── reminder-scheduler.test.ts  DB-backed tick loop, retries, quiet hours, daily cap, recovery
     ├── reminder-api.test.ts        CRUD, cancel, snooze, delivery history
     ├── telegram-reminders.test.ts  /remind, /reminders, /snooze, /cancel
@@ -209,6 +210,21 @@ file is checkpointed before the template is published, so a plain copy is
 complete.
 
 ## Current results
+
+**Round 2 branch (`feat/round2-dashboard`), 2026-11-26**, Node v24.17.0, Windows:
+
+- Server: 784/784, with the test host at UTC+14 and at UTC.
+- Dashboard: 124/124.
+- Browser (Edge, axe in light and dark): 115/115, run alone with zero retries.
+- Typechecks, Prisma validation, the migration drift check and the production
+  builds all pass.
+
+Run the server and browser suites one at a time on Windows. Running them together
+on this machine made SQLite writes and Playwright actions time out (those failures
+went away when each suite ran alone). The slowest Round 2 contract tests now seed
+with `createMany` for the same reason.
+
+The figures below are from Round 1.
 
 Executed 2026-11-22 on Node v24.17.0, npm 11.13.0, Windows (win32), for the
 Round 1 integration-readiness review. Round 1 (R1-02 to R1-06) ended at commit
@@ -509,6 +525,84 @@ against the same route patterns the app registers. It also checks that every
 top-level navigation path and every `detailPath` output is registered. This is a
 component/navigation test; the separate Playwright suite performs the real-browser
 click-throughs and accessibility audit.
+
+### Round 2 dashboard (R2-01 to R2-07)
+
+**Server contracts** (`round2-contracts.test.ts`, real app and SQLite):
+
+- **S1:** the inbox pages with a real total.
+- **S2:** projects are paginated.
+- **S4:** 62 rows per list with identical timestamps page with no repeats or
+  gaps. Rows given out-of-order explicit ids prove each list's id tie-breaker in
+  the direction of its main sort (the test fails when a tie-breaker is removed).
+- **Restore by file bytes:**
+  - a dry run then an apply of the same bytes;
+  - a repeated restore against the real server adds nothing and changes no
+    table count;
+  - mismatched bytes, unchecked files, swapped and forged check tokens are
+    refused with 409 and write nothing;
+  - non-JSON, non-UTF-8, non-export and newer-schema files are refused;
+  - a BOM is accepted;
+  - 3 MB is accepted, 26 MB is refused, and 2.5 MB is still refused on
+    `/api/restore` and `/api/notes` (the global 2 MB limit is unchanged);
+  - an unauthenticated 30 MB upload gets 401, not 413 (the session is checked
+    before the body is read);
+  - `text/plain` gets 415;
+  - an interrupted restore re-run adds only what is missing;
+  - a table over the row limit is skipped while the others restore.
+- **Classifier:** keeping a question as a task (the owner's explicit kind) now
+  creates the task and clears the inbox.
+
+**Dashboard unit tests** (Vitest; server rendering, no DOM):
+
+- **API client:**
+  - reads retry at most twice on a network failure or 5xx;
+  - writes are never retried, and 429 and 4xx are not retried;
+  - Retry-After is parsed and 15 s timeouts are reported;
+  - convert sends `{ kind, force }` and the capture update method is gone;
+  - the Ask question stays out of the URL;
+  - restore sends raw bytes with the hash and check token.
+- **Session bootstrap:**
+  - only an explicit "not authenticated" answer or a 401 signs out;
+  - 429, 5xx and network failures get 1 attempt plus up to 3 retries at
+    1 s, 2 s and 4 s, honouring Retry-After up to 60 s, then "unreachable".
+- **Other units:**
+  - pagination arithmetic and URL rules (clamping, filters reset the page);
+  - form rules for every record type: required fields, Settings-zone times,
+    a DST gap, end after start, shared-schema validation, changed-fields-only
+    edits, and a reminder series kept when its frequency is unchanged;
+  - inbox rules: Undo minutes, J/K eligibility, the next selection;
+  - Today date arithmetic and labels in the zone;
+  - restore file checks: size, encoding, JSON, export shape, schema version,
+    and SHA-256 against the FIPS test vector;
+  - SSR checks of the shared dialog, pager, state and toast patterns.
+
+**Browser** (Playwright, Edge, axe in light and dark):
+
+- `pagination.spec.ts`: 62 seeded ideas, refresh, Back, a clamped page,
+  filter reset, search paging and the phone pager.
+- `edit-delete.spec.ts`: edit and delete per record type, an edit in
+  Asia/Tokyo with the browser in UTC, idea to task, the project detach count,
+  the unsaved-changes guard, a PATCH with only the changed field, and a 500
+  that keeps the form.
+- `inbox.spec.ts`: keep as task with the badge countdown, Undo inside and
+  outside the window, convert anyway with force, typed purge, J/K, and the
+  phone layout.
+- `today-ask.spec.ts`:
+  - Today: zone day and time, next, previous, picker and Back, links, and an
+    invalid date;
+  - Ask: numbered sources linked to records, the question never in the URL,
+    ungrounded answers, the period and zone, and a 429 that keeps the
+    question.
+- `your-data.spec.ts`:
+  - a dated export download;
+  - bad files refused with nothing uploaded;
+  - check, then restore only what is missing, then nothing on repeat;
+  - a lost connection explained with "Check the same file again";
+  - a server 409 shown with nothing restored.
+
+**Manual (not automated):** the screen-reader pass with NVDA and Edge
+(refinement 6) still has to be done by the owner. Record its findings here.
 
 ### Atomicity of derivation
 

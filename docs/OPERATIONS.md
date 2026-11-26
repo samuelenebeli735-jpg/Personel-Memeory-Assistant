@@ -509,6 +509,41 @@ Read the `errors` array: a row that could not be written is listed with its tabl
 id, and the rest still load. Because the operation is id-based and additive, fixing
 the bundle and re-running is safe.
 
+This JSON route keeps the server-wide **2 MB** request limit, so it suits small
+exports and scripts.
+
+**From the dashboard (Settings → Your data)**, or for exports up to **25 MB**, use
+`POST /api/restore/file`. Its body is the export file's exact bytes and it has
+its own 25 MB limit; every other route stays at 2 MB.
+
+1. The session is checked before any of the upload is read (an unauthenticated
+   upload gets `401`, never `413`).
+2. The server hashes exactly the bytes it received and refuses with
+   `409 RESTORE_FILE_MISMATCH` unless they match `?sha256=` (the sender's own
+   SHA-256 of the file).
+3. A dry run (`?dryRun=true`, the default) returns the report plus
+   `file.sha256` and `file.checkToken`.
+4. Applying (`?dryRun=false`) must send that `sha256` and `checkToken`. The server
+   recomputes both from the bytes it receives now, so it applies only a file it
+   has checked, byte for byte. It stores nothing between the two calls.
+
+```bash
+SHA=$(sha256sum backups/export.json | cut -d' ' -f1)
+# 1. Check (dry run). Note file.checkToken in the reply.
+curl -X POST "http://127.0.0.1:4000/api/restore/file?dryRun=true&sha256=$SHA" \
+  -H "cookie: recall_session=<token>" -H 'content-type: application/json' \
+  --data-binary @backups/export.json
+# 2. Apply the same file.
+curl -X POST "http://127.0.0.1:4000/api/restore/file?dryRun=false&sha256=$SHA&checkToken=<checkToken>" \
+  -H "cookie: recall_session=<token>" -H 'content-type: application/json' \
+  --data-binary @backups/export.json
+```
+
+A check token is tied to the session secret: rotating `SESSION_SECRET` (which also
+signs everyone out) invalidates outstanding tokens, so check the file again. If a
+restore is interrupted, rows already written stay; running the same file again adds
+only what is missing.
+
 ### Restoring a database snapshot
 
 A snapshot is a complete SQLite database, not a partial copy. Restore it to a

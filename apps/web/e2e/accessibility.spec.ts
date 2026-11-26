@@ -16,7 +16,7 @@ test('the login page has no detectable WCAG 2.0/2.1 A or AA violations (light mo
 });
 
 test('authenticated pages have no detectable WCAG 2.0/2.1 A or AA violations (light mode)', async ({ page }) => {
-  for (const route of ['/', '/capture', '/tasks', '/reminders', '/search', '/settings']) {
+  for (const route of ['/', '/capture', '/tasks', '/reminders', '/search', '/settings', '/briefing', '/ask', '/inbox', '/settings/data', '/notes', '/ideas', '/events', '/projects']) {
     await page.goto(route);
     await page.waitForLoadState('networkidle');
     await expectNoAxeViolations(page);
@@ -53,7 +53,7 @@ test('authenticated pages have no detectable WCAG 2.0/2.1 A or AA violations (da
   }
   const darkPage = await context.newPage();
 
-  for (const route of ['/', '/capture', '/tasks', '/reminders', '/search', '/settings']) {
+  for (const route of ['/', '/capture', '/tasks', '/reminders', '/search', '/settings', '/briefing', '/ask', '/inbox', '/settings/data', '/notes', '/ideas', '/events', '/projects']) {
     await darkPage.goto(route);
     await darkPage.waitForLoadState('networkidle');
     await expectNoAxeViolations(darkPage);
