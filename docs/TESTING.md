@@ -211,13 +211,41 @@ complete.
 
 ## Current results
 
-**Round 2 branch (`feat/round2-dashboard`), 2026-11-26**, Node v24.17.0, Windows:
+**Round 2, merged into `main` as PR #7 (merge commit `5c8f9a4`, reviewed head
+`900af51`), 2026-11-26.**
 
-- Server: 784/784, with the test host at UTC+14 and at UTC.
-- Dashboard: 124/124.
-- Browser (Edge, axe in light and dark): 115/115, run alone with zero retries.
+**Current results: CI** (GitHub Actions, Linux). These are the authoritative
+browser figures.
+
+- **Merged `main` commit `5c8f9a4`, run `45828544855`:** all four jobs passed.
+  - Browser (Edge, axe in light and dark): **117/117**, zero retries, none flaky.
+  - Server suite: passed with the test host at UTC and at UTC+14.
+  - Typechecks, Prisma validation, migration drift check, web tests and
+    production builds: passed.
+- **PR #7 head `900af51`, run `45814106829`:** all four jobs passed; browser
+  117/117 with zero retries.
+
+**Current results: local** (Windows, Node v24.17.0, at `900af51`; each suite run
+alone):
+
+- Server: **785/785** with the test host at UTC and at UTC+14.
+- Dashboard (web): **125/125**.
 - Typechecks, Prisma validation, the migration drift check and the production
   builds all pass.
+- Browser: the last full local run before the final test fix had 115 passed and
+  2 failed:
+  - the inbox J/K test counted rows before the list loaded (a test bug, then fixed);
+  - one Edit-button click timed out while the machine was loaded.
+
+  Both then passed 3 out of 3 when rerun alone. The full suite was not re-run
+  locally afterwards, so the current browser figure is the CI one above.
+
+**Pre-final-review results** (branch head `3e018bf`; superseded, kept for history):
+server 784/784 in both zones, web 124/124, browser 115/115 run alone with zero
+retries.
+
+The manual NVDA + Edge test is **not** part of these results. It remains
+outstanding and unperformed (see the Round 2 accessibility verification record).
 
 Run the server and browser suites one at a time on Windows. Running them together
 on this machine made SQLite writes and Playwright actions time out (those failures
@@ -602,6 +630,10 @@ click-throughs and accessibility audit.
   - a server 409 shown with nothing restored.
 
 ### Round 2 accessibility verification record (2026-11-26)
+
+**Status: OUTSTANDING. The manual NVDA + Microsoft Edge test has not been done.** It
+remains open after the PR #7 merge and is the owner's to perform with the checklist
+below; record each item's result here.
 
 **NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
 development PC, and installing it is a system install (about a 40 MB download).
