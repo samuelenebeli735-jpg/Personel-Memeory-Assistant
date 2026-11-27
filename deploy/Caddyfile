@@ -33,8 +33,18 @@
 		-Server
 	}
 
+	# Access log without query strings (R3-03): a query can hold search words,
+	# a restore file's hash or a token. The request URI and the Referer header
+	# are logged as path only, like the app's own log. Cookie and Authorization
+	# headers are already redacted by Caddy by default.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*$" ""
+				request>headers>Referer regexp "[?].*$" ""
+			}
+		}
 	}
 }

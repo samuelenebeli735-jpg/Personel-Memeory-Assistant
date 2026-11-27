@@ -304,3 +304,26 @@ describe('trusted proxy under Docker Compose (R3-03)', () => {
     }
   });
 });
+
+describe('Caddy access log redaction (R3-03)', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const caddyfile = fs.readFileSync(path.join(repoRoot, 'deploy', 'Caddyfile'), 'utf8');
+  const logBlock = /\n\tlog \{[\s\S]*?\n\t\}/.exec(caddyfile)?.[0] ?? '';
+
+  it('drops the query string from the request URI and the Referer header', () => {
+    expect(logBlock).toContain('format filter {');
+    expect(logBlock).toContain('wrap json');
+    expect(logBlock).toMatch(/request>uri regexp "\[\?\]\.\*\$" ""/);
+    expect(logBlock).toMatch(/request>headers>Referer regexp "\[\?\]\.\*\$" ""/);
+    expect(logBlock).not.toMatch(/^\s*format json\s*$/m);
+  });
+
+  it('the redaction pattern keeps the path and removes everything from "?"', () => {
+    // The same regular expression Caddy applies (Go RE2 and JavaScript agree on it).
+    const redact = (value: string) => value.replace(/[?].*$/, '');
+    expect(redact('/api/search?q=private+words')).toBe('/api/search');
+    expect(redact('/api/export/restore/file?sha256=abc&token=t')).toBe('/api/export/restore/file');
+    expect(redact('https://recall.example/search?q=secret')).toBe('https://recall.example/search');
+    expect(redact('/tasks')).toBe('/tasks');
+  });
+});
