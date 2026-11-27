@@ -288,6 +288,70 @@ describe('OpenAI-compatible provider', () => {
   });
 });
 
+/**
+ * Gemini through its OpenAI-compatible endpoint (R4-03 preparation).
+ *
+ * Google documents the base URL https://generativelanguage.googleapis.com/v1beta/openai/
+ * with a Bearer key and POST .../chat/completions. These tests pin that Recall's
+ * `openai-compatible` provider builds exactly that request from the documented
+ * configuration. They do NOT prove that Gemini accepts every field Recall sends
+ * (`temperature`, `max_tokens`, `response_format: json_object`): the docs do not
+ * say, and only a supervised live call can confirm it (see OPERATIONS, "Gemini").
+ */
+describe('Gemini via the OpenAI-compatible provider (request shape only)', () => {
+  const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai/';
+  const env = {
+    AI_PROVIDER: 'openai-compatible',
+    AI_API_KEY: 'gm-test-abcdefghijklmnop',
+    AI_MODEL: 'gemini-test-model',
+    AI_BASE_URL: GEMINI_BASE,
+  };
+
+  it('the documented Gemini base URL is accepted by configuration, also in production', () => {
+    expect(testConfig(env).ai.baseUrl).toBe(GEMINI_BASE);
+    // Production also demands HTTPS cookies and strong secrets; supply them so the
+    // only thing under test is the provider URL rule (https, no credentials).
+    const production = {
+      ...env,
+      NODE_ENV: 'production',
+      COOKIE_SECURE: 'true',
+      DASHBOARD_PASSWORD: 'a-long-production-test-password-1234',
+      SESSION_SECRET: 'q7Lx2Vn9Rk4Tp1Wz8Hc6Jm3Bs5Df0Ga2YeU', // test-only value
+    };
+    expect(testConfig(production as never).ai.baseUrl).toBe(GEMINI_BASE);
+  });
+
+  it('the factory builds the OpenAI-compatible provider pointed at Gemini', () => {
+    const provider = resolveAiProvider(testConfig(env), testLogger());
+    expect(provider).toBeInstanceOf(OpenAiCompatibleProvider);
+    expect(provider?.model).toBe('gemini-test-model');
+  });
+
+  it('posts one request to .../v1beta/openai/chat/completions with a Bearer key and the JSON-mode body', async () => {
+    const { sent, fetchImpl } = scriptedFetch([
+      json(200, { choices: [{ message: { role: 'assistant', content: CLASSIFICATION }, finish_reason: 'stop' }] }),
+    ]);
+    const provider = new OpenAiCompatibleProvider(
+      options(fetchImpl, { baseUrl: GEMINI_BASE, model: 'gemini-test-model', apiKey: 'gm-test-abcdefghijklmnop' }),
+      'openai-compatible',
+    );
+    const result = await provider.classify(REQUEST);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect(sent[0]!.headers.get('authorization')).toBe('Bearer gm-test-abcdefghijklmnop');
+    expect(sent[0]!.body).toMatchObject({
+      model: 'gemini-test-model',
+      temperature: 0,
+      max_tokens: CLASSIFY_MAX_TOKENS,
+      response_format: { type: 'json_object' },
+    });
+    const roles = (sent[0]!.body.messages as Array<{ role: string }>).map((m) => m.role);
+    expect(roles).toEqual(['system', 'user']);
+    expect(result.kind).toBeDefined();
+  });
+});
+
 describe('provider factory', () => {
   it('uses each provider’s own endpoint when AI_BASE_URL is empty', () => {
     expect(DEFAULT_AI_BASE_URLS.anthropic).toBe('https://api.anthropic.com');

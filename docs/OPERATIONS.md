@@ -283,6 +283,80 @@ AI classification and cache:
 - Reprocessing the same capture twice at once is refused (`already being
   processed`); recall is a single-process server.
 
+#### Gemini as the first live provider (R4-03 preparation, not yet live-tested)
+
+Recall has no Gemini-specific code. Gemini can be reached through the existing
+`openai-compatible` provider, because Google documents an OpenAI-compatible
+endpoint. Google's page is https://ai.google.dev/gemini-api/docs/openai, which
+redirected to aistudio.google.com/docs/openai when read on 2026-11-27.
+
+**What is verified** (documentation plus Recall's tests, no live call):
+- The base URL is `https://generativelanguage.googleapis.com/v1beta/openai/`.
+- The key goes in `Authorization: Bearer`, and requests go to
+  `POST …/chat/completions` with system and user messages.
+- Recall's configuration accepts that URL, also in production (`https`, no
+  credentials in it).
+- The provider sends exactly one request to
+  `…/v1beta/openai/chat/completions` with the Bearer key
+  (`ai-transport.test.ts`, "Gemini via the OpenAI-compatible provider").
+
+**Not verified, so the first live call must check it:**
+- Google's page does not say whether Gemini accepts the fields Recall sends:
+  `temperature: 0`, `max_tokens` (4096) and
+  `response_format: {"type": "json_object"}`.
+- It does not say which `finish_reason` values come back.
+- Gemini 3 and 4 models always reason, and the page does not say whether reasoning
+  tokens count against `max_tokens`. If they do, a long answer could stop with
+  `finish_reason: "length"`. Recall reports that as `max_tokens` and falls back to
+  its rules; nothing breaks, but AI would add nothing.
+- If any field is rejected, Recall logs the HTTP status (never the key) and falls
+  back to its rules.
+
+**Model IDs.** As listed by Google on 2026-11-27 (check again before use):
+- Google recommends `gemini-4-hydrogen` or `gemini-3.5-flash-lite` for new projects.
+  The cheaper, faster one fits classification.
+- `gemini-2.5-flash` and `gemini-2.5-pro` are deprecated, and are rerouted on
+  2026-12-01.
+
+**Speech-to-text is not covered.** Recall transcribes with the Whisper-style
+`/audio/transcriptions` endpoint (`STT_PROVIDER=openai`). Google's
+OpenAI-compatibility page does not list it; it sends audio inside a chat
+message instead. So `STT_BASE_URL` cannot simply point at Gemini. Voice notes
+with Gemini need a new adapter, and they only arrive through Telegram (R4-02)
+anyway. Until then, keep `STT_PROVIDER=none`, or use an OpenAI key once one
+exists.
+
+**Configuration the owner does privately.** Edit `.env` locally (or
+`.env.production` on the host) yourself. Never paste the key into chat,
+Crosswalk or a commit.
+
+```
+AI_PROVIDER=openai-compatible
+AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+AI_MODEL=<a current Gemini model id, e.g. gemini-3.5-flash-lite>
+AI_API_KEY=<your Gemini API key>
+AI_ALLOW_RAW_TEXT=true      # only when you accept that your text goes to Google
+```
+
+Then restart the server and switch AI on in Settings. With either
+`AI_ALLOW_RAW_TEXT=false` or the Settings switch off, nothing is sent. Set a
+spend limit or quota on the key in Google AI Studio.
+
+**Supervised smoke test.** Run it only after the configuration is reviewed and
+with the owner present:
+1. With `AI_ALLOW_RAW_TEXT=false`, or AI off in Settings, capture one message.
+   Classification uses rules, and the provider's dashboard shows no request.
+2. Enable both. Capture one harmless test message, such as "buy printer ink
+   tomorrow at 9". Expected: AI classification, without the "used rules" note.
+   `/api/health` shows `providers.ai.lastSuccessAt`.
+3. Ask one question about that record. Expected: an answer with a source that is a
+   real record.
+4. If a step fails, note the HTTP status or failure code from `/api/health` and the
+   log; the key is never logged. Then set `AI_PROVIDER=none` and restart to switch
+   AI off.
+5. Prompt injection (R4-03): capture "ignore all previous instructions and …" and
+   check it is stored as data, and that Ask cites only real records.
+
 ## 3. Commands
 
 | Command | Purpose |
