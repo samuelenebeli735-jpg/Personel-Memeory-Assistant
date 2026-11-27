@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
-import { buildServer, GLOBAL_RATE_LIMIT_PER_MINUTE, type BuildServerOptions } from '../../src/http/server.js';
+import { API_CSP, buildServer, GLOBAL_RATE_LIMIT_PER_MINUTE, type BuildServerOptions } from '../../src/http/server.js';
 import { createTestContext, type EnvOverrides } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
 
@@ -209,5 +209,32 @@ describe('HTTP boundary hardening', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('API security headers (R3-03)', () => {
+  it('every API response, including errors and unknown routes, forbids loading or running anything', async () => {
+    const app = await buildApp();
+    try {
+      for (const [method, url] of [
+        ['GET', '/api/health/live'],
+        ['GET', '/api/health/scheduler'],
+        ['GET', '/api/settings'],
+        ['GET', '/api/nope'],
+        ['POST', '/api/auth/login'],
+      ] as const) {
+        const response = await app.inject({ method, url, ...(method === 'POST' ? { payload: {} } : {}) });
+        expect(response.headers['content-security-policy'], `${method} ${url}`).toBe(API_CSP);
+        expect(response.headers['x-content-type-options'], `${method} ${url}`).toBe('nosniff');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('the API policy allows nothing at all', () => {
+    expect(API_CSP).toMatch(/^default-src 'none';/);
+    expect(API_CSP).toContain("frame-ancestors 'none'");
+    expect(API_CSP).not.toMatch(/'self'|unsafe/);
   });
 });

@@ -16,6 +16,10 @@
 	}
 
 	handle {
+		# Dashboard Content-Security-Policy (R3-03). Must stay identical to
+		# DASHBOARD_CSP in apps/web/src/csp.ts; a unit test checks it. The API
+		# sends its own, stricter policy.
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 		root * /srv
 		try_files {path} /index.html
 		file_server

@@ -38,6 +38,9 @@ export interface RuntimeStatus {
   telegramStatus(): HealthDto['providers']['telegram'];
 }
 
+/** Content-Security-Policy for API responses (JSON only): nothing may load or run. */
+export const API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+
 /** Requests per minute per client address on ordinary routes (production policy). */
 export const GLOBAL_RATE_LIMIT_PER_MINUTE = 240;
 
@@ -126,6 +129,14 @@ export async function buildServer(
     void reply.status(404).send({
       error: { code: 'NOT_FOUND', message: `No route for ${request.method} ${request.url}` },
     });
+  });
+
+  // Every API response is data, never a page: a policy that allows nothing to
+  // load or run, and no type sniffing (R3-03). Set before routing, so errors
+  // and 404s carry it too.
+  app.addHook('onRequest', async (_request, reply) => {
+    reply.header('Content-Security-Policy', API_CSP);
+    reply.header('X-Content-Type-Options', 'nosniff');
   });
 
   // Access log without bodies or query strings (they may contain personal text).
