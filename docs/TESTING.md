@@ -244,8 +244,8 @@ alone):
 server 784/784 in both zones, web 124/124, browser 115/115 run alone with zero
 retries.
 
-The manual NVDA + Edge test is **not** part of these results. It remains
-outstanding and unperformed (see the Round 2 accessibility verification record).
+The manual NVDA + Edge test is separate from these automated results. It has been
+completed by the owner (see the Round 2 accessibility verification record).
 
 Run the server and browser suites one at a time on Windows. Running them together
 on this machine made SQLite writes and Playwright actions time out (those failures
@@ -631,15 +631,19 @@ click-throughs and accessibility audit.
 
 ### Round 2 accessibility verification record (2026-11-26)
 
-**Status: OUTSTANDING. The manual NVDA + Microsoft Edge test has not been done.** It
-remains open after the PR #7 merge and is the owner's to perform with the checklist
-below; record each item's result here.
+**Status: COMPLETED.** The manual NVDA + Microsoft Edge verification was performed
+by the owner using NVDA on Windows 10 with Microsoft Edge, against the merged
+Round 2 application, following the checklist below. The owner confirmed that every
+planned manual test was performed and that the results were satisfactory.
+Recorded 2026-11-27.
 
-**NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
-development PC, and installing it is a system install (about a 40 MB download).
-A screen-reader test also needs a person listening to speech while driving the
-keyboard at the operating-system level, which the automated session cannot do. No
-NVDA result is claimed. The owner's checklist is below.
+**What is not recorded:** individual per-item results, the NVDA version and any
+measurements. Only the owner's confirmation above is on record.
+
+*History:* in the automated final review (2026-11-26) this test was **blocked**.
+NVDA was not installed on the development PC, and a screen-reader test needs a
+person listening to speech, so that session claimed no NVDA result and handed the
+checklist to the owner.
 
 **What was verified instead (automated, Edge via Playwright):**
 
@@ -657,7 +661,7 @@ NVDA result is claimed. The owner's checklist is below.
 | Keyboard: Tab order, J/K, modifiers and fields ignored | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts` |
 | Offline, 429, 5xx, 401 and loading states | **Passed** | `errors.spec.ts`, `today-ask.spec.ts`, `edit-delete.spec.ts`, `your-data.spec.ts` |
 | Reflow at 320 px and at 200% zoom (640 CSS px) without sideways scrolling | **Passed** | `errors.spec.ts`, `a11y-structure.spec.ts` |
-| What NVDA actually speaks, and whether toasts are announced once | **Not tested** | Needs NVDA (see below) |
+| What NVDA actually speaks, and whether toasts are announced once | **Not covered by automation** | Covered by the owner's manual NVDA + Edge pass (status above) |
 
 **Defects found by the review and fixed:**
 
@@ -669,10 +673,13 @@ NVDA result is claimed. The owner's checklist is below.
 3. **Ask, empty period:** a date question with nothing in the period said "No
    records matched … Try other words". It now says no records fall in that period.
 
-**Risk to check with NVDA:** each toast carries its own `status`/`alert` role
-inside an always-present live region, which some screen readers announce twice.
+**Risk the NVDA pass was asked to check:** each toast carries its own
+`status`/`alert` role inside an always-present live region, which some screen
+readers announce twice. This was a checklist item; the owner's pass reported no
+issue needing a fix.
 
-**Owner's NVDA + Edge checklist** (record each item as passed or failed, with notes):
+**Owner's NVDA + Edge checklist** (used for the completed manual pass; individual
+item results were not recorded separately):
 
 - Landmarks list (NVDA+F7) shows Main navigation, main and Notifications on every page.
 - Headings (H, 1) read in order on Today, Ask, Inbox, Tasks and Your data.

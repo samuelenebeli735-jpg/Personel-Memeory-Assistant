@@ -680,7 +680,7 @@ and one pull request: merged into `main` on 2026-11-26 as PR #7 (merge commit
 tests and production builds; the server suite with the test host at UTC and at
 UTC+14; and the browser suite in Edge with axe, 117/117 with zero retries. Locally at
 `900af51`: server 785/785 in both zones and web 125/125. The manual NVDA + Edge pass
-is still outstanding (see TESTING).
+has been completed by the owner (NVDA on Windows 10 with Microsoft Edge; see TESTING).
 
 | ID | Task | Commit(s) | Audit finding |
 | --- | --- | --- | --- |
@@ -728,10 +728,13 @@ is still outstanding (see TESTING).
 - Today's date field has one accessible name.
 - Ask says when a period simply has no records.
 
-**Still to do by the owner:**
+**Screen-reader pass (refinement 6): completed.** The owner performed the manual
+NVDA + Microsoft Edge verification on Windows 10 using the TESTING checklist and was
+satisfied with the results (recorded 2026-11-27). It had been blocked in the
+automated review because NVDA was not installed there.
 
-- A screen-reader pass with NVDA and Edge (refinement 6). It was **blocked** in the
-  automated review because NVDA is not installed; the checklist is in TESTING.
+**Still open:**
+
 - Production access logs. Caddy's default JSON access log records full request
   URIs, including search text in `?q=` and the restore hash and token. This is
   deployment work for R4: filter or drop query strings in `deploy/Caddyfile`.
@@ -844,8 +847,8 @@ MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
 N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
 failed once under load (not seen since; cause unknown).
 
-**Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`); its
-manual NVDA + Edge pass is still outstanding. Round 3 is not started except in part:
+**Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`),
+including the owner's manual NVDA + Edge pass. Round 3 is not started except in part:
 R3-01's browser suite was extended for Round 2 features (now on `main`), and R3-02's
 briefing window
 was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
