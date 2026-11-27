@@ -856,9 +856,11 @@ the first build). Test figures are in TESTING.
 
 **Remaining risks:**
 
-- The browser suite under the CSP has not run locally: ports 4000 and 5173 were
-  held by the owner's running development servers, which were not stopped. It runs
-  in CI on the Round 3 pull request.
+- The browser suite under the CSP has not run locally (ports 4000 and 5173 were
+  held by the owner's running development servers, which were not stopped). It
+  passed in CI: run `45932147328`, 119/119 with zero retries. Its first CI run
+  showed that sign-out tests must use their own session now that sign-out revokes
+  on the server (fixed in `1101735`).
 - The Caddy log filter and CSP header have not yet run in a real Caddy (step 12).
 - Delivery stays at-least-once. If recording a successful send fails, that one
   message can be sent again once the attempt is stale (5 minutes).

@@ -211,8 +211,22 @@ complete.
 
 ## Current results
 
-**Round 3, on `feat/round3-hardening` (not merged), 2026-11-27.** Local results
-(Windows, Node v24.17.0; each suite run alone unless stated):
+**Round 3, on `feat/round3-hardening` (PR #10, not merged), 2026-11-27.**
+
+**CI** (GitHub Actions, Linux) on `1101735`, run `45932147328`: all four jobs
+passed.
+
+- Browser (Edge, axe in light and dark, under the production CSP): **119/119**,
+  zero retries, none flaky.
+- Server: **843/843** with the test host at UTC+14 and at UTC (the file-symlink
+  seed test runs on Linux).
+- Typechecks, Prisma validation, migration drift check, web **131/131** and the
+  production builds: passed.
+
+The first CI run (`45928754103`, on `a645013`) had the browser job cancelled at
+its time limit; the cause and fix are under "Round 3 hardening" below.
+
+Local results (Windows, Node v24.17.0; each suite run alone unless stated):
 
 - Server: **842 passed, 1 skipped (843)** with the test host at UTC+14 and again at
   UTC. The skipped test is the file-symlink refusal of `db:seed`: Windows does not
@@ -224,9 +238,8 @@ complete.
 - Typechecks (shared, server, web), the production builds, Prisma validation and
   the migration drift check pass.
 - Browser: **not run locally** for Round 3. Ports 4000 and 5173 were held by the
-  owner's running development servers, which were left running. The suite,
-  including the new `csp.spec.ts`, runs under the production CSP in CI on the
-  Round 3 pull request.
+  owner's running development servers, which were left running. The CI figure
+  above is the browser result.
 
 **Round 2, merged into `main` as PR #7 (merge commit `5c8f9a4`, reviewed head
 `900af51`), 2026-11-26.**
