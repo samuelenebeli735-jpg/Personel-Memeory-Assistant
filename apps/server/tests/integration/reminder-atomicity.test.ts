@@ -1,7 +1,7 @@
 /**
- * Atomicity of reminder cancel and snooze (R3-04).
+ * Atomicity of reminder cancel, snooze and edit (R3-04).
  *
- * Cancel and snooze each change the reminder *and* its outstanding delivery
+ * Cancel, snooze and a schedule edit each change the reminder *and* its outstanding delivery
  * attempts. A failure part-way must leave nothing half-done: never a cancelled
  * reminder with an attempt still armed, a half-cancelled series, or a snoozed
  * reminder whose old attempt can still fire at the old time.
@@ -14,7 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createAppContext, type AppContext } from '../../src/context.js';
 import type { Db } from '../../src/db/client.js';
 import { advanceableClock } from '../../src/ports.js';
-import { cancelReminder, snoozeReminder } from '../../src/services/reminder-service.js';
+import { cancelReminder, snoozeReminder, updateReminder } from '../../src/services/reminder-service.js';
 import { testConfig, testLogger } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
 
@@ -113,6 +113,33 @@ describe('cancel is atomic', () => {
     expect(await statusOf(child.id)).toBe('CANCELLED');
     expect(await deliveryStatuses(head.id)).toEqual(['SKIPPED']);
     expect(await deliveryStatuses(child.id)).toEqual(['SKIPPED']);
+  });
+});
+
+describe('a schedule edit is atomic', () => {
+  it('keeps the old time, the old attempt and the series when skipping that attempt fails', async () => {
+    const head = await reminderWithPendingAttempt('Pay rent');
+    const child = await reminderWithPendingAttempt('Pay rent (next)', head.id);
+
+    await expect(
+      updateReminder(context(failing('reminderDelivery')), head.id, { remindAt: '2026-11-28T09:00:00.000Z' }),
+    ).rejects.toThrow(/injected/);
+
+    const after = await testDb.db.reminder.findUniqueOrThrow({ where: { id: head.id } });
+    expect(after.remindAt.toISOString()).toBe(head.remindAt.toISOString());
+    expect(await deliveryStatuses(head.id)).toEqual(['PENDING']);
+    expect(await statusOf(child.id)).toBe('SCHEDULED');
+  });
+
+  it('without a failure, moves the time, cancels the old series and skips the old attempt together', async () => {
+    const head = await reminderWithPendingAttempt('Pay rent');
+    const child = await reminderWithPendingAttempt('Pay rent (next)', head.id);
+
+    const dto = await updateReminder(context(testDb.db), head.id, { remindAt: '2026-11-28T09:00:00.000Z' });
+
+    expect(dto.remindAt).toBe('2026-11-28T09:00:00.000Z');
+    expect(await deliveryStatuses(head.id)).toEqual(['SKIPPED']);
+    expect(await statusOf(child.id)).toBe('CANCELLED');
   });
 });
 

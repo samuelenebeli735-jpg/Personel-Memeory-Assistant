@@ -210,33 +210,39 @@ export async function updateReminder(
   // generated from the old definition; they are cancelled, not deleted, so the
   // history stays readable. The series then restarts from this reminder.
   const scheduleChanged = remindAt !== undefined || patch.recurrence !== undefined;
-  if (scheduleChanged) {
-    await db.reminder.updateMany({
-      where: { parentId: id, status: 'SCHEDULED' },
-      data: { status: 'CANCELLED' },
-    });
-  }
+  // One transaction (R3-04): the new schedule, the cancelled old occurrences and
+  // the skipped old attempts land together, so an attempt for the old time can
+  // never survive a failed edit.
+  const row = await withTransaction(db, async (tx) => {
+    if (scheduleChanged) {
+      await tx.reminder.updateMany({
+        where: { parentId: id, status: 'SCHEDULED' },
+        data: { status: 'CANCELLED' },
+      });
+    }
 
-  const row = await db.reminder.update({
-    where: { id },
-    data: {
-      ...(patch.title === undefined ? {} : { title: patch.title }),
-      ...(patch.body === undefined ? {} : { body: patch.body ?? null }),
-      ...(remindAt === undefined ? {} : { remindAt }),
-      ...(patch.recurrence === undefined
-        ? {}
-        : { recurrence: patch.recurrence ? JSON.stringify(patch.recurrence) : null }),
-      // Editing resets a cancelled/failed reminder and, when the schedule moved,
-      // restarts the attempt count so a stale failure is not carried forward.
-      ...(existing.status === 'CANCELLED' || existing.status === 'FAILED'
-        ? { status: 'SCHEDULED', attempts: 0, lastError: null }
-        : {}),
-      ...(scheduleChanged ? { attempts: 0, lastError: null, deliveredAt: null } : {}),
-    },
+    const updated = await tx.reminder.update({
+      where: { id },
+      data: {
+        ...(patch.title === undefined ? {} : { title: patch.title }),
+        ...(patch.body === undefined ? {} : { body: patch.body ?? null }),
+        ...(remindAt === undefined ? {} : { remindAt }),
+        ...(patch.recurrence === undefined
+          ? {}
+          : { recurrence: patch.recurrence ? JSON.stringify(patch.recurrence) : null }),
+        // Editing resets a cancelled/failed reminder and, when the schedule moved,
+        // restarts the attempt count so a stale failure is not carried forward.
+        ...(existing.status === 'CANCELLED' || existing.status === 'FAILED'
+          ? { status: 'SCHEDULED', attempts: 0, lastError: null }
+          : {}),
+        ...(scheduleChanged ? { attempts: 0, lastError: null, deliveredAt: null } : {}),
+      },
+    });
+    if (scheduleChanged) {
+      await skipOutstandingDeliveries(tx, [id], 'reminder rescheduled', ctx.clock.now());
+    }
+    return updated;
   });
-  if (scheduleChanged) {
-    await skipOutstandingDeliveries(db, [id], 'reminder rescheduled', ctx.clock.now());
-  }
   return toReminderDto(row as ReminderRow);
 }
 
