@@ -868,6 +868,23 @@ R4-05 (docs reconciled, release tagged) is not started.
 
 ## Test-data policy
 
-`npm run db:seed` is **development and test only**. It refuses to run when
-`NODE_ENV=production`, and it never runs automatically. The owner's real database
-is never populated with fabricated history.
+`npm run db:seed -- <new file>` is **development and test only**, and it never
+runs automatically. It only creates a **new** disposable database with clearly
+fictional "Sample:" records. The owner's real database is never populated with
+fabricated history.
+
+*Correction (Round 3, 2026-11-27):* this section previously described a production
+refusal, but the script it named (`prisma/seed.ts`) never existed, so
+`npm run db:seed` simply failed (N11). The seed now exists (R3-04), and before
+writing anything it refuses:
+
+- `NODE_ENV=production`;
+- a missing target (there is no default);
+- any file named `dev.db`;
+- the configured `DATABASE_URL`, compared by real path, with symlinked and
+  junctioned folders resolved;
+- any target that already exists: a file, an empty file, a folder or a symlink.
+
+It creates the file with an exclusive "create new" open, so a file that appears
+in the meantime is never overwritten. Every refusal is covered by
+`tests/integration/seed.test.ts`.
