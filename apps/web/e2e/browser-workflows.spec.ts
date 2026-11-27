@@ -1,5 +1,5 @@
 import { expect, test, type Browser, type Page, type BrowserContext, type Locator } from '@playwright/test';
-import { readE2eEnv, uniqueLabel, authStatePath } from './helpers';
+import { readE2eEnv, uniqueLabel, authStatePath, signedInContext } from './helpers';
 
 /**
  * Browser Workflow Coverage Tests
@@ -289,7 +289,10 @@ test.describe('Login, Logout, Invalid Credentials, Expired Sessions, Anonymous A
     await context.close();
   });
 
-  test('logout clears session and redirects to login', async ({ page, context }) => {
+  test('logout clears session and redirects to login', async ({ browser }) => {
+    // Its own session: signing out revokes it, so the shared one must not be used.
+    const context = await signedInContext(browser);
+    const page = await context.newPage();
     const errors = captureConsoleErrors(page);
 
     await page.goto('/');
@@ -303,6 +306,7 @@ test.describe('Login, Logout, Invalid Credentials, Expired Sessions, Anonymous A
     expect(cookies.filter((cookie) => cookie.name === 'recall_session')).toEqual([]);
 
     await expectNoConsoleErrors(page, errors, 'logout');
+    await context.close();
   });
 
   test('unauthenticated access to protected routes redirects to login', async ({ page, browser }) => {

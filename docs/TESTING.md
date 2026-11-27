@@ -761,6 +761,12 @@ proves a fix, it was also run against the previous code and failed there.
   (`style-src-attr`); the page has no inline script.
 - Browser `e2e/csp.spec.ts` (2): every page loads under the production CSP with
   no violations, and an injected inline script does not run.
+- Browser sign-out tests (`auth.spec.ts`, `browser-workflows.spec.ts`) now sign in
+  with their own session (`signedInContext` in `e2e/helpers.ts`). The first CI
+  run of this branch showed why: signing out now revokes the session on the
+  server, so a test that signed out with the shared session from
+  `auth-setup.ts` left every later test with a revoked cookie. The `auth.spec.ts`
+  test also proves that a copy of the signed-out cookie gets `401`.
 
 ### Atomicity of derivation
 
