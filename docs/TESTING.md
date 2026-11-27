@@ -213,12 +213,13 @@ complete.
 
 **Round 3, on `feat/round3-hardening` (PR #10, not merged), 2026-11-27.**
 
-**CI** (GitHub Actions, Linux) on `1101735`, run `45932147328`: all four jobs
-passed.
+**CI** (GitHub Actions, Linux) on `fdb81f3` (after the Docker drill and final
+audit), run `46014103837`: all four jobs passed. (Earlier run `45932147328` on
+`1101735`: the same, with 843 server tests.)
 
 - Browser (Edge, axe in light and dark, under the production CSP): **119/119**,
   zero retries, none flaky.
-- Server: **843/843** with the test host at UTC+14 and at UTC (the file-symlink
+- Server: **844/844** with the test host at UTC+14 and at UTC (the file-symlink
   seed test runs on Linux).
 - Typechecks, Prisma validation, migration drift check, web **131/131** and the
   production builds: passed.
