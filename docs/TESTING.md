@@ -226,9 +226,12 @@ passed.
 The first CI run (`45928754103`, on `a645013`) had the browser job cancelled at
 its time limit; the cause and fix are under "Round 3 hardening" below.
 
+The Docker drill (R3-05) on real containers is recorded in OPERATIONS ("Round 3
+Docker drill").
+
 Local results (Windows, Node v24.17.0; each suite run alone unless stated):
 
-- Server: **842 passed, 1 skipped (843)** with the test host at UTC+14 and again at
+- Server: **843 passed, 1 skipped (844)** with the test host at UTC+14 and again at
   UTC. The skipped test is the file-symlink refusal of `db:seed`: Windows does not
   let the test process create file symlinks, so it runs on Linux CI only.
 - Dashboard (web): **131/131**.
@@ -740,7 +743,7 @@ proves a fix, it was also run against the previous code and failed there.
   owner database is hash-checked unchanged.
 - `reminder-atomicity.test.ts` (7): a real write failure injected part-way
   through cancel (with its series), snooze or a schedule edit rolls the whole
-  operation back.
+  operation back; a schedule edit also skips the old occurrences' armed attempts.
 - `reminder-scheduler-hardening.test.ts` (18):
   - starvation: 60 deferred reminders plus one new one; 61 queued once each
     during quiet hours and delivered once each when they end;
@@ -760,10 +763,11 @@ proves a fix, it was also run against the previous code and failed there.
   before start and after stop, stays "ok" while ticks finish, and becomes 503
   "stalled" (with `/api/health` degraded and one logged error) when a tick hangs
   past the limit, then recovers. The probe returns one field.
-- `session-revocation.test.ts` (9): a copied cookie or bearer token is refused
+- `session-revocation.test.ts` (10): a copied cookie or bearer token is refused
   after sign-out; other sessions keep working; older tokens are revocable;
   repeated or forged sign-outs are harmless; expired rows are pruned; a failed
-  revocation still clears the cookie and says so; an unreadable list fails closed
+  revocation still clears the cookie and says so; a failed prune still reports
+  (and keeps) the revocation; an unreadable list fails closed
   (503) except for the health report and session probe; the migration only
   creates its table and index.
 - `http-hardening.test.ts` (+8): the API CSP and `nosniff` on every response; only

@@ -845,6 +845,9 @@ process still holds the database.
   single delivery row without creating a duplicate. Because that stack used the
   `none` notifier, actual Telegram delivery and end-to-end exactly-once behavior
   still require a host test with a configured bot.
+- If the host's clock jumps (a PC waking from sleep), `/api/health/scheduler` can
+  read `stalled` until the next tick finishes, at most one tick interval; three
+  consecutive failures are needed before Docker marks the container unhealthy.
 - Logs are JSON on stdout; use `docker compose logs -f app caddy` and configure
   log rotation at the Docker daemon level.
 
@@ -899,6 +902,66 @@ executed because the Docker daemon was unavailable (`failed to connect to the
 docker API at npipe:////./pipe/dockerDesktopLinuxEngine`); no `.env.production` or
 live credentials were created. Compose validation also stopped because the
 referenced `.env.production` file was absent.
+
+#### Round 3 Docker drill (2026-11-27)
+
+Run on the Round 3 code (PR #10) with Docker Desktop 29.7.2, in two separate
+compose projects, `recall-r3drill` and `recall-r3restore`, each with its own new
+volumes and network. A throwaway env file with generated secrets replaced
+`env_file` (the real `.env.production` was never read), Caddy was published only
+on `127.0.0.1:18080/18443` (restore: `18081/18444`), and the `backup` service
+wrote to a scratch folder, not `./backups`. Telegram, AI and STT were off. Before
+and after, the existing Docker volumes, `dev.db`, `.env.production` and
+`backups/` were compared and were unchanged.
+
+```sh
+docker compose -p recall-r3drill --env-file <drill.env> -f compose.yaml -f <override> up -d
+docker compose -p recall-r3drill ... --profile backup run --rm backup
+docker compose -p recall-r3drill ... --profile backup run --rm backup node dist/cli.js verify-backup /backups/<file>.db
+```
+
+- **Build and start:** both base images pulled by their pinned digests; the
+  `migrate` container applied all five migrations (including
+  `20261127120000_revoked_sessions`) to a new volume; the app became healthy
+  under the `/api/health/scheduler` health check; Caddy took its fixed address
+  `172.31.250.10` and the app's `TRUST_PROXY` was exactly that.
+- **Headers (real responses through Caddy):** dashboard pages carry exactly
+  `DASHBOARD_CSP`; every `/api/*` response (200, 401 and 404) carries the API
+  policy `default-src 'none'; …` and `nosniff`; all carry HSTS,
+  `X-Frame-Options: DENY` and a Referrer-Policy, with no `Server` header; HTTP
+  redirects to HTTPS.
+- **Access log:** requests with marker words in the query string and the
+  `Referer` query, including `/api/search?q=…` and
+  `/api/restore/file?sha256=…&checkToken=…`, left **zero** occurrences in the
+  Caddy log and the app log. Caddy logged `/api/search` and a `Referer` of
+  `https://localhost:18443/search`.
+- **Spoofed `X-Forwarded-For`:** 12 wrong logins from the host through Caddy,
+  each with a different forged `X-Forwarded-For`/`X-Real-IP`: 10 × 401 then
+  429; the app recorded every one under the real client address (the network
+  gateway). 12 wrong logins from another container on the same network straight
+  to the app, claiming `X-Forwarded-For: 172.31.250.10, …`: 10 × 401 then 429,
+  recorded under that container's own address.
+- **Restart with a pending reminder:** a reminder became due and got one
+  attempt (deferred: no channel configured). After `docker compose restart app`
+  the app was healthy again in 15 s, recovery reported nothing missed or
+  re-queued, and two ticks later the reminder still had exactly one attempt,
+  identical to before. The session cookie stayed valid.
+- **Sign-out revocation:** a copy of a session cookie worked before sign-out,
+  sign-out returned `revoked: true`, and the copy was then refused (`revoked`).
+- **Backup:** the `backup` profile and a separate `verify-backup` both reported
+  integrity `ok`, 0 foreign-key violations, 5 migrations applied and 0
+  unfinished, and the same row counts as the live app (1 capture, 2 tasks, 1
+  reminder).
+- **Restore into a fresh volume:** in `recall-r3restore` (subnet
+  `172.31.251.0/24` through `RECALL_SUBNET`/`RECALL_PROXY_IP`), the verified
+  snapshot was copied into the new, empty data volume (byte-identical),
+  `migrate` found nothing pending, `verify-backup` on the restored file passed,
+  and the restored stack became healthy with identical counts, the same task and
+  capture text, the reminder and its identical delivery row. The cookie revoked
+  on the first stack was still refused on the restored one.
+
+Not covered by the drill: real Telegram delivery (no live calls in Round 3), a
+public domain with a trusted certificate, and the owner's own production backup.
 
 **Still pending:** a remote always-on host, public DNS and a publicly trusted TLS
 certificate, live Telegram/AI/STT calls, actual notification delivery and

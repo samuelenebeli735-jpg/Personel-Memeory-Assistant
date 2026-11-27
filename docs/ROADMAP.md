@@ -763,7 +763,7 @@ conversational task creation to Recall, and none of these is claimed to exist.
 - the native Windows and Android clients, with native notifications replacing the
   temporary Telegram bridge (see the ALIVE architecture decision).
 
-## Round 3 — Testing and hardening  ·  **Implemented; Docker drill pending**
+## Round 3 — Testing and hardening  ·  **Done (PR #10, not merged)**
 
 Scope approved by the owner on 2026-11-27. Delivered as one branch,
 `feat/round3-hardening`, and one pull request. Design reviewed against `main` at
@@ -813,11 +813,10 @@ Scope approved by the owner on 2026-11-27. Delivered as one branch,
 
 ### Round 3 results (2026-11-27)
 
-Steps 1–11 and 13 are implemented and tested on `feat/round3-hardening`. Step 12,
-the Docker drill, has **not** been run: it needs Docker Desktop running and about
-260–310 MB of downloads (pinned images: `node` 81.1 MB and `caddy` 24.8 MB
-compressed for linux/amd64, plus npm packages, Prisma engines and apt lists for
-the first build). Test figures are in TESTING.
+All 13 steps are implemented and verified on `feat/round3-hardening` (PR #10).
+The Docker drill (step 12) ran on 2026-11-27 against the real Caddy and app
+containers; its commands and results are recorded in OPERATIONS ("Round 3 Docker
+drill"). Test figures are in TESTING.
 
 | Step | Commit | Result |
 | --- | --- | --- |
@@ -832,7 +831,7 @@ the first build). Test figures are in TESTING.
 | 9 Access-log redaction | `f81caa4` | Query strings are stripped from the URI and `Referer` in Caddy's log (configuration-tested; the real Caddy check is part of the drill). |
 | 10 Image digests | `23e0f17` | Both base images pinned to multi-architecture index digests; a test refuses an unpinned `FROM`. |
 | 11 N17 | — | **Not reproduced:** the web suite passed 20 out of 20 runs (131/131 each) while the full server suite ran alongside as load. No test changed. |
-| 12 Docker drill | — | **Pending** (see above). |
+| 12 Docker drill | — | **Done** on real containers in isolated projects: real CSP and API headers; no query strings or `Referer` query data in the Caddy or app logs; spoofed `X-Forwarded-For` limited from the host and from a neighbouring container; one pending attempt kept, not duplicated, across a restart; backup and `verify-backup`; restore into a fresh volume with identical data. No defect found. |
 | 13 R3-01 and docs | `2091e6c` and this commit | The owner's NVDA record (same wording as PR #9, cherry-picked so the two merge in either order), the Round 3 results, and TESTING, OPERATIONS and SECURITY updates. |
 
 **Deviations from the design:**
@@ -854,6 +853,15 @@ the first build). Test figures are in TESTING.
   requests are refused with 503, except the data-free health report and session
   probe.
 
+**Corrections from the final audit:**
+
+- Sign-out reported `revoked: false` if pruning old rows failed after the
+  session had been revoked; pruning is now separate housekeeping, and the
+  response is accurate (tested).
+- A schedule edit cancelled the series' generated occurrences but left their
+  armed attempts `PENDING` (the scheduler would have skipped them when reached);
+  it now skips them in the same transaction, as cancel does (tested).
+
 **Remaining risks:**
 
 - The browser suite under the CSP has not run locally (ports 4000 and 5173 were
@@ -861,7 +869,8 @@ the first build). Test figures are in TESTING.
   passed in CI: run `45932147328`, 119/119 with zero retries. Its first CI run
   showed that sign-out tests must use their own session now that sign-out revokes
   on the server (fixed in `1101735`).
-- The Caddy log filter and CSP header have not yet run in a real Caddy (step 12).
+- Delivery through a real channel was not exercised: Telegram was off in the drill
+  (no live calls in Round 3), so the pending attempt was deferred, not sent.
 - Delivery stays at-least-once. If recording a successful send fails, that one
   message can be sent again once the attempt is stale (5 minutes).
 - The new code must not start before the migration is applied, or every signed-in
@@ -888,7 +897,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
     80/80 with axe and zero retries, typechecks and production builds pass, Prisma
     schema valid with no migration drift.
 - [x] Round 3 hardening (R3-02 to R3-04, N14) implemented and tested on `feat/round3-hardening` (one pull request, not merged)
-- [ ] Local Docker drill re-run on the current code (R3-05)
+- [x] Local Docker drill re-run on the current code (R3-05) — 2026-11-27, isolated projects, recorded in OPERATIONS
 - [ ] Host deployed with trusted TLS (R4-01)
 - [ ] Live Telegram capture and delivery verified (R4-02)
 - [ ] Live AI and speech-to-text smoke tests (R4-03)
@@ -909,7 +918,7 @@ detection and health check; N15 session revocation and CSP; N17 not reproduced i
 
 **Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`),
 including the owner's manual NVDA + Edge pass. Round 3 is implemented on
-`feat/round3-hardening` except its Docker drill (see Round 3 above); R3-02's
+`feat/round3-hardening` including its Docker drill (PR #10; see Round 3 above); R3-02's
 briefing window had already been delivered as R1-06.
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.
