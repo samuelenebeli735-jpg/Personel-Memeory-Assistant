@@ -41,6 +41,7 @@ Full detail, acceptance criteria and remaining work: [`docs/ROADMAP.md`](docs/RO
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | running locally, deployment, secrets, logs, backups, recovery, troubleshooting |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | authentication, permissions, threat model, data handling, external providers |
 | [`docs/TESTING.md`](docs/TESTING.md) | test layout, commands, what is covered, actual recorded results |
+| [`docs/R4-READINESS.md`](docs/R4-READINESS.md) | Round 4 deployment-readiness checklist, owner blockers, go/no-go gate |
 
 ---
 
