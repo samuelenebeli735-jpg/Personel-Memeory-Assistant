@@ -33,6 +33,12 @@
  * reminders out of it. An outstanding attempt cannot hold a reminder back for
  * ever: a `PENDING` row is always picked up once its time comes, and a
  * `SENDING` row is re-queued once it is stale.
+ *
+ * Grace window (R3-02): an occurrence more than `reminderOverdueGraceHours`
+ * late is marked `MISSED` instead of fired, at startup *and* on every tick, so a
+ * machine that slept (or a scheduler that stalled) never releases a burst of
+ * stale notifications. An attempt held back by quiet hours or the daily cap is
+ * the owner's own choice: its grace window runs from the time it is released.
  */
 import type { ReminderRecurrence } from '@recall/shared';
 
@@ -48,7 +54,13 @@ import {
   skipOutstandingDeliveries,
 } from './reminder-service.js';
 import { getSettings, type SettingsRow } from './settings-service.js';
-import { gateDelivery, NO_CHANNEL_DEFER_MS, type DeliveryGate } from './delivery-gate.js';
+import {
+  DAILY_CAP_REASON_PREFIX,
+  gateDelivery,
+  NO_CHANNEL_DEFER_MS,
+  QUIET_HOURS_REASON,
+  type DeliveryGate,
+} from './delivery-gate.js';
 import { deliverDueBriefing, recoverBriefingDeliveries, type BriefingDeliveryReport } from './briefing-delivery.js';
 
 export const DEFAULT_BATCH_SIZE = 50;
@@ -56,6 +68,10 @@ export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_MAX_BACKOFF_MS = 30 * 60_000;
 /** A `SENDING` row older than this is treated as interrupted and re-queued. */
 export const DEFAULT_STALE_CLAIM_MS = 5 * 60_000;
+/** Prefix of the error recorded on an attempt that a gate held back. */
+const DEFERRED_PREFIX = 'deferred: ';
+/** Deferrals the owner's settings asked for (not a missing channel). */
+const SETTINGS_DEFERRALS = [QUIET_HOURS_REASON, DAILY_CAP_REASON_PREFIX].map((reason) => DEFERRED_PREFIX + reason);
 
 export interface SchedulerStatusSnapshot {
   running: boolean;
@@ -78,7 +94,7 @@ export interface TickReport {
   deferred: number;
   /** Attempts abandoned because the reminder changed state first. */
   abandoned: number;
-  /** Occurrences marked MISSED during startup recovery. */
+  /** Occurrences marked MISSED because they are past the grace window. */
   missed: number;
   /** Interrupted (stale `SENDING`) reminder attempts re-queued by this tick. */
   requeued: number;
@@ -237,7 +253,7 @@ export function createReminderScheduler(
           occurrenceKey,
           idempotencyKey: `${occurrenceKey}:${attempt}`,
           nextRetryAt: gate ? gate.deferUntil : now,
-          ...(gate ? { error: `deferred: ${gate.reason}` } : {}),
+          ...(gate ? { error: `${DEFERRED_PREFIX}${gate.reason}` } : {}),
         },
       });
       if (gate) report.deferred += 1;
@@ -344,7 +360,7 @@ export function createReminderScheduler(
           status: 'PENDING',
           attemptedAt: null,
           nextRetryAt: gate.deferUntil,
-          error: `deferred: ${gate.reason}`,
+          error: `${DEFERRED_PREFIX}${gate.reason}`,
         },
       });
       report.deferred += 1;
@@ -475,6 +491,16 @@ export function createReminderScheduler(
         ctx.logger.error('could not re-queue interrupted deliveries', { reason: reasonOf(error) });
       }
 
+      // 0b. Anything past the grace window is marked missed before step 1 can
+      //     queue it, so a late wake-up never sends stale notifications.
+      try {
+        const swept = await sweepMissed(now, settings, 'missed: not delivered within the grace window');
+        report.missed = swept.missed;
+        report.advanced += swept.advanced;
+      } catch (error) {
+        ctx.logger.error('could not mark overdue reminders as missed', { reason: reasonOf(error) });
+      }
+
       // 1. Queue an attempt for every due occurrence that does not have one.
       //    Reminders that already have an outstanding attempt (deferred by quiet
       //    hours or the daily cap, waiting for a retry, or mid-send) are left
@@ -569,6 +595,69 @@ export function createReminderScheduler(
     return { reminders: stale.count, briefings };
   }
 
+  /**
+   * Marks SCHEDULED occurrences past the grace window MISSED (one bounded
+   * batch), skips their outstanding attempts and advances their series.
+   *
+   * Left alone: an occurrence with an attempt in flight, and one whose attempt
+   * quiet hours or the daily cap is holding back, while that attempt is not
+   * itself more than the grace window past its release. A "no channel"
+   * deferral does not protect an occurrence: when a channel appears, a day of
+   * stale reminders must not arrive at once.
+   */
+  async function sweepMissed(
+    now: Date,
+    settings: SettingsRow,
+    lastError: string,
+  ): Promise<{ missed: number; advanced: number }> {
+    const graceCutoff = new Date(now.getTime() - settings.reminderOverdueGraceHours * 3_600_000);
+    const overdue = await ctx.db.reminder.findMany({
+      where: {
+        status: 'SCHEDULED',
+        remindAt: { lt: graceCutoff },
+        deliveries: {
+          none: {
+            OR: [
+              { status: 'SENDING' },
+              {
+                status: 'PENDING',
+                nextRetryAt: { gte: graceCutoff },
+                OR: SETTINGS_DEFERRALS.map((prefix) => ({ error: { startsWith: prefix } })),
+              },
+            ],
+          },
+        },
+      },
+      orderBy: { remindAt: 'asc' },
+      take: batchSize,
+    });
+    const result = { missed: 0, advanced: 0 };
+    for (const reminder of overdue) {
+      try {
+        // The MISSED state and the skipped attempts land together.
+        const marked = await withTransaction(ctx.db, async (tx) => {
+          const updated = await tx.reminder.updateMany({
+            where: { id: reminder.id, status: 'SCHEDULED' },
+            data: { status: 'MISSED', lastError },
+          });
+          if (updated.count === 0) return false;
+          await skipOutstandingDeliveries(tx, [reminder.id], 'missed', now);
+          return true;
+        });
+        if (!marked) continue;
+        result.missed += 1;
+        result.advanced += await advanceSeries(reminder, now, settings.timeZone);
+      } catch (error) {
+        ctx.logger.error('could not mark an overdue reminder as missed', {
+          reminderId: reminder.id,
+          reason: reasonOf(error),
+        });
+      }
+    }
+    if (result.missed > 0) ctx.logger.info('reminders past the grace window marked missed', { ...result });
+    return result;
+  }
+
   async function recover(): Promise<RecoveryReport> {
     const now = ctx.clock.now();
     const settings = await getSettings(ctx.db, ctx.defaults);
@@ -582,29 +671,8 @@ export function createReminderScheduler(
 
     // Anything past the grace window is marked missed, so a returning owner gets
     // one "these were missed" state instead of a burst of late notifications.
-    const graceCutoff = new Date(now.getTime() - settings.reminderOverdueGraceHours * 3_600_000);
-    const overdue = await ctx.db.reminder.findMany({
-      where: { status: 'SCHEDULED', remindAt: { lt: graceCutoff } },
-      orderBy: { remindAt: 'asc' },
-      take: batchSize,
-    });
-    for (const reminder of overdue) {
-      try {
-        const updated = await ctx.db.reminder.updateMany({
-          where: { id: reminder.id, status: 'SCHEDULED' },
-          data: { status: 'MISSED', lastError: 'missed while the service was offline' },
-        });
-        if (updated.count === 0) continue;
-        await skipOutstandingDeliveries(ctx.db, [reminder.id], 'missed', now);
-        report.missed += 1;
-        await advanceSeries(reminder, now, settings.timeZone);
-      } catch (error) {
-        ctx.logger.error('could not mark an overdue reminder as missed', {
-          reminderId: reminder.id,
-          reason: reasonOf(error),
-        });
-      }
-    }
+    // More than one batch is finished by the ticks that follow.
+    report.missed = (await sweepMissed(now, settings, 'missed while the service was offline')).missed;
 
     if (report.requeued > 0 || report.missed > 0) {
       ctx.logger.info('reminder recovery finished', { ...report });

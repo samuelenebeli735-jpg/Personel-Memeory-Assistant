@@ -38,6 +38,14 @@ export interface DeliveryGate {
 export const NO_CHANNEL_DEFER_MS = 15 * 60_000;
 
 /**
+ * Gate reasons. The reminder scheduler records them on a deferred attempt
+ * (`deferred: <reason>`), and the grace-window sweep recognises a deferral the
+ * owner's own settings asked for by them.
+ */
+export const QUIET_HOURS_REASON = 'quiet hours';
+export const DAILY_CAP_REASON_PREFIX = 'daily notification cap';
+
+/**
  * Returns the gate that blocks a notification, or `null` when it may go out.
  */
 export async function gateDelivery(
@@ -48,7 +56,7 @@ export async function gateDelivery(
 ): Promise<DeliveryGate | null> {
   if (isWithinQuietHours(now, timeZone, settings.quietHoursStart, settings.quietHoursEnd)) {
     const end = nextQuietHoursEnd(now, timeZone, settings.quietHoursStart, settings.quietHoursEnd);
-    if (end) return { reason: 'quiet hours', deferUntil: end };
+    if (end) return { reason: QUIET_HOURS_REASON, deferUntil: end };
   }
 
   const cap = settings.maxNotificationsPerDay;
@@ -66,7 +74,7 @@ export async function gateDelivery(
     const deliveredToday = reminders + briefings;
     if (deliveredToday >= cap) {
       return {
-        reason: `daily notification cap of ${cap} reached`,
+        reason: `${DAILY_CAP_REASON_PREFIX} of ${cap} reached`,
         deferUntil: to,
       };
     }

@@ -345,3 +345,139 @@ describe('restart and duplicate prevention', () => {
     for (const id of ids) expect(await deliveriesOf(id)).toHaveLength(1);
   });
 });
+
+/** A due reminder whose current attempt was held back, as a gate leaves it. */
+async function withDeferredAttempt(title: string, remindAt: Date, nextRetryAt: Date, reason: string) {
+  const r = await testDb.db.reminder.create({ data: { title, remindAt } });
+  const key = `${r.id}:${remindAt.toISOString()}`;
+  await testDb.db.reminderDelivery.create({
+    data: { reminderId: r.id, scheduledFor: remindAt, occurrenceKey: key, idempotencyKey: `${key}:1`, nextRetryAt, error: `deferred: ${reason}` },
+  });
+  return r;
+}
+
+const statusOf = async (id: string) => (await testDb.db.reminder.findUniqueOrThrow({ where: { id } })).status;
+const HOUR = 3_600_000;
+
+describe('grace window while running (periodic MISSED sweep)', () => {
+  it('a reminder more than 12 hours late is marked missed by a tick, never sent (e.g. after the PC slept)', async () => {
+    const { ctx, clock, notifier, scheduler } = setup();
+    const stale = await createReminder(ctx, { title: 'Slept through', remindAt: new Date(clock.now().getTime() - 13 * HOUR).toISOString() });
+    const recent = await createReminder(ctx, { title: 'Still fresh', remindAt: new Date(clock.now().getTime() - 11 * HOUR).toISOString() });
+
+    const report = await scheduler.tick();
+
+    expect(report.missed).toBe(1);
+    expect(await statusOf(stale.id)).toBe('MISSED');
+    expect(await statusOf(recent.id)).toBe('SENT');
+    expect(notifier.sent.map((m) => m.text).some((t) => t.includes('Slept through'))).toBe(false);
+    // Idempotent: the next tick finds nothing more to mark.
+    expect((await scheduler.tick()).missed).toBe(0);
+  });
+
+  it('a stale retry or a stale re-queued attempt does not keep an old reminder alive', async () => {
+    const { clock, notifier, scheduler } = setup();
+    const old = new Date(clock.now().getTime() - 13 * HOUR);
+    const r = await testDb.db.reminder.create({ data: { title: 'Old retry', remindAt: old, attempts: 1 } });
+    const key = `${r.id}:${old.toISOString()}`;
+    await testDb.db.reminderDelivery.create({
+      data: { reminderId: r.id, attempt: 2, scheduledFor: old, occurrenceKey: key, idempotencyKey: `${key}:2`, nextRetryAt: clock.now(), error: 'retry 2 after: timeout' },
+    });
+
+    await scheduler.tick();
+
+    expect(await statusOf(r.id)).toBe('MISSED');
+    expect((await deliveriesOf(r.id)).map((d) => d.status)).toEqual(['SKIPPED']);
+    expect(notifier.sent).toHaveLength(0);
+  });
+
+  it('a daily-cap deferral released after the grace window is kept and delivered on release', async () => {
+    // 08:00 Lagos; cap 1. The second reminder is held to 00:00 Lagos (23:00 UTC).
+    const { ctx, clock, notifier, scheduler, newScheduler } = setup({ at: '2026-11-27T07:00:00.000Z' });
+    await updateSettings(ctx.db, { timeZone: 'Africa/Lagos', quietHoursStart: null, quietHoursEnd: null, maxNotificationsPerDay: 1 }, ctx.defaults);
+    await createReminder(ctx, { title: 'First', remindAt: new Date(clock.now().getTime() - 60_000).toISOString() });
+    await scheduler.tick();
+    const held = await createReminder(ctx, { title: 'Held by the cap', remindAt: clock.now().toISOString() });
+    await scheduler.tick();
+    expect((await deliveriesOf(held.id))[0]!.nextRetryAt?.toISOString()).toBe('2026-11-27T23:00:00.000Z');
+
+    // 13.5 hours after it was due, but before its release: kept, by a tick and by a restart.
+    clock.set(new Date('2026-11-27T20:30:00.000Z'));
+    expect((await scheduler.tick()).missed).toBe(0);
+    expect((await newScheduler().recover()).missed).toBe(0);
+    expect(await statusOf(held.id)).toBe('SCHEDULED');
+
+    clock.set(new Date('2026-11-27T23:00:00.000Z'));
+    await scheduler.tick();
+    expect(await statusOf(held.id)).toBe('SENT');
+    expect(notifier.sent.map((m) => m.text).filter((t) => t.includes('Held by the cap'))).toHaveLength(1);
+  });
+
+  it('a quiet-hours deferral whose release is itself past the grace window is missed', async () => {
+    const { clock, notifier, scheduler } = setup();
+    const r = await withDeferredAttempt('Long asleep', new Date(clock.now().getTime() - 20 * HOUR), new Date(clock.now().getTime() - 13 * HOUR), 'quiet hours');
+
+    await scheduler.tick();
+
+    expect(await statusOf(r.id)).toBe('MISSED');
+    expect(notifier.sent).toHaveLength(0);
+  });
+
+  it('a quiet-hours deferral released recently is delivered, not missed', async () => {
+    const { clock, notifier, scheduler } = setup();
+    const r = await withDeferredAttempt('Just released', new Date(clock.now().getTime() - 14 * HOUR), new Date(clock.now().getTime() - 60_000), 'quiet hours');
+
+    await scheduler.tick();
+
+    expect(await statusOf(r.id)).toBe('SENT');
+    expect(notifier.sent).toHaveLength(1);
+  });
+
+  it('a "no channel" deferral does not protect a reminder from the grace window', async () => {
+    const { clock, notifier, scheduler } = setup();
+    const r = await withDeferredAttempt(
+      'No channel',
+      new Date(clock.now().getTime() - 13 * HOUR),
+      new Date(clock.now().getTime() + 10 * 60_000),
+      'no delivery channel is configured',
+    );
+
+    await scheduler.tick();
+
+    expect(await statusOf(r.id)).toBe('MISSED');
+    expect(notifier.sent).toHaveLength(0);
+  });
+
+  it('more than one batch of offline-missed reminders at startup are all missed, none sent', async () => {
+    const { ctx, clock, notifier, newScheduler } = setup();
+    for (let i = 0; i < 60; i += 1) {
+      await createReminder(ctx, { title: `Offline ${i}`, remindAt: new Date(clock.now().getTime() - (24 * HOUR + i * 60_000)).toISOString() });
+    }
+    const restarted = newScheduler();
+
+    expect((await restarted.recover()).missed).toBe(50);
+    const tick = await restarted.tick();
+
+    expect(tick.missed).toBe(10);
+    expect(notifier.sent).toHaveLength(0);
+    expect(await testDb.db.reminder.count({ where: { status: 'MISSED' } })).toBe(60);
+  }, 60_000);
+
+  it('a missed occurrence of a series advances the series once', async () => {
+    const { ctx, clock, scheduler } = setup();
+    const head = await createReminder(ctx, {
+      title: 'Daily pills',
+      remindAt: new Date(clock.now().getTime() - 13 * HOUR).toISOString(),
+      recurrence: { frequency: 'DAILY', weekdays: [], until: null, maxOccurrences: 52 },
+    });
+
+    const first = await scheduler.tick();
+    await scheduler.tick();
+
+    expect(first.missed).toBe(1);
+    expect(await statusOf(head.id)).toBe('MISSED');
+    const next = await testDb.db.reminder.findMany({ where: { parentId: head.id } });
+    expect(next).toHaveLength(1);
+    expect(next[0]!.remindAt.getTime()).toBeGreaterThan(clock.now().getTime());
+  });
+});
