@@ -327,3 +327,16 @@ describe('Caddy access log redaction (R3-03)', () => {
     expect(redact('/tasks')).toBe('/tasks');
   });
 });
+
+describe('Docker base images are pinned (R3-04)', () => {
+  it('every external FROM image carries a sha256 index digest', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf8');
+    const stages = new Set([...dockerfile.matchAll(/^FROM\s+\S+\s+AS\s+(\S+)/gim)].map((m) => m[1]!.toLowerCase()));
+    const external = [...dockerfile.matchAll(/^FROM\s+(\S+)/gim)]
+      .map((m) => m[1]!)
+      .filter((image) => !stages.has(image.toLowerCase()));
+    expect(external.length).toBeGreaterThanOrEqual(3);
+    for (const image of external) expect(image).toMatch(/^[a-z0-9./-]+:[\w.-]+@sha256:[0-9a-f]{64}$/);
+  });
+});
