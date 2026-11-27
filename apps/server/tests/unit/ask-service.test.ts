@@ -116,6 +116,62 @@ describe('validateCitations', () => {
   });
 });
 
+describe('groundAnswer: reporting and framing words (R4-03 live finding)', () => {
+  const ink = evidence({
+    type: 'CAPTURE',
+    id: 'cap-1',
+    title: 'Buy blue printer ink from the stationery shop',
+    snippet: 'Buy blue printer ink from the stationery shop',
+  });
+
+  it('keeps the exact live Gemini answer that used to be dropped', () => {
+    const answer = 'You noted to buy blue printer ink from the stationery shop.';
+    const result = groundAnswer(answer, [ink]);
+    expect(result.dropped).toEqual([]);
+    expect(result.answer).toBe(answer);
+  });
+
+  it('keeps other ordinary framing of a supported fact', () => {
+    for (const answer of [
+      'You said to buy blue printer ink.',
+      'You mentioned blue printer ink from the stationery shop.',
+      'You wrote: buy blue printer ink from the stationery shop.',
+      'According to your records, you should buy blue printer ink.',
+      'Your records indicate you will buy printer ink.',
+      'You recorded that you should buy printer ink from the stationery shop.',
+    ]) {
+      const result = groundAnswer(answer, [ink]);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('still rejects unsupported details hidden behind a framing verb', () => {
+    for (const answer of [
+      'You noted to buy red printer ink.', // wrong colour
+      'You said to buy 3 cartridges of printer ink.', // number and item not in the record
+      'You mentioned buying printer ink on Friday.', // a day the record does not state
+      'You wrote that Ada will buy the printer ink.', // a person who is not in the record
+      'According to your records, the shop is closed.', // a claim the record does not make
+      'You noted not to buy printer ink.', // a negation the record does not contain
+    ]) {
+      const result = groundAnswer(answer, [ink]);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('still drops a statement made only of framing words', () => {
+    for (const answer of ['You noted it.', 'As you said.', 'According to your records.']) {
+      expect(groundAnswer(answer, [ink]).supported, answer).toEqual([]);
+    }
+  });
+
+  it('still requires citations: with nothing cited, a framed statement is dropped', () => {
+    expect(groundAnswer('You noted to buy blue printer ink.', []).supported).toEqual([]);
+  });
+});
+
 describe('groundAnswer', () => {
   it('keeps a statement the evidence supports', () => {
     const result = groundAnswer('The plumber is booked for tomorrow morning.', [evidence()]);
