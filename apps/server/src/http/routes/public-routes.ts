@@ -7,7 +7,15 @@ import type { FastifyInstance } from 'fastify';
 
 import type { AppContext } from '../../context.js';
 import { AppError } from '../../lib/errors.js';
-import { SESSION_COOKIE, sessionCookieOptions, signSession, verifyPassword, verifySession } from '../auth.js';
+import {
+  extractToken,
+  SESSION_COOKIE,
+  sessionCookieOptions,
+  signSession,
+  verifyPassword,
+  verifySession,
+} from '../auth.js';
+import { isSessionRevoked, pruneRevokedSessions, revokeSession } from '../session-revocation.js';
 import type { RuntimeStatus } from '../server.js';
 
 const loginSchema = z.object({
@@ -66,9 +74,35 @@ export async function registerPublicRoutes(
     return { ok: true, expiresInHours: ctx.config.dashboard.sessionTtlHours };
   });
 
-  app.post('/api/auth/logout', async (_request, reply) => {
+  /**
+   * Signs out: clears the cookie and revokes the token on the server, so a copy
+   * of it stops working too (R3-03). Always succeeds for the browser; if the
+   * revocation cannot be recorded, that is logged and reported as
+   * `revoked: false` rather than leaving the owner signed in.
+   */
+  app.post('/api/auth/logout', async (request, reply) => {
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
-    return { ok: true };
+    const secret = ctx.config.dashboard.sessionSecret;
+    const token = extractToken(
+      request.headers.cookie,
+      typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined,
+    );
+    if (!secret || !token) return { ok: true, revoked: false };
+    const now = ctx.clock.now();
+    const verified = verifySession(token, secret, now);
+    // An invalid or expired token cannot be used anyway; nothing to record.
+    if (!verified.valid) return { ok: true, revoked: false };
+    try {
+      await revokeSession(ctx.db, verified.payload!, now);
+      await pruneRevokedSessions(ctx.db, now);
+      ctx.logger.info('dashboard session signed out', {});
+      return { ok: true, revoked: true };
+    } catch (error) {
+      ctx.logger.error('could not record a signed-out session', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: true, revoked: false };
+    }
   });
 
   /** Lets the dashboard decide whether to render the login screen. */
@@ -78,6 +112,13 @@ export async function registerPublicRoutes(
     if (!secret || !raw) return { authenticated: false as const };
     const verified = verifySession(raw, secret, ctx.clock.now());
     if (!verified.valid) return { authenticated: false as const, reason: verified.reason };
+    // This probe returns no data. If the sign-out list cannot be read (the
+    // database is down) the dashboard still loads and reports that; every
+    // data route stays closed (the session guard fails closed).
+    const revoked = await isSessionRevoked(ctx.db, verified.payload!.nonce).catch(() => false);
+    if (revoked) {
+      return { authenticated: false as const, reason: 'revoked' as const };
+    }
     return {
       authenticated: true as const,
       expiresAt: new Date(verified.payload!.exp * 1000).toISOString(),
