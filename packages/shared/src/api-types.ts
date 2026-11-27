@@ -201,6 +201,9 @@ export interface HealthDto {
     lastTickAt: string | null;
     dueNow: number;
     scheduledTotal: number;
+    /** Running, but no tick has finished within `stallLimitSeconds` (N14). */
+    stalled: boolean;
+    stallLimitSeconds: number;
   };
   providers: {
     ai: {

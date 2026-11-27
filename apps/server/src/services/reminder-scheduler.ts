@@ -39,6 +39,10 @@
  * machine that slept (or a scheduler that stalled) never releases a burst of
  * stale notifications. An attempt held back by quiet hours or the daily cap is
  * the owner's own choice: its grace window runs from the time it is released.
+ *
+ * Liveness (N14): `status().stalled` is true when the loop is running but no
+ * tick has finished within `stallLimitMs` (a tick that hangs). The public
+ * `/api/health/scheduler` probe turns that into HTTP 503 for the supervisor.
  */
 import type { ReminderRecurrence } from '@recall/shared';
 
@@ -68,6 +72,10 @@ export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_MAX_BACKOFF_MS = 30 * 60_000;
 /** A `SENDING` row older than this is treated as interrupted and re-queued. */
 export const DEFAULT_STALE_CLAIM_MS = 5 * 60_000;
+/** A running loop with no finished tick for this long is stalled (at least). */
+export const MIN_STALL_LIMIT_MS = 5 * 60_000;
+/** ... or for this many tick intervals, whichever is longer. */
+export const STALL_LIMIT_INTERVALS = 10;
 /** Prefix of the error recorded on an attempt that a gate held back. */
 const DEFERRED_PREFIX = 'deferred: ';
 /** Deferrals the owner's settings asked for (not a missing channel). */
@@ -78,6 +86,9 @@ export interface SchedulerStatusSnapshot {
   lastTickAt: string | null;
   dueNow: number;
   scheduledTotal: number;
+  /** Running, but no tick has finished within `stallLimitSeconds`. */
+  stalled: boolean;
+  stallLimitSeconds: number;
 }
 
 export interface TickReport {
@@ -127,6 +138,8 @@ export interface ReminderSchedulerOptions {
   retryBaseMs?: number;
   maxBackoffMs?: number;
   staleClaimMs?: number;
+  /** How long a running loop may go without a finished tick before it is stalled. */
+  stallLimitMs?: number;
   timers?: SchedulerTimers;
 }
 
@@ -160,6 +173,7 @@ export function createReminderScheduler(
   const retryBaseMs = options.retryBaseMs ?? ctx.config.locale.reminderRetryBaseSeconds * 1000;
   const maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
   const staleClaimMs = options.staleClaimMs ?? DEFAULT_STALE_CLAIM_MS;
+  const stallLimitMs = options.stallLimitMs ?? Math.max(MIN_STALL_LIMIT_MS, STALL_LIMIT_INTERVALS * intervalMs);
   const timers: SchedulerTimers = options.timers ?? {
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout),
@@ -168,6 +182,10 @@ export function createReminderScheduler(
   let handle: unknown = null;
   let ticking = false;
   let lastTickAt: string | null = null;
+  /** When the loop started, or the last tick finished: the stall clock. */
+  let livenessSince: number | null = null;
+  let tickStartedAt: number | null = null;
+  let stallReported = false;
   let dueNow = 0;
   let scheduledTotal = 0;
 
@@ -475,10 +493,21 @@ export function createReminderScheduler(
     const report = emptyReport();
     if (ticking) {
       report.skipped = true;
+      // The interval fired while the previous tick is still running. Say so once
+      // when that tick has run past the stall limit (N14).
+      const runningForMs = tickStartedAt === null ? 0 : ctx.clock.now().getTime() - tickStartedAt;
+      if (runningForMs > stallLimitMs && !stallReported) {
+        stallReported = true;
+        ctx.logger.error('reminder scheduler stalled: a tick has not finished', {
+          runningForSeconds: Math.round(runningForMs / 1000),
+          stallLimitSeconds: Math.round(stallLimitMs / 1000),
+        });
+      }
       return report;
     }
     ticking = true;
     const now = ctx.clock.now();
+    tickStartedAt = now.getTime();
     try {
       const settings = await getSettings(ctx.db, ctx.defaults);
 
@@ -568,7 +597,14 @@ export function createReminderScheduler(
       }
     } finally {
       ticking = false;
+      tickStartedAt = null;
       lastTickAt = now.toISOString();
+      // Measured from when the tick finished, so a slow tick does not count twice.
+      livenessSince = ctx.clock.now().getTime();
+      if (stallReported) {
+        stallReported = false;
+        ctx.logger.info('reminder scheduler recovered from a stall', {});
+      }
       await refreshCounts(now);
     }
     return report;
@@ -682,6 +718,7 @@ export function createReminderScheduler(
 
   async function start(): Promise<void> {
     if (handle !== null) return;
+    livenessSince = ctx.clock.now().getTime();
     const recovery = await recover();
     await tick();
     handle = timers.setInterval(() => {
@@ -703,6 +740,7 @@ export function createReminderScheduler(
     if (handle === null) return;
     timers.clearInterval(handle);
     handle = null;
+    livenessSince = null;
     ctx.logger.info('reminder scheduler stopped', {});
   }
 
@@ -711,11 +749,17 @@ export function createReminderScheduler(
     stop,
     tick,
     recover,
-    status: () => ({
-      running: handle !== null,
-      lastTickAt,
-      dueNow,
-      scheduledTotal,
-    }),
+    status: () => {
+      const running = handle !== null;
+      const since = livenessSince ?? ctx.clock.now().getTime();
+      return {
+        running,
+        lastTickAt,
+        dueNow,
+        scheduledTotal,
+        stalled: running && ctx.clock.now().getTime() - since > stallLimitMs,
+        stallLimitSeconds: Math.round(stallLimitMs / 1000),
+      };
+    },
   };
 }

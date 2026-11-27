@@ -178,7 +178,14 @@ export async function createTestApp(
   const runtime: RuntimeStatus = {
     version: 'test',
     startedAt: clock.now(),
-    schedulerStatus: () => ({ running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0 }),
+    schedulerStatus: () => ({
+      running: false,
+      lastTickAt: null,
+      dueNow: 0,
+      scheduledTotal: 0,
+      stalled: false,
+      stallLimitSeconds: 0,
+    }),
     telegramStatus: () => ({
       enabled: false,
       mode: 'polling',

@@ -91,6 +91,17 @@ export async function registerPublicRoutes(
     uptimeSeconds: Math.round((ctx.clock.now().getTime() - runtime.startedAt.getTime()) / 1000),
   }));
 
+  /**
+   * Unauthenticated scheduler probe for the container health check (N14).
+   * Data-free: one word, no counts or times. 503 when the reminder loop is not
+   * running (still starting, or stopped) or has stalled.
+   */
+  app.get('/api/health/scheduler', async (_request, reply) => {
+    const scheduler = runtime.schedulerStatus();
+    const status = !scheduler.running ? 'stopped' : scheduler.stalled ? 'stalled' : 'ok';
+    return reply.code(status === 'ok' ? 200 : 503).send({ status });
+  });
+
   if (options.telegramWebhook) {
     const handler = options.telegramWebhook;
     app.post('/api/telegram/webhook', webhookRouteOptions, async (request, reply) => {

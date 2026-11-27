@@ -434,8 +434,8 @@ export function SettingsPage() {
                 </div>
                 <div style={{ padding: '16px', background: 'var(--color-bg)', borderRadius: 'var(--radius-md)' }}>
                   <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Scheduler</div>
-                  <div style={{ fontWeight: '600', color: health.scheduler.running ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                    {health.scheduler.running ? 'Running' : 'Stopped'}
+                  <div style={{ fontWeight: '600', color: health.scheduler.running && !health.scheduler.stalled ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                    {health.scheduler.stalled ? 'Stalled' : health.scheduler.running ? 'Running' : 'Stopped'}
                   </div>
                 </div>
                 <div style={{ padding: '16px', background: 'var(--color-bg)', borderRadius: 'var(--radius-md)' }}>

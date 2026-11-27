@@ -41,12 +41,14 @@ export async function registerHealthRoutes(
         // currently sending, not a finished one.
         ctx.db.reminderDelivery.count({ where: { status: { in: ['PENDING', 'SENDING'] } } }),
       ]);
+      const scheduler = runtime.schedulerStatus();
       return {
-        status: 'ok',
+        // A stalled scheduler delivers nothing: that is not "ok" (N14).
+        status: scheduler.stalled ? 'degraded' : 'ok',
         version: runtime.version,
         uptimeSeconds: uptimeSeconds(runtime, ctx),
         database: db,
-        scheduler: runtime.schedulerStatus(),
+        scheduler,
         providers,
         counts: { captures, tasks, reminders, pendingDeliveries },
       };
@@ -69,7 +71,7 @@ export async function registerHealthRoutes(
 }
 
 function emptyScheduler() {
-  return { running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0 };
+  return { running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0, stalled: false, stallLimitSeconds: 0 };
 }
 
 function uptimeSeconds(runtime: RuntimeStatus, ctx: AppContext): number {

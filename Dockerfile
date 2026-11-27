@@ -66,8 +66,9 @@ USER node
 WORKDIR /app/apps/server
 EXPOSE 4000
 
+# Healthy only while the reminder scheduler is running and not stalled (N14).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/api/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/api/health/scheduler').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "dist/index.js"]
 

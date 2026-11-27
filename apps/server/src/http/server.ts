@@ -26,6 +26,9 @@ export interface SchedulerStatusSnapshot {
   lastTickAt: string | null;
   dueNow: number;
   scheduledTotal: number;
+  /** Running, but no tick has finished within `stallLimitSeconds` (N14). */
+  stalled: boolean;
+  stallLimitSeconds: number;
 }
 
 export interface RuntimeStatus {
@@ -137,7 +140,14 @@ export async function buildServer(
   const runtime: RuntimeStatus = options.runtime ?? {
     version: ctx.config.version,
     startedAt: new Date(),
-    schedulerStatus: () => ({ running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0 }),
+    schedulerStatus: () => ({
+      running: false,
+      lastTickAt: null,
+      dueNow: 0,
+      scheduledTotal: 0,
+      stalled: false,
+      stallLimitSeconds: 0,
+    }),
     telegramStatus: () => ({
       enabled: ctx.capabilities.telegramEnabled,
       mode: ctx.config.telegram.mode,
