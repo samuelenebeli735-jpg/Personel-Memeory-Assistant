@@ -211,7 +211,7 @@ complete.
 
 ## Current results
 
-**Round 3, on `feat/round3-hardening` (PR #10, not merged), 2026-11-27.**
+**Round 3, merged into `main` as PR #10 (`6ae758c`), 2026-11-27.**
 
 **CI** (GitHub Actions, Linux) on `fdb81f3` (after the Docker drill and final
 audit), run `46014103837`: all four jobs passed. (Earlier run `45932147328` on

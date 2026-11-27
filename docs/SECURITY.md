@@ -58,8 +58,13 @@ user activity, monitoring of other applications.
 - A `Authorization: Bearer <token>` header is accepted for scripts and tests.
 - **Authorization is enforced in a Fastify `preHandler` hook on the whole `/api`
   scope**, not by hiding UI. `GET /api/health` and every personal-data route return
-  401 without a valid session. Only `/api/auth/*`, `/api/health/live` and
-  `/api/health/scheduler` are public, and they expose no stored data.
+  401 without a valid session. Only `/api/auth/*`, `/api/health/live`,
+  `/api/health/scheduler` and `POST /api/telegram/webhook` are public, and they
+  expose no stored data. The webhook is reachable by anyone who can reach the
+  server, but it checks `TELEGRAM_WEBHOOK_SECRET` (constant-time) **before**
+  parsing the body: a missing or wrong secret gets `401`, no secret configured
+  gets `503`, and only then can a malformed update get `400`. It is also
+  rate-limited (120/minute).
 - Signing out clears the cookie **and revokes that session on the server**
   (R3-03): the token's random nonce is recorded in `revoked_sessions`, and the
   session guard refuses it from then on, so a copied cookie or bearer token stops
@@ -268,13 +273,34 @@ active.
 
 ## 11. Known advisories
 
-`npm audit` reports a **dev-toolchain-only** advisory chain:
-`prisma` → `@prisma/config` → `deepmerge-ts` (stack exhaustion when merging
-recursive object graphs). It affects only the Prisma CLI, which runs at migrate and
-generate time and is not part of the deployed runtime. It is tracked here rather
-than fixed by a Prisma major upgrade that would change the generator contract
-mid-project. All runtime dependencies are clean (`npm audit` reports no findings
-for the server or web dependency trees other than that chain).
+Recorded from `npm audit` on 2026-11-27 (R4-prep). Re-check before each release.
+
+- **Fixed: `fast-uri`** (used by Fastify and by ajv). GHSA-w74x-v6f9-j3xg
+  (moderate, scheme spoofing via a percent-encoded scheme), GHSA-wjr9-j795-jxcr
+  (moderate, host confusion), GHSA-xhq7-xmqj-769h and GHSA-333x-w4r6-6crp (low)
+  were fixed by updating the two installed copies within their existing ranges:
+  4.2.2 -> 4.2.4 and 3.1.8 -> 3.1.9. A unit test
+  (`tests/unit/dependency-advisories.test.ts`) fails if a copy falls back below
+  the patched release.
+- **Open, runtime: `zod`** (direct dependency of the server and `@recall/shared`).
+  GHSA-mrhx-c7xc-m3w5 (high, CVSS 7.5): memory exhaustion while validating
+  oversized constrained collections. Every 3.x release is affected; the fix is
+  only in zod 4.6.7, a **major** upgrade, so it was not forced. Exposure in
+  Recall today is limited: every schema that validates a length-limited
+  collection (tag lists, weekdays, status and type filters, briefing sections,
+  the restore bundle) sits behind the owner session; the public routes either
+  take no collection (login) or reject on the secret before parsing (Telegram
+  webhook); and every body is capped at 2 MB (25 MB for the authenticated restore
+  file). So only a signed-in owner can reach the vulnerable path. The remedy is
+  a planned migration to zod 4 with the full test suites, tracked for Round 4
+  before any public deployment.
+- **Open, tooling only: the Prisma CLI chain** (`prisma` -> `@prisma/config` ->
+  `deepmerge-ts` and `effect`, high). It runs at migrate and generate time, not in
+  the deployed request path. Its fix is a Prisma major upgrade, deliberately not
+  taken mid-project.
+- **Open, development only: `vite`** (moderate, `server.fs.deny` bypass in the
+  Vite dev server). The dev server is never deployed; production serves the
+  built dashboard through Caddy.
 
 ## 12. Verification checklist
 
@@ -331,6 +357,8 @@ for the server or web dependency trees other than that chain).
       strict (`apps/web/src/csp.test.ts`); every API response sends its own CSP
       (`http-hardening.test.ts`). The browser check that every page runs under it
       is `apps/web/e2e/csp.spec.ts`.
+- [x] Every installed `fast-uri` is at or above its patched release
+      (`dependency-advisories.test.ts`).
 - [x] Caddy's access log strips query strings from the URI and `Referer`
       (configuration test in `http-hardening.test.ts`; checked against a real
       Caddy in the Docker drill).
