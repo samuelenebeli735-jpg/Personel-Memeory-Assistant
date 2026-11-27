@@ -139,6 +139,26 @@ const NEGATION_MARKERS = new Set([
   'not', 'never', 'no', 'none', 'nothing', 'neither', 'nor', 'without', 'cannot',
 ]);
 
+/**
+ * Reporting and framing words a model wraps around a fact: "You noted to buy
+ * ink", "According to your records, the plumber is booked". They describe the
+ * act of recording, not the fact itself, so the grounding check does not
+ * require them to appear in the evidence (R4-03: live Gemini answers were
+ * correct and well cited, yet dropped because "noted" was not in the record).
+ *
+ * Deliberately narrow: only reporting verbs and their inflections, plus
+ * "according" and "record(s)". Words that can carry a fact ("note", "made",
+ * "show", "remember") are NOT listed. Every other content word, number, date,
+ * time and negation must still be supported, and a statement made only of
+ * framing words still has nothing checkable and is dropped.
+ */
+const GROUNDING_FRAMING_WORDS = new Set([
+  'noted', 'said', 'says', 'say', 'mentioned', 'mentions', 'mention',
+  'wrote', 'written', 'writes', 'recorded', 'logged', 'captured', 'saved',
+  'stated', 'states', 'indicate', 'indicates', 'indicated', 'according',
+  'record', 'records',
+]);
+
 /** Contractions are expanded so "isn't" is recognised as a negation. */
 function expandContractions(text: string): string {
   return text
@@ -169,6 +189,7 @@ function contentTokens(claim: string): string[] {
   for (const token of tokens) {
     if (NEGATION_MARKERS.has(token)) continue;
     if (STOPWORDS.has(token)) continue;
+    if (GROUNDING_FRAMING_WORDS.has(token)) continue;
     if (/\d/.test(token)) {
       content.push(token);
       continue;

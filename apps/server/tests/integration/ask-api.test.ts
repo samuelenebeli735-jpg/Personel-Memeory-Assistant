@@ -275,6 +275,28 @@ describe('POST /api/ask — citations', () => {
     expect(result.evidence.map((item) => item.id)).toEqual([task.id]);
   });
 
+  it('uses a correct, cited AI answer that frames the fact with "you noted" (R4-03)', async () => {
+    const task = await createPlumberTask();
+    ai.setAnswer({ answer: 'You noted to call the plumber.', citedIds: [task.id] });
+
+    const result = await askWithAi({ question: 'plumber' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe('You noted to call the plumber.');
+    expect(result.evidence.map((item) => item.id)).toEqual([task.id]);
+  });
+
+  it('still falls back when a framed answer adds an unsupported detail', async () => {
+    const task = await createPlumberTask();
+    ai.setAnswer({ answer: 'You noted to call the electrician.', citedIds: [task.id] });
+
+    const result = await askWithAi({ question: 'plumber' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.answer).not.toContain('electrician');
+  });
+
   it('discards an answer that cites nothing at all', async () => {
     const task = await createPlumberTask();
     ai.setAnswer({ answer: 'The plumber is booked.', citedIds: [] });
