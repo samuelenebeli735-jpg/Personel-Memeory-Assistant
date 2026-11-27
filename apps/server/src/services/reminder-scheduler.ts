@@ -24,11 +24,20 @@
  * Delivery guarantee: **at-least-once**. The provider call and the local write
  * cannot share a transaction, so a crash between a successful send and the
  * `DELIVERED` write can repeat one message. Losing a message is not possible;
- * `recover()` re-queues a stale `SENDING` row rather than dropping it.
+ * a stale `SENDING` row is re-queued rather than dropped, at startup and on
+ * every tick (R3-02), so an interrupted attempt never waits for a restart.
+ *
+ * Starvation (R3-02): a due reminder that already has an outstanding attempt
+ * (`PENDING` or `SENDING`) is left out of the "queue an attempt" batch, so
+ * reminders deferred by quiet hours or the daily cap can never crowd newer due
+ * reminders out of it. An outstanding attempt cannot hold a reminder back for
+ * ever: a `PENDING` row is always picked up once its time comes, and a
+ * `SENDING` row is re-queued once it is stale.
  */
 import type { ReminderRecurrence } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
+import { withTransaction } from '../db/client.js';
 import { backoffDelay } from '../lib/retry.js';
 import { parseRecurrence } from '../mappers.js';
 import type { Notifier } from '../ports.js';
@@ -71,6 +80,8 @@ export interface TickReport {
   abandoned: number;
   /** Occurrences marked MISSED during startup recovery. */
   missed: number;
+  /** Interrupted (stale `SENDING`) reminder attempts re-queued by this tick. */
+  requeued: number;
   /** Next occurrences generated for recurring series. */
   advanced: number;
   /** What the daily briefing did during this tick. */
@@ -154,6 +165,7 @@ export function createReminderScheduler(
       deferred: 0,
       abandoned: 0,
       missed: 0,
+      requeued: 0,
       advanced: 0,
       briefings: {
         disabled: false,
@@ -362,14 +374,20 @@ export function createReminderScheduler(
     });
 
     if (outcome.ok) {
-      await ctx.db.reminderDelivery.update({
-        where: { id: delivery.id },
-        data: { status: 'DELIVERED', deliveredAt: now, nextRetryAt: null, error: null },
-      });
-      // Guarded update: a cancel that raced the send is not overwritten.
-      const marked = await ctx.db.reminder.updateMany({
-        where: { id: reminder.id, status: 'SCHEDULED' },
-        data: { status: 'SENT', deliveredAt: now, attempts: delivery.attempt, lastError: null },
+      // One transaction: a delivered attempt and a SENT reminder land together.
+      // If this write fails the row stays SENDING and is re-queued once stale
+      // (at-least-once), instead of leaving a SCHEDULED reminder whose only
+      // attempt is DELIVERED, which would never be queued again.
+      const marked = await withTransaction(ctx.db, async (tx) => {
+        await tx.reminderDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'DELIVERED', deliveredAt: now, nextRetryAt: null, error: null },
+        });
+        // Guarded update: a cancel that raced the send is not overwritten.
+        return tx.reminder.updateMany({
+          where: { id: reminder.id, status: 'SCHEDULED' },
+          data: { status: 'SENT', deliveredAt: now, attempts: delivery.attempt, lastError: null },
+        });
       });
       report.delivered += 1;
       if (marked.count > 0) report.advanced += await advanceSeries(reminder, now, settings.timeZone);
@@ -378,44 +396,55 @@ export function createReminderScheduler(
 
     const error = outcome.error ?? 'delivery failed';
     const retryable = outcome.retryable === true;
-    await ctx.db.reminderDelivery.update({
-      where: { id: delivery.id },
-      data: { status: 'FAILED', error, nextRetryAt: null },
+    const canRetry = retryable && delivery.attempt < maxAttempts;
+    const nextAttempt = delivery.attempt + 1;
+    const occurrenceKey = delivery.occurrenceKey ?? occurrenceKeyFor(reminder.id, delivery.scheduledFor);
+    const nextKey = `${occurrenceKey}:${nextAttempt}`;
+
+    // One transaction: the failed attempt, the next attempt and the reminder's
+    // state land together. A partial write could otherwise leave a SCHEDULED
+    // reminder whose only attempt is FAILED, which would never be queued again;
+    // if this write fails the row stays SENDING and is re-queued once stale.
+    await withTransaction(ctx.db, async (tx) => {
+      await tx.reminderDelivery.update({
+        where: { id: delivery.id },
+        data: { status: 'FAILED', error, nextRetryAt: null },
+      });
+      if (canRetry) {
+        const backoff = backoffDelay(delivery.attempt, retryBaseMs, maxBackoffMs, false);
+        // The provider's own guidance (Telegram `retry_after`) wins when it is longer.
+        const waitMs = Math.max(backoff, outcome.retryAfterMs ?? 0);
+        // The idempotency key is unique, so a retry another process already
+        // created is never created twice. Checked rather than caught, because a
+        // failed statement would abort the transaction.
+        const already = await tx.reminderDelivery.findUnique({
+          where: { idempotencyKey: nextKey },
+          select: { id: true },
+        });
+        if (!already) {
+          await tx.reminderDelivery.create({
+            data: {
+              reminderId: reminder.id,
+              attempt: nextAttempt,
+              status: 'PENDING',
+              channel: notifier.channel,
+              scheduledFor: delivery.scheduledFor,
+              occurrenceKey,
+              idempotencyKey: nextKey,
+              nextRetryAt: new Date(now.getTime() + waitMs),
+              error: `retry ${nextAttempt} after: ${error}`,
+            },
+          });
+        }
+      }
+      await tx.reminder.update({
+        where: { id: reminder.id },
+        data: canRetry
+          ? { attempts: delivery.attempt, lastError: error }
+          : { status: 'FAILED', attempts: delivery.attempt, lastError: error },
+      });
     });
     report.failed += 1;
-
-    const canRetry = retryable && delivery.attempt < maxAttempts;
-    if (canRetry) {
-      const backoff = backoffDelay(delivery.attempt, retryBaseMs, maxBackoffMs, false);
-      // The provider's own guidance (Telegram `retry_after`) wins when it is longer.
-      const waitMs = Math.max(backoff, outcome.retryAfterMs ?? 0);
-      const nextAttempt = delivery.attempt + 1;
-      const occurrenceKey = delivery.occurrenceKey ?? occurrenceKeyFor(reminder.id, delivery.scheduledFor);
-      try {
-        await ctx.db.reminderDelivery.create({
-          data: {
-            reminderId: reminder.id,
-            attempt: nextAttempt,
-            status: 'PENDING',
-            channel: notifier.channel,
-            scheduledFor: delivery.scheduledFor,
-            occurrenceKey,
-            idempotencyKey: `${occurrenceKey}:${nextAttempt}`,
-            nextRetryAt: new Date(now.getTime() + waitMs),
-            error: `retry ${nextAttempt} after: ${error}`,
-          },
-        });
-      } catch (createError) {
-        if (!isUniqueViolation(createError)) throw createError;
-      }
-    }
-
-    await ctx.db.reminder.update({
-      where: { id: reminder.id },
-      data: canRetry
-        ? { attempts: delivery.attempt, lastError: error }
-        : { status: 'FAILED', attempts: delivery.attempt, lastError: error },
-    });
     if (!canRetry) {
       ctx.logger.warn('reminder permanently failed', {
         reminderId: reminder.id,
@@ -437,9 +466,25 @@ export function createReminderScheduler(
     try {
       const settings = await getSettings(ctx.db, ctx.defaults);
 
+      // 0. An attempt interrupted mid-send (the send or its record threw) is
+      //    re-queued once stale, so it never waits for a restart. Ticks never
+      //    overlap within a process, so a stale claim is not one in flight here.
+      try {
+        report.requeued = (await requeueStaleClaims(now)).reminders;
+      } catch (error) {
+        ctx.logger.error('could not re-queue interrupted deliveries', { reason: reasonOf(error) });
+      }
+
       // 1. Queue an attempt for every due occurrence that does not have one.
+      //    Reminders that already have an outstanding attempt (deferred by quiet
+      //    hours or the daily cap, waiting for a retry, or mid-send) are left
+      //    out, so they cannot fill the batch and starve newer due reminders.
       const due = await ctx.db.reminder.findMany({
-        where: { status: 'SCHEDULED', remindAt: { lte: now } },
+        where: {
+          status: 'SCHEDULED',
+          remindAt: { lte: now },
+          deliveries: { none: { status: { in: ['PENDING', 'SENDING'] } } },
+        },
         orderBy: { remindAt: 'asc' },
         take: batchSize,
       });
@@ -457,8 +502,10 @@ export function createReminderScheduler(
       }
 
       // 2. Attempt everything that is queued and due.
+      //    A PENDING row without a time is treated as due, so it can never sit
+      //    unprocessed (and hold its reminder back) for ever.
       const ready = await ctx.db.reminderDelivery.findMany({
-        where: { status: 'PENDING', nextRetryAt: { lte: now } },
+        where: { status: 'PENDING', OR: [{ nextRetryAt: { lte: now } }, { nextRetryAt: null }] },
         orderBy: { nextRetryAt: 'asc' },
         take: batchSize,
         include: { reminder: true },
@@ -501,24 +548,37 @@ export function createReminderScheduler(
     return report;
   }
 
-  async function recover(): Promise<RecoveryReport> {
-    const now = ctx.clock.now();
-    const settings = await getSettings(ctx.db, ctx.defaults);
-    const report: RecoveryReport = { missed: 0, requeued: 0, briefingsRequeued: 0 };
-
-    // A delivery left mid-send by a crash is retried, never dropped.
+  /**
+   * Re-queues reminder and briefing attempts left in `SENDING` for longer than
+   * `staleClaimMs` (a crash, or a send whose record failed): retried, never
+   * dropped. A claim always records `attemptedAt`; one without it is stale too.
+   */
+  async function requeueStaleClaims(now: Date): Promise<{ reminders: number; briefings: number }> {
     const stale = await ctx.db.reminderDelivery.updateMany({
-      where: { status: 'SENDING', attemptedAt: { lt: new Date(now.getTime() - staleClaimMs) } },
+      where: {
+        status: 'SENDING',
+        OR: [{ attemptedAt: { lt: new Date(now.getTime() - staleClaimMs) } }, { attemptedAt: null }],
+      },
       data: {
         status: 'PENDING',
         nextRetryAt: now,
         error: 'recovered after an interrupted delivery',
       },
     });
-    report.requeued = stale.count;
+    const briefings = await recoverBriefingDeliveries(ctx, now, staleClaimMs);
+    return { reminders: stale.count, briefings };
+  }
 
-    // The same rule applies to a briefing that was interrupted mid-send.
-    report.briefingsRequeued = await recoverBriefingDeliveries(ctx, now, staleClaimMs);
+  async function recover(): Promise<RecoveryReport> {
+    const now = ctx.clock.now();
+    const settings = await getSettings(ctx.db, ctx.defaults);
+    const report: RecoveryReport = { missed: 0, requeued: 0, briefingsRequeued: 0 };
+
+    // A delivery left mid-send by a crash is retried, never dropped. The same
+    // rule applies to a briefing that was interrupted mid-send.
+    const requeued = await requeueStaleClaims(now);
+    report.requeued = requeued.reminders;
+    report.briefingsRequeued = requeued.briefings;
 
     // Anything past the grace window is marked missed, so a returning owner gets
     // one "these were missed" state instead of a burst of late notifications.
