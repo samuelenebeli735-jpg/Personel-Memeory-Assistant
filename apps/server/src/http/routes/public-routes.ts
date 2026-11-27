@@ -94,15 +94,23 @@ export async function registerPublicRoutes(
     if (!verified.valid) return { ok: true, revoked: false };
     try {
       await revokeSession(ctx.db, verified.payload!, now);
-      await pruneRevokedSessions(ctx.db, now);
-      ctx.logger.info('dashboard session signed out', {});
-      return { ok: true, revoked: true };
     } catch (error) {
       ctx.logger.error('could not record a signed-out session', {
         reason: error instanceof Error ? error.message : String(error),
       });
       return { ok: true, revoked: false };
     }
+    // Housekeeping only: the session is already revoked, so a failure here
+    // must not make the response say otherwise.
+    try {
+      await pruneRevokedSessions(ctx.db, now);
+    } catch (error) {
+      ctx.logger.warn('could not prune expired signed-out sessions', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    ctx.logger.info('dashboard session signed out', {});
+    return { ok: true, revoked: true };
   });
 
   /** Lets the dashboard decide whether to render the login screen. */

@@ -140,6 +140,7 @@ describe('a schedule edit is atomic', () => {
     expect(dto.remindAt).toBe('2026-11-28T09:00:00.000Z');
     expect(await deliveryStatuses(head.id)).toEqual(['SKIPPED']);
     expect(await statusOf(child.id)).toBe('CANCELLED');
+    expect(await deliveryStatuses(child.id)).toEqual(['SKIPPED']);
   });
 });
 

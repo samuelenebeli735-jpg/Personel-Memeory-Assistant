@@ -215,10 +215,16 @@ export async function updateReminder(
   // never survive a failed edit.
   const row = await withTransaction(db, async (tx) => {
     if (scheduleChanged) {
-      await tx.reminder.updateMany({
+      const children = await tx.reminder.findMany({
         where: { parentId: id, status: 'SCHEDULED' },
-        data: { status: 'CANCELLED' },
+        select: { id: true },
       });
+      if (children.length > 0) {
+        const ids = children.map((child) => child.id);
+        await tx.reminder.updateMany({ where: { id: { in: ids } }, data: { status: 'CANCELLED' } });
+        // As cancel does: the old occurrences' armed attempts are skipped too.
+        await skipOutstandingDeliveries(tx, ids, 'series rescheduled', ctx.clock.now());
+      }
     }
 
     const updated = await tx.reminder.update({

@@ -135,6 +135,29 @@ describe('signing out revokes the session on the server', () => {
   });
 });
 
+describe('pruning is housekeeping only', () => {
+  it('a failed prune still reports the session as revoked, and it is', async () => {
+    const failing = (testDb.db as unknown as { $extends: (d: unknown) => unknown }).$extends({
+      query: {
+        revokedSession: {
+          deleteMany() {
+            throw new Error('injected: prune failed');
+          },
+        },
+      },
+    }) as Db;
+    const broken = await createTestApp(failing);
+    try {
+      const cookie = await app.login();
+      const out = await broken.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie } });
+      expect(out.json()).toEqual({ ok: true, revoked: true });
+      expect((await settingsWith({ cookie })).statusCode).toBe(401);
+    } finally {
+      await broken.close();
+    }
+  });
+});
+
 describe('when the sign-out list cannot be read', () => {
   it('data routes fail closed (503), while the health report and the session probe still answer', async () => {
     const failing = (testDb.db as unknown as { $extends: (d: unknown) => unknown }).$extends({
