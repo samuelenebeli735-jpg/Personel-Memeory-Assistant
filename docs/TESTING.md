@@ -211,6 +211,23 @@ complete.
 
 ## Current results
 
+**Round 3, on `feat/round3-hardening` (not merged), 2026-11-27.** Local results
+(Windows, Node v24.17.0; each suite run alone unless stated):
+
+- Server: **842 passed, 1 skipped (843)** with the test host at UTC+14 and again at
+  UTC. The skipped test is the file-symlink refusal of `db:seed`: Windows does not
+  let the test process create file symlinks, so it runs on Linux CI only.
+- Dashboard (web): **131/131**.
+- N17: the web suite passed **20 out of 20 runs** (131/131 each) while the full
+  server suite ran alongside as load (that server run also passed, 842 + 1
+  skipped). Not reproduced; no test changed.
+- Typechecks (shared, server, web), the production builds, Prisma validation and
+  the migration drift check pass.
+- Browser: **not run locally** for Round 3. Ports 4000 and 5173 were held by the
+  owner's running development servers, which were left running. The suite,
+  including the new `csp.spec.ts`, runs under the production CSP in CI on the
+  Round 3 pull request.
+
 **Round 2, merged into `main` as PR #7 (merge commit `5c8f9a4`, reviewed head
 `900af51`), 2026-11-26.**
 
@@ -695,6 +712,55 @@ item results were not recorded separately):
   announced; the restore report table reads its headers.
 - Offline and "Can't reach Recall" banners are announced; "Check again" works.
 - 200% zoom in Edge (Ctrl and +): nothing is cut off and nothing scrolls sideways.
+
+### Round 3 hardening (R3-02 to R3-04, N14)
+
+All against real SQLite databases built from the real migrations. Where a test
+proves a fix, it was also run against the previous code and failed there.
+
+- `seed.test.ts` (12): `db:seed` creates only a new file. It refuses
+  production, a missing target, the configured `DATABASE_URL` (absolute,
+  relative to the Prisma folder, or not yet existing), any `dev.db` in any case,
+  an existing empty or non-empty file or a folder, a missing folder, and a symlink
+  or dangling symlink (Linux only). It resolves a junction to its real path and
+  never overwrites a file created between the checks and the write. A stand-in
+  owner database is hash-checked unchanged.
+- `reminder-atomicity.test.ts` (7): a real write failure injected part-way
+  through cancel (with its series), snooze or a schedule edit rolls the whole
+  operation back.
+- `reminder-scheduler-hardening.test.ts` (18):
+  - starvation: 60 deferred reminders plus one new one; 61 queued once each
+    during quiet hours and delivered once each when they end;
+  - recovery while running: a send that throws is re-queued once stale, without
+    a restart; a `PENDING` row without a time is processed;
+  - atomic outcome records: a failed "delivered" or "failed + retry" record
+    leaves the attempt `SENDING`, never a stuck `SCHEDULED` reminder;
+  - restart during quiet hours keeps every deferral and creates no second
+    attempt; two schedulers ticking at once send each occurrence once;
+  - the grace window on every tick: more than 12 hours late becomes MISSED, a
+    stale retry does not keep a reminder alive, a daily-cap deferral released
+    after the window is kept (by a tick and by a restart) and delivered, quiet
+    hours released long ago or recently, a "no channel" deferral, 60
+    offline-missed reminders at startup, and a missed series occurrence
+    advancing once.
+- `scheduler-liveness.test.ts` (4): `/api/health/scheduler` is 503 "stopped"
+  before start and after stop, stays "ok" while ticks finish, and becomes 503
+  "stalled" (with `/api/health` degraded and one logged error) when a tick hangs
+  past the limit, then recovers. The probe returns one field.
+- `session-revocation.test.ts` (9): a copied cookie or bearer token is refused
+  after sign-out; other sessions keep working; older tokens are revocable;
+  repeated or forged sign-outs are harmless; expired rows are pruned; a failed
+  revocation still clears the cookie and says so; an unreadable list fails closed
+  (503) except for the health report and session probe; the migration only
+  creates its table and index.
+- `http-hardening.test.ts` (+8): the API CSP and `nosniff` on every response; only
+  Caddy's compose address is trusted, and a spoofed `X-Forwarded-For` cannot dodge
+  the login limit; the Caddy log filter; every external `FROM` pinned by digest.
+- Web `src/csp.test.ts` (6): the Caddyfile and `vite preview` serve exactly
+  `DASHBOARD_CSP`; the policy stays strict, with one exception
+  (`style-src-attr`); the page has no inline script.
+- Browser `e2e/csp.spec.ts` (2): every page loads under the production CSP with
+  no violations, and an injected inline script does not run.
 
 ### Atomicity of derivation
 

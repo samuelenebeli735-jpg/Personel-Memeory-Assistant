@@ -304,10 +304,14 @@ AI classification and cache:
 | `npm run db:deploy` | apply existing migrations (production) |
 | `npm run db:status` | show migration state |
 | `npm run db:studio` | browse the database |
-| `npm run db:seed` | **development only** fictional data |
+| `npm run db:seed -- <new file>` | **development only**: creates a new database file with fictional records |
 | `npm run db:reset:dev` | **development only** drop + recreate |
 
-`db:seed` and `db:reset:dev` refuse to run when `NODE_ENV=production`.
+`db:seed` and `db:reset:dev` refuse to run when `NODE_ENV=production`. `db:seed`
+only ever **creates a new file** (R3-04): it has no default target and refuses any
+file named `dev.db`, the configured `DATABASE_URL`, a path that already exists
+(including an empty file or a symlink) and a missing folder. It applies the real
+migrations to the new file before adding the sample records.
 
 ## 4. Migrations
 
@@ -320,11 +324,29 @@ AI classification and cache:
 - Before deploying a migration: copy the database file (see backups) so a rollback
   is possible.
 
+**Round 3 migration `20261127120000_revoked_sessions`** (session revocation) is
+additive: one new table, `revoked_sessions`, and one index; no existing table
+changes. Apply it **before** starting the Round 3 code: without the table the
+session guard cannot check sign-outs and refuses every signed-in request with
+`503` (it fails closed). For the local database:
+
+```sh
+# 1. Stop the running server (npm run dev / dev:server).
+npm run recall -- backup --out backups          # 2. snapshot + JSON export
+npm run recall -- verify-backup backups/recall-<timestamp>.db
+npm run db:deploy                               # 3. applies only pending migrations
+npm run db:status                               # 4. expect "Database schema is up to date"
+```
+
+Under Docker the `migrate` service applies it on `up`; take a backup with the
+`backup` profile first.
+
 ## 5. Logging
 
 - Structured JSON on stdout (`info` and below) and stderr (`warn`, `error`, `fatal`).
 - One line per HTTP request: method, path without query string, status. Bodies and
-  query strings are never logged.
+  query strings are never logged. Caddy's access log (JSON on stdout) likewise
+  drops the query string from the request URI and the `Referer` header.
 - **Redacted by default:** `rawText`, `transcript`, `body`, `text`, `password`,
   `token`, `botToken`, `apiKey`, `secret`, `sessionSecret`, `authorization`,
   `cookie`. Set `LOG_MESSAGE_CONTENT=true` to see message text — local development
@@ -335,8 +357,18 @@ AI classification and cache:
 
 | Endpoint | Auth | Use |
 | --- | --- | --- |
-| `GET /api/health/live` | none | liveness — restart the process if this fails |
+| `GET /api/health/live` | none | liveness — the process answers HTTP |
+| `GET /api/health/scheduler` | none | reminder loop — `200 {"status":"ok"}`, or `503` with `"stopped"` or `"stalled"`; no other data. The container health check uses this |
 | `GET /api/health` | owner session | readiness — database, scheduler, providers, counts |
+
+**Stalled scheduler (N14):** the loop is *stalled* when it is running but no tick
+has finished for 10 tick intervals or 5 minutes, whichever is longer (5 minutes
+at the default 20 s interval). It is usually a tick stuck in a provider call or a
+locked database. The probe returns `503`, `/api/health` reports
+`status: "degraded"` with `scheduler.stalled: true`, Settings shows "Stalled", and
+the log records one error when the next interval fires (and an info line when it
+recovers). Docker marks the container unhealthy but does not restart it; alerting
+is Round 4 work.
 
 `GET /api/health` returns HTTP 200 with `status: "degraded"` when a dependency is
 down, and includes the database latency, scheduler state (last tick, due count)
@@ -355,21 +387,38 @@ memory. Configuration is via environment variables (validated at startup):
 | `SCHEDULER_INTERVAL_SECONDS` | `20` | How often the scheduler ticks and checks for due reminders. |
 | `REMINDER_MAX_ATTEMPTS` | `5` | Maximum delivery attempts before a reminder is marked `FAILED`. |
 | `REMINDER_RETRY_BASE_SECONDS` | `30` | Base delay for exponential backoff between retries. |
-| `REMINDER_OVERDUE_GRACE_HOURS` | `12` | On startup, overdue reminders inside this window fire once; older ones are marked `MISSED`. |
+| `REMINDER_OVERDUE_GRACE_HOURS` | `12` | Overdue reminders inside this window fire once; older ones are marked `MISSED`, at startup and on every tick. |
 | `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(unset)* | Local-time window (HH:MM) during which notifications are deferred, not dropped. Supports wrap past midnight (e.g. `22:00` / `07:00`). |
 | `MAX_NOTIFICATIONS_PER_DAY` | `0` (unlimited) | Daily cap on delivered notifications. When reached, further deliveries are deferred to the next local day. |
 
-**Startup recovery:** when the process starts, the scheduler runs a recovery pass
-before the first tick. Reminders past their scheduled time but within the grace
-window are delivered; those beyond it are marked `MISSED` and their series (if
-recurring) advances to the next future occurrence. This prevents a notification
-storm after prolonged downtime.
+**Grace window (startup and every tick, R3-02):** reminders past their scheduled
+time but within the grace window are delivered; those beyond it are marked
+`MISSED` and their series (if recurring) advances to the next future occurrence.
+This runs in the recovery pass at startup *and* at the start of every tick, so a
+PC that wakes from sleep, or a scheduler that stalled, does not release a burst of
+stale notifications. The one exception is an attempt that quiet hours or the
+daily cap is holding back: the owner asked for that delay, so its grace window
+runs from the time it is released (a reminder held to the next day by the cap is
+still delivered). A "no channel configured" deferral does not protect a reminder.
+
+**Interrupted attempts:** an attempt left `SENDING` for more than 5 minutes (a
+crash, or a send whose result could not be recorded) is re-queued, at startup and
+on every tick, and retried with the same idempotency key. Recording an outcome
+(delivered, or failed plus the next retry) is one transaction, so a reminder can
+never be left `SCHEDULED` with only finished attempts.
+
+**No starvation:** each tick queues an attempt for up to 50 due reminders that do
+not already have an outstanding (`PENDING` or `SENDING`) attempt, oldest first.
+Reminders waiting out quiet hours, the daily cap or a retry therefore never crowd
+newer due reminders out of the batch.
 
 **Quiet hours and daily cap:** both defer rather than drop. A deferred delivery
 remains `PENDING` with a future `nextRetryAt`; it is retried on the next tick
-after the quiet window ends or the next local day begins. The `idempotencyKey`
-(`<reminderId>:<scheduledForIso>:<attempt>`) guarantees exactly-once delivery
-across restarts and concurrent processes.
+after the quiet window ends or the next local day begins. The unique
+`idempotencyKey` (`<reminderId>:<scheduledForIso>:<attempt>`) means an attempt is
+never created twice, across restarts and concurrent processes. Delivery itself is
+at-least-once: a crash between a successful send and its record can repeat one
+message; a message is never lost.
 
 **Recurrence:** `DAILY`, `WEEKLY` (with optional weekdays), and `MONTHLY` are
 supported. Occurrences are generated one at a time, each with a unique
@@ -380,6 +429,8 @@ affects only that occurrence.
 **Cancelling vs editing:** cancelling a reminder marks it `CANCELLED` and skips
 all pending deliveries. Editing the schedule (time or recurrence) of a series
 head cancels its pending children so the series restarts from the new definition.
+Cancel, snooze and a schedule edit are each one transaction (R3-04): a failure
+part-way changes nothing.
 
 ## 6b. Daily briefing
 
@@ -603,7 +654,9 @@ substitute for exercising the owner's real backup on the deployment host.
 | `Prisma CLI not found` in tests | Run `npm install` first. |
 | `Test template database missing` | The vitest `globalSetup` step failed; run `npx vitest run` and read the migration output. |
 | Login returns 503 | `DASHBOARD_PASSWORD` or `SESSION_SECRET` is unset on the server. |
-| 401 on every API call | The session cookie expired (`SESSION_TTL_HOURS`) or the secret changed. Sign in again. |
+| 401 on every API call | The session cookie expired (`SESSION_TTL_HOURS`), that session was signed out, or the secret changed. Sign in again. |
+| 503 "Recall cannot check your session right now" | The database is unavailable or busy, or the `revoked_sessions` migration has not been applied (`npm run db:status`). |
+| App container `unhealthy` | `/api/health/scheduler` is not `200`: the scheduler is still starting, stopped or stalled. Check `docker compose logs app` for "reminder scheduler stalled". |
 | 429 responses | Per-IP rate limit (240/min overall, 10/min on login, 120/min on the Telegram webhook). Expected under load, not a bug. |
 | All clients appear to share one rate-limit bucket | Recall is behind a proxy but `TRUST_PROXY` is `false`. Set it to the proxy address/CIDR; never enable it for direct client connections. |
 | Port already in use | Change `PORT`, or stop the other process. |
@@ -776,8 +829,12 @@ process still holds the database.
 
 - `restart: unless-stopped` restarts the app and Caddy after a crash or host
   reboot (provided the Docker service is enabled at boot).
-- The app image has a Docker healthcheck against `/api/health/live`; Caddy waits
-  for the app to become healthy before starting.
+- The app image has a Docker healthcheck against `/api/health/scheduler`, so the
+  container is unhealthy while the reminder loop is stopped or stalled (N14);
+  Caddy waits for the app to become healthy before starting.
+- Caddy serves the dashboard with a restrictive Content-Security-Policy, logs
+  access without query strings, and is the only address the app trusts for
+  `X-Forwarded-For` (R3-03). Base images are pinned by digest (R3-04).
 - `/api/health` (authenticated) reports database latency, scheduler state and
   provider configuration. A degraded dependency is visible without taking the
   process down.

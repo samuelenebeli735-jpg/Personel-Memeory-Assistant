@@ -735,9 +735,9 @@ automated review because NVDA was not installed there.
 
 **Still open:**
 
-- Production access logs. Caddy's default JSON access log records full request
-  URIs, including search text in `?q=` and the restore hash and token. This is
-  deployment work for R4: filter or drop query strings in `deploy/Caddyfile`.
+- Production access logs: **resolved in Round 3** (step 9, `f81caa4`). Caddy's
+  access log now drops the query string from the request URI and the `Referer`
+  header, so search text and the restore hash and token are no longer logged.
 
 ### Product boundary: ALIVE and Recall
 
@@ -763,7 +763,7 @@ conversational task creation to Recall, and none of these is claimed to exist.
 - the native Windows and Android clients, with native notifications replacing the
   temporary Telegram bridge (see the ALIVE architecture decision).
 
-## Round 3 — Testing and hardening  ·  **In progress**
+## Round 3 — Testing and hardening  ·  **Implemented; Docker drill pending**
 
 Scope approved by the owner on 2026-11-27. Delivered as one branch,
 `feat/round3-hardening`, and one pull request. Design reviewed against `main` at
@@ -811,6 +811,60 @@ Scope approved by the owner on 2026-11-27. Delivered as one branch,
 - **Tests and seeds** use temporary databases only. The Docker drill uses its own
   compose project and volumes and never touches existing volumes.
 
+### Round 3 results (2026-11-27)
+
+Steps 1–11 and 13 are implemented and tested on `feat/round3-hardening`. Step 12,
+the Docker drill, has **not** been run: it needs Docker Desktop running and about
+260–310 MB of downloads (pinned images: `node` 81.1 MB and `caddy` 24.8 MB
+compressed for linux/amd64, plus npm packages, Prisma engines and apt lists for
+the first build). Test figures are in TESTING.
+
+| Step | Commit | Result |
+| --- | --- | --- |
+| 1 `db:seed` (N11) | `cd0f015` | Creates only a new file. Refusals tested: production, no target, the configured `DATABASE_URL` (absolute, relative, not yet existing), any `dev.db` in any case, an existing empty or non-empty file or folder, a missing folder, a symlink (Linux CI; Windows lacks the privilege), and a file created between the checks and the write. The real `npm run db:seed` refused `dev.db` with its hash unchanged. |
+| 2 Transactional snooze and cancel | `6cb54af`, `6d629eb` | Cancel (with its series), snooze and a schedule edit are each one transaction. Injected failures roll back fully; the rollback tests fail on the old code. |
+| 3 Starvation (N13) | `d039a27` | Reminders with an outstanding attempt are left out of the queueing batch. Before relying on that, stuck states were closed: stale `SENDING` attempts are re-queued on every tick (not only at startup), a `PENDING` row without a time is processed, and recording an outcome is one transaction. Six of the new tests fail on the old code. |
+| 4 Periodic MISSED sweep (N13) | `1df113e` | The grace window applies at startup and on every tick; quiet-hours and daily-cap deferrals are kept until released. Seven of the new tests fail on the old code. |
+| 5 Scheduler liveness (N14) | `de316dd` | `/api/health/scheduler` (public, one word) returns 503 when stopped or stalled; `/api/health` is degraded; the compose and Dockerfile health checks use it. Autoheal and alerting stay in Round 4. |
+| 6 Session revocation (N15) | `d86b40e` | Additive migration `20261127120000_revoked_sessions` (one table, one index). Sign-out revokes that session; a copy is refused; the guard fails closed. **Not applied to `dev.db`**; see OPERATIONS §4. |
+| 7 CSP | `fbaed39` | One policy in `apps/web/src/csp.ts`, served by Caddy and `vite preview`; the API sends its own. A browser spec checks every page for violations. |
+| 8 Trusted proxy | `1239d48` | Caddy has a fixed address on a fixed subnet and is the only proxy the app trusts. A spoofed `X-Forwarded-For` cannot dodge the login limit. |
+| 9 Access-log redaction | `f81caa4` | Query strings are stripped from the URI and `Referer` in Caddy's log (configuration-tested; the real Caddy check is part of the drill). |
+| 10 Image digests | `23e0f17` | Both base images pinned to multi-architecture index digests; a test refuses an unpinned `FROM`. |
+| 11 N17 | — | **Not reproduced:** the web suite passed 20 out of 20 runs (131/131 each) while the full server suite ran alongside as load. No test changed. |
+| 12 Docker drill | — | **Pending** (see above). |
+| 13 R3-01 and docs | `2091e6c` and this commit | The owner's NVDA record (same wording as PR #9, cherry-picked so the two merge in either order), the Round 3 results, and TESTING, OPERATIONS and SECURITY updates. |
+
+**Deviations from the design:**
+
+- **Start-up recovery changed slightly** (step 4). The design said it stays
+  unchanged. It now uses the same rule as the periodic sweep, so a restart no
+  longer marks a reminder MISSED while quiet hours or the daily cap still hold it
+  back (before, a reminder held to the next day by the cap was lost on a restart).
+  It also finishes more than one batch of 50 over the following ticks instead of
+  sending the rest late. Reverting to the old start-up behaviour is a small change
+  if preferred.
+- **Schedule edits** became transactional too (step 2): they had the same flaw as
+  snooze and would otherwise have interfered with step 3.
+- **Outcome records** became transactional (step 3), so that no stuck state can
+  hold a reminder back once outstanding attempts are excluded.
+- **Proxy trust** names Caddy's fixed address rather than the whole subnet (step 8).
+  It is stricter, and the subnet is still fixed.
+- **Fail-closed session guard** (step 6): if the sign-out list cannot be read,
+  requests are refused with 503, except the data-free health report and session
+  probe.
+
+**Remaining risks:**
+
+- The browser suite under the CSP has not run locally: ports 4000 and 5173 were
+  held by the owner's running development servers, which were not stopped. It runs
+  in CI on the Round 3 pull request.
+- The Caddy log filter and CSP header have not yet run in a real Caddy (step 12).
+- Delivery stays at-least-once. If recording a successful send fails, that one
+  message can be sent again once the attempt is stale (5 minutes).
+- The new code must not start before the migration is applied, or every signed-in
+  request gets a 503.
+
 ## Master completion checklist
 
 Moved here from §19 of the 2026-11-17 audit; this file is now the source of truth.
@@ -831,6 +885,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
     server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
     80/80 with axe and zero retries, typechecks and production builds pass, Prisma
     schema valid with no migration drift.
+- [x] Round 3 hardening (R3-02 to R3-04, N14) implemented and tested on `feat/round3-hardening` (one pull request, not merged)
 - [ ] Local Docker drill re-run on the current code (R3-05)
 - [ ] Host deployed with trusted TLS (R4-01)
 - [ ] Live Telegram capture and delivery verified (R4-02)
@@ -842,16 +897,18 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 **Resolved by Round 2 (merged, PR #7):** N7 dashboard gaps, N8 silent create-modal
 failures, N9 `capturesApi` contract drift.
 
-**Still open from the audit:** N11 `db:seed` points at a missing file; N13
-MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
-N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
-failed once under load (not seen since; cause unknown).
+**Resolved by Round 3 (on `feat/round3-hardening`, not yet merged):** N11 safe
+`db:seed`; N13 periodic MISSED sweep and no queue starvation; N14 stalled-scheduler
+detection and health check; N15 session revocation and CSP; N17 not reproduced in
+20 runs under load.
+
+**Still open from the audit:** N14 autoheal and alerting (Round 4); N16 Telegram
+`/briefing` (deferred: Telegram is a temporary bridge).
 
 **Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`),
-including the owner's manual NVDA + Edge pass. Round 3 is not started except in part:
-R3-01's browser suite was extended for Round 2 features (now on `main`), and R3-02's
-briefing window
-was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
+including the owner's manual NVDA + Edge pass. Round 3 is implemented on
+`feat/round3-hardening` except its Docker drill (see Round 3 above); R3-02's
+briefing window had already been delivered as R1-06.
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.
 
