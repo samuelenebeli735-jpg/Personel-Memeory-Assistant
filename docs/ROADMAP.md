@@ -760,6 +760,54 @@ conversational task creation to Recall, and none of these is claimed to exist.
 - the native Windows and Android clients, with native notifications replacing the
   temporary Telegram bridge (see the ALIVE architecture decision).
 
+## Round 3 — Testing and hardening  ·  **In progress**
+
+Scope approved by the owner on 2026-11-27. Delivered as one branch,
+`feat/round3-hardening`, and one pull request. Design reviewed against `main` at
+`7fd78ce` before any implementation.
+
+**Deferred (not in Round 3):**
+
+- Telegram `/briefing` (N16): Telegram is a temporary bridge and is not extended.
+- The durable Telegram dead-letter table.
+- CI coverage thresholds.
+- External uptime monitoring and alerting: Round 4.
+
+| Step | Task | What changes | Files | Migration |
+| --- | --- | --- | --- | --- |
+| 1 | R3-04 `db:seed` (N11) | `prisma/seed.ts` never existed. Replace it with a seed that only creates a **new** disposable database. It refuses to run with `NODE_ENV=production`, refuses an existing or non-empty file, and refuses the configured `DATABASE_URL` and any `dev.db`, so it can never touch the owner's data. | `apps/server/prisma/seed.ts` (new), `apps/server/package.json` script, tests | No |
+| 2 | R3-04 Transactional snooze and cancel | Cancel (including a series) and snooze become one transaction each, so a failure can't leave a cancelled reminder with live deliveries. | `services/reminder-service.ts`, tests | No |
+| 3 | R3-02 Starvation (N13) | Due reminders that already have a `PENDING` or `SENDING` delivery are excluded from the queueing query, so 50+ deferred reminders can't hide newer due ones. The unique occurrence and idempotency keys still prevent duplicates. | `services/reminder-scheduler.ts`, tests | No |
+| 4 | R3-02 Periodic MISSED sweep (N13) | The grace-window sweep also runs while the app is running (for example after the PC wakes from sleep). It marks a reminder MISSED only if it is past grace **and** has no delivery deliberately deferred into the future by quiet hours or the daily cap. That keeps the "a deferred reminder is never lost" rule. Start-up recovery is unchanged. | `services/reminder-scheduler.ts`, tests | No |
+| 5 | N14 Scheduler liveness | A scheduler that is running but hasn't completed a tick within the stale limit is reported as stalled. A public, data-free `/api/health/scheduler` returns 503 when stalled, and the compose health check uses it. | `services/reminder-scheduler.ts`, `http/routes/*health*`, `compose.yaml`, shared types, tests | No |
+| 6 | R3-03 Session revocation (N15) | Signing out records the token's `nonce` in a new `RevokedSession` table; the session guard refuses a revoked token, even a copied one. Expired rows are pruned. Existing tokens keep working. | `prisma/schema.prisma`, a new additive migration, `http/auth.ts`, `http/session-guard.ts`, `routes/public-routes.ts`, tests | **Yes, additive:** one new table, no existing table changed |
+| 7 | R3-03 CSP and headers | A restrictive CSP in Caddy. `script-src 'self'` with no exceptions. The one documented exception is `style-src-attr 'unsafe-inline'`, for React inline `style` attributes only; `<style>` elements stay `'self'`. The same CSP is served by `vite preview`, so the browser suite runs under it, and a test keeps the two identical. The API sends its own restrictive CSP. | `deploy/Caddyfile`, `apps/web/vite.config.ts`, `http/server.ts`, tests | No |
+| 8 | R3-03 Trusted proxy | The compose network gets a fixed subnet, and `TRUST_PROXY` names it, so the app trusts only Caddy for client addresses. | `compose.yaml`, `.env.production.example`, `docs/OPERATIONS.md` | No |
+| 9 | R3-03 Access-log redaction | Caddy's access log drops query strings from the request URI and the `Referer` header (search words, restore hash and token). | `deploy/Caddyfile` | No |
+| 10 | R3-04 Image digests | Pin `node:24-bookworm-slim` and `caddy:2-alpine` to their multi-architecture index digests. | `Dockerfile` | No |
+| 11 | R3-04 N17 | Run the web suite 20 times under load. Fix any flaky test found, or record "not reproduced". | Web tests as needed | No |
+| 12 | R3-05 Docker drill | Rebuild and start in a **separate compose project with disposable volumes**. Check health, restart with a pending reminder, backup, restore into a fresh volume, the CSP and log redaction. Needs Docker Desktop running and about 250–300 MB of downloads for the first build. | `docs/OPERATIONS.md` (recorded drill) | No |
+| 13 | R3-01 and docs | Record the Round 2 browser, axe and owner NVDA evidence, the Round 3 results, and TESTING and OPERATIONS updates. | `docs/*` | No |
+
+**Data and delivery risks, and how they are contained:**
+
+- **The migration** is additive (a new table only). It is never run against
+  `dev.db` by tests. The owner applies it with the normal migrate command, and
+  should take a backup first.
+- **Periodic MISSED sweep:** a reminder more than 12 hours past due (the default
+  grace) while the app was suspended becomes MISSED instead of arriving late. Quiet
+  hours and the daily cap keep their deferral.
+- **The starvation change** alters which reminders are queued, not how they are
+  delivered. The occurrence and idempotency keys still make duplicates impossible.
+  Tests cover 60+ deferred reminders, restarts and duplicates.
+- **CSP:** a too-strict policy could break the dashboard (for example the export
+  download). The browser suite runs under the CSP to catch that.
+- **Trusted proxy:** a wrong value makes everyone share one rate-limit bucket, or
+  lets clients spoof addresses. The drill checks the login limit with spoofed
+  `X-Forwarded-For`.
+- **Tests and seeds** use temporary databases only. The Docker drill uses its own
+  compose project and volumes and never touches existing volumes.
+
 ## Master completion checklist
 
 Moved here from §19 of the 2026-11-17 audit; this file is now the source of truth.
