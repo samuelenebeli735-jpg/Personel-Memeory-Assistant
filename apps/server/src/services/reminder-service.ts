@@ -8,7 +8,7 @@
 import type { ReminderCreateInput, ReminderDto, ReminderUpdateInput, SnoozeInput } from '@recall/shared';
 
 import type { AppContext } from '../context.js';
-import type { Db } from '../db/client.js';
+import { withTransaction, type Db } from '../db/client.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { addMinutes, formatLocalHuman, toLocal } from '../lib/time.js';
 import { parseRecurrence, toReminderDto, toReminderDeliveryDto, type ReminderRow } from '../mappers.js';
@@ -244,25 +244,30 @@ export async function updateReminder(
  * Cancels a reminder. Cancelling a series head cancels the occurrences generated
  * from it too, because "cancel the daily one" must not leave tomorrow's copy
  * armed. The reminder itself is kept (status `CANCELLED`) rather than deleted.
+ *
+ * One transaction (R3-04): a failure part-way can never leave a cancelled
+ * reminder with deliveries still armed, or a half-cancelled series.
  */
 export async function cancelReminder(ctx: AppContext, id: string): Promise<ReminderDto> {
-  const db = ctx.db;
-  const existing = await db.reminder.findUnique({ where: { id } });
+  const existing = await ctx.db.reminder.findUnique({ where: { id } });
   if (!existing) throw new NotFoundError('Reminder', id);
 
   const now = ctx.clock.now();
-  const row = await db.reminder.update({ where: { id }, data: { status: 'CANCELLED' } });
-  await skipOutstandingDeliveries(db, [id], 'reminder cancelled', now);
+  const row = await withTransaction(ctx.db, async (tx) => {
+    const cancelled = await tx.reminder.update({ where: { id }, data: { status: 'CANCELLED' } });
+    await skipOutstandingDeliveries(tx, [id], 'reminder cancelled', now);
 
-  const children = await db.reminder.findMany({
-    where: { parentId: id, status: 'SCHEDULED' },
-    select: { id: true },
+    const children = await tx.reminder.findMany({
+      where: { parentId: id, status: 'SCHEDULED' },
+      select: { id: true },
+    });
+    if (children.length > 0) {
+      const ids = children.map((child) => child.id);
+      await tx.reminder.updateMany({ where: { id: { in: ids } }, data: { status: 'CANCELLED' } });
+      await skipOutstandingDeliveries(tx, ids, 'series cancelled', now);
+    }
+    return cancelled;
   });
-  if (children.length > 0) {
-    const ids = children.map((child) => child.id);
-    await db.reminder.updateMany({ where: { id: { in: ids } }, data: { status: 'CANCELLED' } });
-    await skipOutstandingDeliveries(db, ids, 'series cancelled', now);
-  }
   return toReminderDto(row as ReminderRow);
 }
 
@@ -301,11 +306,16 @@ export async function snoozeReminder(
     throw new ValidationError('Snooze target must be in the future');
   }
 
-  const row = await db.reminder.update({
-    where: { id },
-    data: { remindAt: target, status: 'SCHEDULED', attempts: 0, lastError: null, deliveredAt: null },
+  // One transaction (R3-04): the new time and the skipped old attempts land
+  // together, so a retry can never fire at the old time after a failed snooze.
+  const row = await withTransaction(db, async (tx) => {
+    const snoozed = await tx.reminder.update({
+      where: { id },
+      data: { remindAt: target, status: 'SCHEDULED', attempts: 0, lastError: null, deliveredAt: null },
+    });
+    await skipOutstandingDeliveries(tx, [id], 'snoozed', ctx.clock.now(), ['PENDING', 'SENDING', 'FAILED']);
+    return snoozed;
   });
-  await skipOutstandingDeliveries(db, [id], 'snoozed', ctx.clock.now(), ['PENDING', 'SENDING', 'FAILED']);
   return toReminderDto(row as ReminderRow);
 }
 
