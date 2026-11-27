@@ -27,6 +27,7 @@
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "db:migrate": "npm run db:migrate --workspace @recall/server",
     "db:deploy": "npm run db:deploy --workspace @recall/server",
+    "db:status": "npm run db:status --workspace @recall/server",
     "db:studio": "npm run db:studio --workspace @recall/server",
     "db:seed": "npm run db:seed --workspace @recall/server",
     "db:reset:dev": "npm run db:reset:dev --workspace @recall/server",

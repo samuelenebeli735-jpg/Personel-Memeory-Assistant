@@ -24,6 +24,9 @@ screenshots of your activity.
 | 7. Recall + briefings | database-grounded retrieval, configurable daily briefing | **Done** |
 | 8. Deployment | production config, persistent hosting, backups, recovery | **In progress** — Docker/Caddy stack, local backup/restore drill and operations runbook; live host/TLS validation pending |
 | Round 1 foundation fixes | audit 2026-11-17: settings, time zones, Ask dates, AI privacy, Telegram recovery, briefing deadline | **Done** — merged as PR #2 |
+| Round 2 dashboard | Ask, Today, inbox review, edit/delete, pagination, export/restore, error handling, accessibility | **Done** — merged as PR #7 |
+| Round 3 testing and hardening | safe `db:seed`, scheduler starvation and grace sweep, liveness probe, session revocation, CSP, trusted proxy, log redaction, pinned images, Docker drill | **Done** — merged as PR #10 (migration `20261127120000_revoked_sessions`) |
+| Round 4 host and live integrations | trusted TLS host, live Telegram/AI/STT, scheduled off-host backups, monitoring, release | **Not started** — blocked on a host, a domain and credentials; preparatory work under way |
 
 Full detail, acceptance criteria and remaining work: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -38,6 +41,7 @@ Full detail, acceptance criteria and remaining work: [`docs/ROADMAP.md`](docs/RO
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | running locally, deployment, secrets, logs, backups, recovery, troubleshooting |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | authentication, permissions, threat model, data handling, external providers |
 | [`docs/TESTING.md`](docs/TESTING.md) | test layout, commands, what is covered, actual recorded results |
+| [`docs/R4-READINESS.md`](docs/R4-READINESS.md) | Round 4 deployment-readiness checklist, owner blockers, go/no-go gate |
 
 ---
 
@@ -379,14 +383,16 @@ npm run recall -- capture "…"    # store a capture from the terminal
 npm run recall -- inbox          # captures waiting for review
 npm run db:migrate              # create/apply a migration in development
 npm run db:deploy               # apply migrations (production)
-npm run db:status               # show migration state
+npm run db:status               # show migration state (read-only)
 npm run db:studio               # browse the database
-npm run db:seed                 # DEVELOPMENT ONLY fictional sample data
+npm run db:seed -- <new file>   # DEVELOPMENT ONLY: create a NEW database file with fictional records
 npm run db:reset:dev            # DEVELOPMENT ONLY drop + recreate the database
 ```
 
 > `db:reset:dev` and `db:seed` refuse to run when `NODE_ENV=production`.
-> Never point them at your real database.
+> `db:seed` has no default target: it only ever creates the new file you name and
+> refuses `dev.db`, the configured `DATABASE_URL` and any existing file.
+> Never point `db:reset:dev` at your real database.
 
 ---
 

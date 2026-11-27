@@ -763,7 +763,7 @@ conversational task creation to Recall, and none of these is claimed to exist.
 - the native Windows and Android clients, with native notifications replacing the
   temporary Telegram bridge (see the ALIVE architecture decision).
 
-## Round 3 — Testing and hardening  ·  **Done (PR #10, not merged)**
+## Round 3 — Testing and hardening  ·  **Done** (merged as PR #10, `6ae758c`)
 
 Scope approved by the owner on 2026-11-27. Delivered as one branch,
 `feat/round3-hardening`, and one pull request. Design reviewed against `main` at
@@ -813,7 +813,10 @@ Scope approved by the owner on 2026-11-27. Delivered as one branch,
 
 ### Round 3 results (2026-11-27)
 
-All 13 steps are implemented and verified on `feat/round3-hardening` (PR #10).
+All 13 steps are implemented and verified on `feat/round3-hardening` (PR #10),
+merged into `main` on 2026-11-27 as `6ae758c`. The owner's development database
+was backed up, then migrated to `20261127120000_revoked_sessions` and verified the
+same day.
 The Docker drill (step 12) ran on 2026-11-27 against the real Caddy and app
 containers; its commands and results are recorded in OPERATIONS ("Round 3 Docker
 drill"). Test figures are in TESTING.
@@ -896,7 +899,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
     server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
     80/80 with axe and zero retries, typechecks and production builds pass, Prisma
     schema valid with no migration drift.
-- [x] Round 3 hardening (R3-02 to R3-04, N14) implemented and tested on `feat/round3-hardening` (one pull request, not merged)
+- [x] Round 3 hardening (R3-02 to R3-04, N14) — merged as PR #10 (`6ae758c`)
 - [x] Local Docker drill re-run on the current code (R3-05) — 2026-11-27, isolated projects, recorded in OPERATIONS
 - [ ] Host deployed with trusted TLS (R4-01)
 - [ ] Live Telegram capture and delivery verified (R4-02)
@@ -908,7 +911,7 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 **Resolved by Round 2 (merged, PR #7):** N7 dashboard gaps, N8 silent create-modal
 failures, N9 `capturesApi` contract drift.
 
-**Resolved by Round 3 (on `feat/round3-hardening`, not yet merged):** N11 safe
+**Resolved by Round 3 (merged, PR #10):** N11 safe
 `db:seed`; N13 periodic MISSED sweep and no queue starvation; N14 stalled-scheduler
 detection and health check; N15 session revocation and CSP; N17 not reproduced in
 20 runs under load.
@@ -917,8 +920,8 @@ detection and health check; N15 session revocation and CSP; N17 not reproduced i
 `/briefing` (deferred: Telegram is a temporary bridge).
 
 **Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`),
-including the owner's manual NVDA + Edge pass. Round 3 is implemented on
-`feat/round3-hardening` including its Docker drill (PR #10; see Round 3 above); R3-02's
+including the owner's manual NVDA + Edge pass. Round 3 is done and merged (PR #10,
+`6ae758c`), including its Docker drill; R3-02's
 briefing window had already been delivered as R1-06.
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.
