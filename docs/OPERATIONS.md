@@ -84,6 +84,15 @@ behind a reverse proxy you control, using that proxy's address/CIDR or a
 comma-separated list. If it is enabled without a trusted proxy in front, a client
 can spoof `X-Forwarded-For` and evade the per-IP rate limiter.
 
+Under Docker Compose this is set for you (R3-03). The stack's network has a
+fixed subnet (`RECALL_SUBNET`, default `172.31.250.0/24`) and Caddy a fixed
+address (`RECALL_PROXY_IP`, default `172.31.250.10`); compose sets the app's
+`TRUST_PROXY` to that one address, overriding any value in `.env.production`.
+No other container on the network, and no client, can set the address the rate
+limiter sees. If `docker compose up` reports that the pool overlaps another
+network, set both variables in `.env.production` to a free subnet and an
+address inside it.
+
 ### Telegram bot runtime
 
 Capture over Telegram is off unless `TELEGRAM_ENABLED=true`, and it needs both a

@@ -5,6 +5,12 @@
 #
 # Caddy terminates TLS and serves the static dashboard; the server container is
 # not published to the host. SQLite lives on the `recall_data` volume.
+#
+# Proxy trust (R3-03): the stack's network has a fixed subnet and Caddy a fixed
+# address, and the app trusts X-Forwarded-For from that one address only
+# (TRUST_PROXY is set below from the same variable, so they cannot drift).
+# If the subnet clashes with another network on the host, set RECALL_SUBNET and
+# RECALL_PROXY_IP (an address inside it) in .env.production.
 name: recall
 
 services:
@@ -30,6 +36,9 @@ services:
       - .env.production
     environment:
       DATABASE_URL: file:/data/recall.db
+      # Trust forwarded client addresses from Caddy only. Overrides any
+      # TRUST_PROXY in .env.production.
+      TRUST_PROXY: ${RECALL_PROXY_IP:-172.31.250.10}
     volumes:
       - recall_data:/data
     expose:
@@ -61,6 +70,10 @@ services:
         condition: service_healthy
     environment:
       RECALL_DOMAIN: ${RECALL_DOMAIN:?set RECALL_DOMAIN in .env.production}
+    networks:
+      default:
+        # The one address the app trusts for X-Forwarded-For.
+        ipv4_address: ${RECALL_PROXY_IP:-172.31.250.10}
     ports:
       - "80:80"
       - "443:443"
@@ -87,6 +100,12 @@ services:
       - ./backups:/backups
     command: ["node", "dist/cli.js", "backup", "--out", "/backups", "--keep", "14"]
     restart: "no"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${RECALL_SUBNET:-172.31.250.0/24}
 
 volumes:
   recall_data:
