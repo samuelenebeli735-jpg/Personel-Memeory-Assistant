@@ -84,6 +84,15 @@ behind a reverse proxy you control, using that proxy's address/CIDR or a
 comma-separated list. If it is enabled without a trusted proxy in front, a client
 can spoof `X-Forwarded-For` and evade the per-IP rate limiter.
 
+Under Docker Compose this is set for you (R3-03). The stack's network has a
+fixed subnet (`RECALL_SUBNET`, default `172.31.250.0/24`) and Caddy a fixed
+address (`RECALL_PROXY_IP`, default `172.31.250.10`); compose sets the app's
+`TRUST_PROXY` to that one address, overriding any value in `.env.production`.
+No other container on the network, and no client, can set the address the rate
+limiter sees. If `docker compose up` reports that the pool overlaps another
+network, set both variables in `.env.production` to a free subnet and an
+address inside it.
+
 ### Telegram bot runtime
 
 Capture over Telegram is off unless `TELEGRAM_ENABLED=true`, and it needs both a
@@ -295,10 +304,14 @@ AI classification and cache:
 | `npm run db:deploy` | apply existing migrations (production) |
 | `npm run db:status` | show migration state |
 | `npm run db:studio` | browse the database |
-| `npm run db:seed` | **development only** fictional data |
+| `npm run db:seed -- <new file>` | **development only**: creates a new database file with fictional records |
 | `npm run db:reset:dev` | **development only** drop + recreate |
 
-`db:seed` and `db:reset:dev` refuse to run when `NODE_ENV=production`.
+`db:seed` and `db:reset:dev` refuse to run when `NODE_ENV=production`. `db:seed`
+only ever **creates a new file** (R3-04): it has no default target and refuses any
+file named `dev.db`, the configured `DATABASE_URL`, a path that already exists
+(including an empty file or a symlink) and a missing folder. It applies the real
+migrations to the new file before adding the sample records.
 
 ## 4. Migrations
 
@@ -311,11 +324,29 @@ AI classification and cache:
 - Before deploying a migration: copy the database file (see backups) so a rollback
   is possible.
 
+**Round 3 migration `20261127120000_revoked_sessions`** (session revocation) is
+additive: one new table, `revoked_sessions`, and one index; no existing table
+changes. Apply it **before** starting the Round 3 code: without the table the
+session guard cannot check sign-outs and refuses every signed-in request with
+`503` (it fails closed). For the local database:
+
+```sh
+# 1. Stop the running server (npm run dev / dev:server).
+npm run recall -- backup --out backups          # 2. snapshot + JSON export
+npm run recall -- verify-backup backups/recall-<timestamp>.db
+npm run db:deploy                               # 3. applies only pending migrations
+npm run db:status                               # 4. expect "Database schema is up to date"
+```
+
+Under Docker the `migrate` service applies it on `up`; take a backup with the
+`backup` profile first.
+
 ## 5. Logging
 
 - Structured JSON on stdout (`info` and below) and stderr (`warn`, `error`, `fatal`).
 - One line per HTTP request: method, path without query string, status. Bodies and
-  query strings are never logged.
+  query strings are never logged. Caddy's access log (JSON on stdout) likewise
+  drops the query string from the request URI and the `Referer` header.
 - **Redacted by default:** `rawText`, `transcript`, `body`, `text`, `password`,
   `token`, `botToken`, `apiKey`, `secret`, `sessionSecret`, `authorization`,
   `cookie`. Set `LOG_MESSAGE_CONTENT=true` to see message text — local development
@@ -326,8 +357,18 @@ AI classification and cache:
 
 | Endpoint | Auth | Use |
 | --- | --- | --- |
-| `GET /api/health/live` | none | liveness — restart the process if this fails |
+| `GET /api/health/live` | none | liveness — the process answers HTTP |
+| `GET /api/health/scheduler` | none | reminder loop — `200 {"status":"ok"}`, or `503` with `"stopped"` or `"stalled"`; no other data. The container health check uses this |
 | `GET /api/health` | owner session | readiness — database, scheduler, providers, counts |
+
+**Stalled scheduler (N14):** the loop is *stalled* when it is running but no tick
+has finished for 10 tick intervals or 5 minutes, whichever is longer (5 minutes
+at the default 20 s interval). It is usually a tick stuck in a provider call or a
+locked database. The probe returns `503`, `/api/health` reports
+`status: "degraded"` with `scheduler.stalled: true`, Settings shows "Stalled", and
+the log records one error when the next interval fires (and an info line when it
+recovers). Docker marks the container unhealthy but does not restart it; alerting
+is Round 4 work.
 
 `GET /api/health` returns HTTP 200 with `status: "degraded"` when a dependency is
 down, and includes the database latency, scheduler state (last tick, due count)
@@ -346,21 +387,38 @@ memory. Configuration is via environment variables (validated at startup):
 | `SCHEDULER_INTERVAL_SECONDS` | `20` | How often the scheduler ticks and checks for due reminders. |
 | `REMINDER_MAX_ATTEMPTS` | `5` | Maximum delivery attempts before a reminder is marked `FAILED`. |
 | `REMINDER_RETRY_BASE_SECONDS` | `30` | Base delay for exponential backoff between retries. |
-| `REMINDER_OVERDUE_GRACE_HOURS` | `12` | On startup, overdue reminders inside this window fire once; older ones are marked `MISSED`. |
+| `REMINDER_OVERDUE_GRACE_HOURS` | `12` | Overdue reminders inside this window fire once; older ones are marked `MISSED`, at startup and on every tick. |
 | `QUIET_HOURS_START` / `QUIET_HOURS_END` | *(unset)* | Local-time window (HH:MM) during which notifications are deferred, not dropped. Supports wrap past midnight (e.g. `22:00` / `07:00`). |
 | `MAX_NOTIFICATIONS_PER_DAY` | `0` (unlimited) | Daily cap on delivered notifications. When reached, further deliveries are deferred to the next local day. |
 
-**Startup recovery:** when the process starts, the scheduler runs a recovery pass
-before the first tick. Reminders past their scheduled time but within the grace
-window are delivered; those beyond it are marked `MISSED` and their series (if
-recurring) advances to the next future occurrence. This prevents a notification
-storm after prolonged downtime.
+**Grace window (startup and every tick, R3-02):** reminders past their scheduled
+time but within the grace window are delivered; those beyond it are marked
+`MISSED` and their series (if recurring) advances to the next future occurrence.
+This runs in the recovery pass at startup *and* at the start of every tick, so a
+PC that wakes from sleep, or a scheduler that stalled, does not release a burst of
+stale notifications. The one exception is an attempt that quiet hours or the
+daily cap is holding back: the owner asked for that delay, so its grace window
+runs from the time it is released (a reminder held to the next day by the cap is
+still delivered). A "no channel configured" deferral does not protect a reminder.
+
+**Interrupted attempts:** an attempt left `SENDING` for more than 5 minutes (a
+crash, or a send whose result could not be recorded) is re-queued, at startup and
+on every tick, and retried with the same idempotency key. Recording an outcome
+(delivered, or failed plus the next retry) is one transaction, so a reminder can
+never be left `SCHEDULED` with only finished attempts.
+
+**No starvation:** each tick queues an attempt for up to 50 due reminders that do
+not already have an outstanding (`PENDING` or `SENDING`) attempt, oldest first.
+Reminders waiting out quiet hours, the daily cap or a retry therefore never crowd
+newer due reminders out of the batch.
 
 **Quiet hours and daily cap:** both defer rather than drop. A deferred delivery
 remains `PENDING` with a future `nextRetryAt`; it is retried on the next tick
-after the quiet window ends or the next local day begins. The `idempotencyKey`
-(`<reminderId>:<scheduledForIso>:<attempt>`) guarantees exactly-once delivery
-across restarts and concurrent processes.
+after the quiet window ends or the next local day begins. The unique
+`idempotencyKey` (`<reminderId>:<scheduledForIso>:<attempt>`) means an attempt is
+never created twice, across restarts and concurrent processes. Delivery itself is
+at-least-once: a crash between a successful send and its record can repeat one
+message; a message is never lost.
 
 **Recurrence:** `DAILY`, `WEEKLY` (with optional weekdays), and `MONTHLY` are
 supported. Occurrences are generated one at a time, each with a unique
@@ -371,6 +429,8 @@ affects only that occurrence.
 **Cancelling vs editing:** cancelling a reminder marks it `CANCELLED` and skips
 all pending deliveries. Editing the schedule (time or recurrence) of a series
 head cancels its pending children so the series restarts from the new definition.
+Cancel, snooze and a schedule edit are each one transaction (R3-04): a failure
+part-way changes nothing.
 
 ## 6b. Daily briefing
 
@@ -594,7 +654,9 @@ substitute for exercising the owner's real backup on the deployment host.
 | `Prisma CLI not found` in tests | Run `npm install` first. |
 | `Test template database missing` | The vitest `globalSetup` step failed; run `npx vitest run` and read the migration output. |
 | Login returns 503 | `DASHBOARD_PASSWORD` or `SESSION_SECRET` is unset on the server. |
-| 401 on every API call | The session cookie expired (`SESSION_TTL_HOURS`) or the secret changed. Sign in again. |
+| 401 on every API call | The session cookie expired (`SESSION_TTL_HOURS`), that session was signed out, or the secret changed. Sign in again. |
+| 503 "Recall cannot check your session right now" | The database is unavailable or busy, or the `revoked_sessions` migration has not been applied (`npm run db:status`). |
+| App container `unhealthy` | `/api/health/scheduler` is not `200`: the scheduler is still starting, stopped or stalled. Check `docker compose logs app` for "reminder scheduler stalled". |
 | 429 responses | Per-IP rate limit (240/min overall, 10/min on login, 120/min on the Telegram webhook). Expected under load, not a bug. |
 | All clients appear to share one rate-limit bucket | Recall is behind a proxy but `TRUST_PROXY` is `false`. Set it to the proxy address/CIDR; never enable it for direct client connections. |
 | Port already in use | Change `PORT`, or stop the other process. |
@@ -767,8 +829,12 @@ process still holds the database.
 
 - `restart: unless-stopped` restarts the app and Caddy after a crash or host
   reboot (provided the Docker service is enabled at boot).
-- The app image has a Docker healthcheck against `/api/health/live`; Caddy waits
-  for the app to become healthy before starting.
+- The app image has a Docker healthcheck against `/api/health/scheduler`, so the
+  container is unhealthy while the reminder loop is stopped or stalled (N14);
+  Caddy waits for the app to become healthy before starting.
+- Caddy serves the dashboard with a restrictive Content-Security-Policy, logs
+  access without query strings, and is the only address the app trusts for
+  `X-Forwarded-For` (R3-03). Base images are pinned by digest (R3-04).
 - `/api/health` (authenticated) reports database latency, scheduler state and
   provider configuration. A degraded dependency is visible without taking the
   process down.
@@ -779,6 +845,9 @@ process still holds the database.
   single delivery row without creating a duplicate. Because that stack used the
   `none` notifier, actual Telegram delivery and end-to-end exactly-once behavior
   still require a host test with a configured bot.
+- If the host's clock jumps (a PC waking from sleep), `/api/health/scheduler` can
+  read `stalled` until the next tick finishes, at most one tick interval; three
+  consecutive failures are needed before Docker marks the container unhealthy.
 - Logs are JSON on stdout; use `docker compose logs -f app caddy` and configure
   log rotation at the Docker daemon level.
 
@@ -833,6 +902,66 @@ executed because the Docker daemon was unavailable (`failed to connect to the
 docker API at npipe:////./pipe/dockerDesktopLinuxEngine`); no `.env.production` or
 live credentials were created. Compose validation also stopped because the
 referenced `.env.production` file was absent.
+
+#### Round 3 Docker drill (2026-11-27)
+
+Run on the Round 3 code (PR #10) with Docker Desktop 29.7.2, in two separate
+compose projects, `recall-r3drill` and `recall-r3restore`, each with its own new
+volumes and network. A throwaway env file with generated secrets replaced
+`env_file` (the real `.env.production` was never read), Caddy was published only
+on `127.0.0.1:18080/18443` (restore: `18081/18444`), and the `backup` service
+wrote to a scratch folder, not `./backups`. Telegram, AI and STT were off. Before
+and after, the existing Docker volumes, `dev.db`, `.env.production` and
+`backups/` were compared and were unchanged.
+
+```sh
+docker compose -p recall-r3drill --env-file <drill.env> -f compose.yaml -f <override> up -d
+docker compose -p recall-r3drill ... --profile backup run --rm backup
+docker compose -p recall-r3drill ... --profile backup run --rm backup node dist/cli.js verify-backup /backups/<file>.db
+```
+
+- **Build and start:** both base images pulled by their pinned digests; the
+  `migrate` container applied all five migrations (including
+  `20261127120000_revoked_sessions`) to a new volume; the app became healthy
+  under the `/api/health/scheduler` health check; Caddy took its fixed address
+  `172.31.250.10` and the app's `TRUST_PROXY` was exactly that.
+- **Headers (real responses through Caddy):** dashboard pages carry exactly
+  `DASHBOARD_CSP`; every `/api/*` response (200, 401 and 404) carries the API
+  policy `default-src 'none'; …` and `nosniff`; all carry HSTS,
+  `X-Frame-Options: DENY` and a Referrer-Policy, with no `Server` header; HTTP
+  redirects to HTTPS.
+- **Access log:** requests with marker words in the query string and the
+  `Referer` query, including `/api/search?q=…` and
+  `/api/restore/file?sha256=…&checkToken=…`, left **zero** occurrences in the
+  Caddy log and the app log. Caddy logged `/api/search` and a `Referer` of
+  `https://localhost:18443/search`.
+- **Spoofed `X-Forwarded-For`:** 12 wrong logins from the host through Caddy,
+  each with a different forged `X-Forwarded-For`/`X-Real-IP`: 10 × 401 then
+  429; the app recorded every one under the real client address (the network
+  gateway). 12 wrong logins from another container on the same network straight
+  to the app, claiming `X-Forwarded-For: 172.31.250.10, …`: 10 × 401 then 429,
+  recorded under that container's own address.
+- **Restart with a pending reminder:** a reminder became due and got one
+  attempt (deferred: no channel configured). After `docker compose restart app`
+  the app was healthy again in 15 s, recovery reported nothing missed or
+  re-queued, and two ticks later the reminder still had exactly one attempt,
+  identical to before. The session cookie stayed valid.
+- **Sign-out revocation:** a copy of a session cookie worked before sign-out,
+  sign-out returned `revoked: true`, and the copy was then refused (`revoked`).
+- **Backup:** the `backup` profile and a separate `verify-backup` both reported
+  integrity `ok`, 0 foreign-key violations, 5 migrations applied and 0
+  unfinished, and the same row counts as the live app (1 capture, 2 tasks, 1
+  reminder).
+- **Restore into a fresh volume:** in `recall-r3restore` (subnet
+  `172.31.251.0/24` through `RECALL_SUBNET`/`RECALL_PROXY_IP`), the verified
+  snapshot was copied into the new, empty data volume (byte-identical),
+  `migrate` found nothing pending, `verify-backup` on the restored file passed,
+  and the restored stack became healthy with identical counts, the same task and
+  capture text, the reminder and its identical delivery row. The cookie revoked
+  on the first stack was still refused on the restored one.
+
+Not covered by the drill: real Telegram delivery (no live calls in Round 3), a
+public domain with a trusted certificate, and the owner's own production backup.
 
 **Still pending:** a remote always-on host, public DNS and a publicly trusted TLS
 certificate, live Telegram/AI/STT calls, actual notification delivery and

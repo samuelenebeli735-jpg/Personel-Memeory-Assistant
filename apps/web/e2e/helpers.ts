@@ -7,7 +7,7 @@
  */
 import fs from 'node:fs';
 import AxeBuilder from '@axe-core/playwright';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,37 @@ export function readE2eEnv(): E2eEnv {
 }
 
 export const authStatePath = path.join(tmpDir, 'auth-state.json');
+
+/**
+ * A browser context with its own, freshly signed-in session.
+ *
+ * Signing out revokes the session on the server (R3-03), so a test that signs
+ * out must never use the shared session from `auth-setup.ts`: every later test
+ * would then carry a revoked cookie.
+ */
+export async function signedInContext(browser: Browser): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    locale: 'en-US',
+    timezoneId: 'UTC',
+    storageState: { cookies: [], origins: [] },
+  });
+  const page = await context.newPage();
+  await page.goto('/login');
+  await page.getByLabel('Password').fill(readE2eEnv().password);
+  await page.getByRole('button', { name: 'Sign In' }).click();
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('link', { name: 'Recall Home' })).toBeVisible();
+  await page.close();
+  return context;
+}
+
+/** The session cookie as a `Cookie` header value, to replay a copy of it. */
+export async function sessionCookieHeader(context: BrowserContext): Promise<string> {
+  const cookie = (await context.cookies()).find((c) => c.name === 'recall_session');
+  expect(cookie, 'a session cookie').toBeTruthy();
+  return `recall_session=${cookie!.value}`;
+}
 
 /** Unique test-data label; retries and reruns never collide in the same list. */
 export function uniqueLabel(prefix: string): string {

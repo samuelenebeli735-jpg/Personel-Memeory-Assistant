@@ -680,7 +680,7 @@ and one pull request: merged into `main` on 2026-11-26 as PR #7 (merge commit
 tests and production builds; the server suite with the test host at UTC and at
 UTC+14; and the browser suite in Edge with axe, 117/117 with zero retries. Locally at
 `900af51`: server 785/785 in both zones and web 125/125. The manual NVDA + Edge pass
-is still outstanding (see TESTING).
+has been completed by the owner (NVDA on Windows 10 with Microsoft Edge; see TESTING).
 
 | ID | Task | Commit(s) | Audit finding |
 | --- | --- | --- | --- |
@@ -728,13 +728,16 @@ is still outstanding (see TESTING).
 - Today's date field has one accessible name.
 - Ask says when a period simply has no records.
 
-**Still to do by the owner:**
+**Screen-reader pass (refinement 6): completed.** The owner performed the manual
+NVDA + Microsoft Edge verification on Windows 10 using the TESTING checklist and was
+satisfied with the results (recorded 2026-11-27). It had been blocked in the
+automated review because NVDA was not installed there.
 
-- A screen-reader pass with NVDA and Edge (refinement 6). It was **blocked** in the
-  automated review because NVDA is not installed; the checklist is in TESTING.
-- Production access logs. Caddy's default JSON access log records full request
-  URIs, including search text in `?q=` and the restore hash and token. This is
-  deployment work for R4: filter or drop query strings in `deploy/Caddyfile`.
+**Still open:**
+
+- Production access logs: **resolved in Round 3** (step 9, `f81caa4`). Caddy's
+  access log now drops the query string from the request URI and the `Referer`
+  header, so search text and the restore hash and token are no longer logged.
 
 ### Product boundary: ALIVE and Recall
 
@@ -760,6 +763,119 @@ conversational task creation to Recall, and none of these is claimed to exist.
 - the native Windows and Android clients, with native notifications replacing the
   temporary Telegram bridge (see the ALIVE architecture decision).
 
+## Round 3 — Testing and hardening  ·  **Done (PR #10, not merged)**
+
+Scope approved by the owner on 2026-11-27. Delivered as one branch,
+`feat/round3-hardening`, and one pull request. Design reviewed against `main` at
+`7fd78ce` before any implementation.
+
+**Deferred (not in Round 3):**
+
+- Telegram `/briefing` (N16): Telegram is a temporary bridge and is not extended.
+- The durable Telegram dead-letter table.
+- CI coverage thresholds.
+- External uptime monitoring and alerting: Round 4.
+
+| Step | Task | What changes | Files | Migration |
+| --- | --- | --- | --- | --- |
+| 1 | R3-04 `db:seed` (N11) | `prisma/seed.ts` never existed. Replace it with a seed that only creates a **new** disposable database. It refuses to run with `NODE_ENV=production`, refuses an existing or non-empty file, and refuses the configured `DATABASE_URL` and any `dev.db`, so it can never touch the owner's data. | `apps/server/prisma/seed.ts` (new), `apps/server/package.json` script, tests | No |
+| 2 | R3-04 Transactional snooze and cancel | Cancel (including a series) and snooze become one transaction each, so a failure can't leave a cancelled reminder with live deliveries. | `services/reminder-service.ts`, tests | No |
+| 3 | R3-02 Starvation (N13) | Due reminders that already have a `PENDING` or `SENDING` delivery are excluded from the queueing query, so 50+ deferred reminders can't hide newer due ones. The unique occurrence and idempotency keys still prevent duplicates. | `services/reminder-scheduler.ts`, tests | No |
+| 4 | R3-02 Periodic MISSED sweep (N13) | The grace-window sweep also runs while the app is running (for example after the PC wakes from sleep). It marks a reminder MISSED only if it is past grace **and** has no delivery deliberately deferred into the future by quiet hours or the daily cap. That keeps the "a deferred reminder is never lost" rule. Start-up recovery is unchanged. | `services/reminder-scheduler.ts`, tests | No |
+| 5 | N14 Scheduler liveness | A scheduler that is running but hasn't completed a tick within the stale limit is reported as stalled. A public, data-free `/api/health/scheduler` returns 503 when stalled, and the compose health check uses it. | `services/reminder-scheduler.ts`, `http/routes/*health*`, `compose.yaml`, shared types, tests | No |
+| 6 | R3-03 Session revocation (N15) | Signing out records the token's `nonce` in a new `RevokedSession` table; the session guard refuses a revoked token, even a copied one. Expired rows are pruned. Existing tokens keep working. | `prisma/schema.prisma`, a new additive migration, `http/auth.ts`, `http/session-guard.ts`, `routes/public-routes.ts`, tests | **Yes, additive:** one new table, no existing table changed |
+| 7 | R3-03 CSP and headers | A restrictive CSP in Caddy. `script-src 'self'` with no exceptions. The one documented exception is `style-src-attr 'unsafe-inline'`, for React inline `style` attributes only; `<style>` elements stay `'self'`. The same CSP is served by `vite preview`, so the browser suite runs under it, and a test keeps the two identical. The API sends its own restrictive CSP. | `deploy/Caddyfile`, `apps/web/vite.config.ts`, `http/server.ts`, tests | No |
+| 8 | R3-03 Trusted proxy | The compose network gets a fixed subnet, and `TRUST_PROXY` names it, so the app trusts only Caddy for client addresses. | `compose.yaml`, `.env.production.example`, `docs/OPERATIONS.md` | No |
+| 9 | R3-03 Access-log redaction | Caddy's access log drops query strings from the request URI and the `Referer` header (search words, restore hash and token). | `deploy/Caddyfile` | No |
+| 10 | R3-04 Image digests | Pin `node:24-bookworm-slim` and `caddy:2-alpine` to their multi-architecture index digests. | `Dockerfile` | No |
+| 11 | R3-04 N17 | Run the web suite 20 times under load. Fix any flaky test found, or record "not reproduced". | Web tests as needed | No |
+| 12 | R3-05 Docker drill | Rebuild and start in a **separate compose project with disposable volumes**. Check health, restart with a pending reminder, backup, restore into a fresh volume, the CSP and log redaction. Needs Docker Desktop running and about 250–300 MB of downloads for the first build. | `docs/OPERATIONS.md` (recorded drill) | No |
+| 13 | R3-01 and docs | Record the Round 2 browser, axe and owner NVDA evidence, the Round 3 results, and TESTING and OPERATIONS updates. | `docs/*` | No |
+
+**Data and delivery risks, and how they are contained:**
+
+- **The migration** is additive (a new table only). It is never run against
+  `dev.db` by tests. The owner applies it with the normal migrate command, and
+  should take a backup first.
+- **Periodic MISSED sweep:** a reminder more than 12 hours past due (the default
+  grace) while the app was suspended becomes MISSED instead of arriving late. Quiet
+  hours and the daily cap keep their deferral.
+- **The starvation change** alters which reminders are queued, not how they are
+  delivered. The occurrence and idempotency keys still make duplicates impossible.
+  Tests cover 60+ deferred reminders, restarts and duplicates.
+- **CSP:** a too-strict policy could break the dashboard (for example the export
+  download). The browser suite runs under the CSP to catch that.
+- **Trusted proxy:** a wrong value makes everyone share one rate-limit bucket, or
+  lets clients spoof addresses. The drill checks the login limit with spoofed
+  `X-Forwarded-For`.
+- **Tests and seeds** use temporary databases only. The Docker drill uses its own
+  compose project and volumes and never touches existing volumes.
+
+### Round 3 results (2026-11-27)
+
+All 13 steps are implemented and verified on `feat/round3-hardening` (PR #10).
+The Docker drill (step 12) ran on 2026-11-27 against the real Caddy and app
+containers; its commands and results are recorded in OPERATIONS ("Round 3 Docker
+drill"). Test figures are in TESTING.
+
+| Step | Commit | Result |
+| --- | --- | --- |
+| 1 `db:seed` (N11) | `cd0f015` | Creates only a new file. Refusals tested: production, no target, the configured `DATABASE_URL` (absolute, relative, not yet existing), any `dev.db` in any case, an existing empty or non-empty file or folder, a missing folder, a symlink (Linux CI; Windows lacks the privilege), and a file created between the checks and the write. The real `npm run db:seed` refused `dev.db` with its hash unchanged. |
+| 2 Transactional snooze and cancel | `6cb54af`, `6d629eb` | Cancel (with its series), snooze and a schedule edit are each one transaction. Injected failures roll back fully; the rollback tests fail on the old code. |
+| 3 Starvation (N13) | `d039a27` | Reminders with an outstanding attempt are left out of the queueing batch. Before relying on that, stuck states were closed: stale `SENDING` attempts are re-queued on every tick (not only at startup), a `PENDING` row without a time is processed, and recording an outcome is one transaction. Six of the new tests fail on the old code. |
+| 4 Periodic MISSED sweep (N13) | `1df113e` | The grace window applies at startup and on every tick; quiet-hours and daily-cap deferrals are kept until released. Seven of the new tests fail on the old code. |
+| 5 Scheduler liveness (N14) | `de316dd` | `/api/health/scheduler` (public, one word) returns 503 when stopped or stalled; `/api/health` is degraded; the compose and Dockerfile health checks use it. Autoheal and alerting stay in Round 4. |
+| 6 Session revocation (N15) | `d86b40e` | Additive migration `20261127120000_revoked_sessions` (one table, one index). Sign-out revokes that session; a copy is refused; the guard fails closed. **Not applied to `dev.db`**; see OPERATIONS §4. |
+| 7 CSP | `fbaed39` | One policy in `apps/web/src/csp.ts`, served by Caddy and `vite preview`; the API sends its own. A browser spec checks every page for violations. |
+| 8 Trusted proxy | `1239d48` | Caddy has a fixed address on a fixed subnet and is the only proxy the app trusts. A spoofed `X-Forwarded-For` cannot dodge the login limit. |
+| 9 Access-log redaction | `f81caa4` | Query strings are stripped from the URI and `Referer` in Caddy's log (configuration-tested; the real Caddy check is part of the drill). |
+| 10 Image digests | `23e0f17` | Both base images pinned to multi-architecture index digests; a test refuses an unpinned `FROM`. |
+| 11 N17 | — | **Not reproduced:** the web suite passed 20 out of 20 runs (131/131 each) while the full server suite ran alongside as load. No test changed. |
+| 12 Docker drill | — | **Done** on real containers in isolated projects: real CSP and API headers; no query strings or `Referer` query data in the Caddy or app logs; spoofed `X-Forwarded-For` limited from the host and from a neighbouring container; one pending attempt kept, not duplicated, across a restart; backup and `verify-backup`; restore into a fresh volume with identical data. No defect found. |
+| 13 R3-01 and docs | `2091e6c` and this commit | The owner's NVDA record (same wording as PR #9, cherry-picked so the two merge in either order), the Round 3 results, and TESTING, OPERATIONS and SECURITY updates. |
+
+**Deviations from the design:**
+
+- **Start-up recovery changed slightly** (step 4). The design said it stays
+  unchanged. It now uses the same rule as the periodic sweep, so a restart no
+  longer marks a reminder MISSED while quiet hours or the daily cap still hold it
+  back (before, a reminder held to the next day by the cap was lost on a restart).
+  It also finishes more than one batch of 50 over the following ticks instead of
+  sending the rest late. Reverting to the old start-up behaviour is a small change
+  if preferred.
+- **Schedule edits** became transactional too (step 2): they had the same flaw as
+  snooze and would otherwise have interfered with step 3.
+- **Outcome records** became transactional (step 3), so that no stuck state can
+  hold a reminder back once outstanding attempts are excluded.
+- **Proxy trust** names Caddy's fixed address rather than the whole subnet (step 8).
+  It is stricter, and the subnet is still fixed.
+- **Fail-closed session guard** (step 6): if the sign-out list cannot be read,
+  requests are refused with 503, except the data-free health report and session
+  probe.
+
+**Corrections from the final audit:**
+
+- Sign-out reported `revoked: false` if pruning old rows failed after the
+  session had been revoked; pruning is now separate housekeeping, and the
+  response is accurate (tested).
+- A schedule edit cancelled the series' generated occurrences but left their
+  armed attempts `PENDING` (the scheduler would have skipped them when reached);
+  it now skips them in the same transaction, as cancel does (tested).
+
+**Remaining risks:**
+
+- The browser suite under the CSP has not run locally (ports 4000 and 5173 were
+  held by the owner's running development servers, which were not stopped). It
+  passed in CI: run `45932147328`, 119/119 with zero retries. Its first CI run
+  showed that sign-out tests must use their own session now that sign-out revokes
+  on the server (fixed in `1101735`).
+- Delivery through a real channel was not exercised: Telegram was off in the drill
+  (no live calls in Round 3), so the pending attempt was deferred, not sent.
+- Delivery stays at-least-once. If recording a successful send fails, that one
+  message can be sent again once the attempt is stale (5 minutes).
+- The new code must not start before the migration is applied, or every signed-in
+  request gets a 503.
+
 ## Master completion checklist
 
 Moved here from §19 of the 2026-11-17 audit; this file is now the source of truth.
@@ -780,7 +896,8 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
     server 766/766 with the test host at UTC+14 and at UTC, web 67/67, browser
     80/80 with axe and zero retries, typechecks and production builds pass, Prisma
     schema valid with no migration drift.
-- [ ] Local Docker drill re-run on the current code (R3-05)
+- [x] Round 3 hardening (R3-02 to R3-04, N14) implemented and tested on `feat/round3-hardening` (one pull request, not merged)
+- [x] Local Docker drill re-run on the current code (R3-05) — 2026-11-27, isolated projects, recorded in OPERATIONS
 - [ ] Host deployed with trusted TLS (R4-01)
 - [ ] Live Telegram capture and delivery verified (R4-02)
 - [ ] Live AI and speech-to-text smoke tests (R4-03)
@@ -791,16 +908,18 @@ Moved here from §19 of the 2026-11-17 audit; this file is now the source of tru
 **Resolved by Round 2 (merged, PR #7):** N7 dashboard gaps, N8 silent create-modal
 failures, N9 `capturesApi` contract drift.
 
-**Still open from the audit:** N11 `db:seed` points at a missing file; N13
-MISSED sweep only at startup and queue starvation; N14 no autoheal or alerting;
-N15 no session revocation or CSP; N16 no Telegram `/briefing`; N17 one web test
-failed once under load (not seen since; cause unknown).
+**Resolved by Round 3 (on `feat/round3-hardening`, not yet merged):** N11 safe
+`db:seed`; N13 periodic MISSED sweep and no queue starvation; N14 stalled-scheduler
+detection and health check; N15 session revocation and CSP; N17 not reproduced in
+20 runs under load.
 
-**Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`); its
-manual NVDA + Edge pass is still outstanding. Round 3 is not started except in part:
-R3-01's browser suite was extended for Round 2 features (now on `main`), and R3-02's
-briefing window
-was delivered as R1-06 (its MISSED sweep and queue-starvation work remain open).
+**Still open from the audit:** N14 autoheal and alerting (Round 4); N16 Telegram
+`/briefing` (deferred: Telegram is a temporary bridge).
+
+**Later rounds:** Round 2 (R2-01 to R2-07) is done and merged (PR #7, `5c8f9a4`),
+including the owner's manual NVDA + Edge pass. Round 3 is implemented on
+`feat/round3-hardening` including its Docker drill (PR #10; see Round 3 above); R3-02's
+briefing window had already been delivered as R1-06.
 In Round 4, R4-01 to R4-04 are blocked on a host, a domain and credentials, and
 R4-05 (docs reconciled, release tagged) is not started.
 
@@ -820,6 +939,23 @@ R4-05 (docs reconciled, release tagged) is not started.
 
 ## Test-data policy
 
-`npm run db:seed` is **development and test only**. It refuses to run when
-`NODE_ENV=production`, and it never runs automatically. The owner's real database
-is never populated with fabricated history.
+`npm run db:seed -- <new file>` is **development and test only**, and it never
+runs automatically. It only creates a **new** disposable database with clearly
+fictional "Sample:" records. The owner's real database is never populated with
+fabricated history.
+
+*Correction (Round 3, 2026-11-27):* this section previously described a production
+refusal, but the script it named (`prisma/seed.ts`) never existed, so
+`npm run db:seed` simply failed (N11). The seed now exists (R3-04), and before
+writing anything it refuses:
+
+- `NODE_ENV=production`;
+- a missing target (there is no default);
+- any file named `dev.db`;
+- the configured `DATABASE_URL`, compared by real path, with symlinked and
+  junctioned folders resolved;
+- any target that already exists: a file, an empty file, a folder or a symlink.
+
+It creates the file with an exclusive "create new" open, so a file that appears
+in the meantime is never overwritten. Every refusal is covered by
+`tests/integration/seed.test.ts`.

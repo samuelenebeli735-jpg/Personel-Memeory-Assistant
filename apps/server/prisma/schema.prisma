@@ -371,3 +371,17 @@ model BriefingDelivery {
   @@index([deliveredAt])
   @@map("briefing_deliveries")
 }
+
+/// A dashboard session that was signed out before it expired (R3-03, N15).
+/// The session guard refuses a token whose nonce is listed here, so a copied
+/// cookie stops working at sign-out. Rows are pruned once the token would have
+/// expired anyway. Holds no personal data: a random nonce and two times.
+model RevokedSession {
+  nonce     String   @id
+  /// When the token itself expires; after this the row is no longer needed.
+  expiresAt DateTime
+  revokedAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("revoked_sessions")
+}

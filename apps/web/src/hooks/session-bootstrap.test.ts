@@ -15,7 +15,7 @@ const health = {
   version: 'test',
   uptimeSeconds: 1,
   database: { connected: true, latencyMs: null },
-  scheduler: { running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0 },
+  scheduler: { running: false, lastTickAt: null, dueNow: 0, scheduledTotal: 0, stalled: false, stallLimitSeconds: 0 },
   providers: {
     ai: { provider: 'none', configured: false, enabled: false },
     stt: { provider: 'none', configured: false, enabled: false },

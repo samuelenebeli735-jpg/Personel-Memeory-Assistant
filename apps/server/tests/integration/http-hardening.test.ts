@@ -5,10 +5,13 @@
  * observed through `request.ip`, and the public webhook is driven through the
  * same route-level rate limiter used in production.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
-import { buildServer, GLOBAL_RATE_LIMIT_PER_MINUTE, type BuildServerOptions } from '../../src/http/server.js';
+import { API_CSP, buildServer, GLOBAL_RATE_LIMIT_PER_MINUTE, type BuildServerOptions } from '../../src/http/server.js';
 import { createTestContext, type EnvOverrides } from '../helpers/app.js';
 import { createTestDatabase, type TestDb } from '../helpers/db.js';
 
@@ -209,5 +212,131 @@ describe('HTTP boundary hardening', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('API security headers (R3-03)', () => {
+  it('every API response, including errors and unknown routes, forbids loading or running anything', async () => {
+    const app = await buildApp();
+    try {
+      for (const [method, url] of [
+        ['GET', '/api/health/live'],
+        ['GET', '/api/health/scheduler'],
+        ['GET', '/api/settings'],
+        ['GET', '/api/nope'],
+        ['POST', '/api/auth/login'],
+      ] as const) {
+        const response = await app.inject({ method, url, ...(method === 'POST' ? { payload: {} } : {}) });
+        expect(response.headers['content-security-policy'], `${method} ${url}`).toBe(API_CSP);
+        expect(response.headers['x-content-type-options'], `${method} ${url}`).toBe('nosniff');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('the API policy allows nothing at all', () => {
+    expect(API_CSP).toMatch(/^default-src 'none';/);
+    expect(API_CSP).toContain("frame-ancestors 'none'");
+    expect(API_CSP).not.toMatch(/'self'|unsafe/);
+  });
+});
+
+describe('trusted proxy under Docker Compose (R3-03)', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const compose = fs.readFileSync(path.join(repoRoot, 'compose.yaml'), 'utf8');
+  const proxyDefault = /ipv4_address: \$\{RECALL_PROXY_IP:-([\d.]+)\}/.exec(compose)?.[1];
+  const subnetDefault = /subnet: \$\{RECALL_SUBNET:-([\d.]+)\/(\d+)\}/.exec(compose);
+
+  it('compose pins the subnet and Caddy, and trusts exactly that address', () => {
+    expect(proxyDefault).toBe('172.31.250.10');
+    expect(subnetDefault?.slice(1)).toEqual(['172.31.250.0', '24']);
+    // The app's TRUST_PROXY comes from the same variable and default as Caddy's address.
+    expect(compose).toContain(`TRUST_PROXY: \${RECALL_PROXY_IP:-${proxyDefault}}`);
+    // The address is inside the subnet (/24: same first three octets).
+    expect(proxyDefault!.split('.').slice(0, 3)).toEqual(subnetDefault![1]!.split('.').slice(0, 3));
+    // The example env no longer sets a broad range itself.
+    const example = fs.readFileSync(path.join(repoRoot, '.env.production.example'), 'utf8');
+    expect(example).not.toMatch(/^TRUST_PROXY=/m);
+  });
+
+  const viaCaddy = { remoteAddress: '172.31.250.10' };
+
+  it('honours X-Forwarded-For from Caddy only, not from another container on the network', async () => {
+    const app = await buildApp({ TRUST_PROXY: proxyDefault! });
+    try {
+      const fromCaddy = await app.inject({ method: 'GET', url: '/test/ip', ...viaCaddy, headers: { 'x-forwarded-for': '203.0.113.7' } });
+      expect(fromCaddy.json()).toEqual({ ip: '203.0.113.7' });
+      const neighbour = await app.inject({
+        method: 'GET',
+        url: '/test/ip',
+        remoteAddress: '172.31.250.11',
+        headers: { 'x-forwarded-for': '203.0.113.7' },
+      });
+      expect(neighbour.json()).toEqual({ ip: '172.31.250.11' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('a spoofed X-Forwarded-For cannot dodge the login limit', async () => {
+    const app = await buildApp({ TRUST_PROXY: proxyDefault! }, { enableRateLimit: true });
+    const login = (remoteAddress: string, forwardedFor: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress,
+        headers: { 'x-forwarded-for': forwardedFor },
+        payload: { password: 'wrong-password' },
+      });
+    try {
+      // A direct client rotating forged addresses still shares one bucket.
+      for (let i = 0; i < 10; i += 1) expect((await login('198.51.100.9', `203.0.113.${i}`)).statusCode).toBe(401);
+      expect((await login('198.51.100.9', '203.0.113.99')).statusCode).toBe(429);
+
+      // Through Caddy, one real client is limited on its own address ...
+      for (let i = 0; i < 10; i += 1) expect((await login(viaCaddy.remoteAddress, '192.0.2.50')).statusCode).toBe(401);
+      expect((await login(viaCaddy.remoteAddress, '192.0.2.50')).statusCode).toBe(429);
+      // ... without locking out a different client behind the same proxy.
+      expect((await login(viaCaddy.remoteAddress, '192.0.2.51')).statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('Caddy access log redaction (R3-03)', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const caddyfile = fs.readFileSync(path.join(repoRoot, 'deploy', 'Caddyfile'), 'utf8');
+  const logBlock = /\n\tlog \{[\s\S]*?\n\t\}/.exec(caddyfile)?.[0] ?? '';
+
+  it('drops the query string from the request URI and the Referer header', () => {
+    expect(logBlock).toContain('format filter {');
+    expect(logBlock).toContain('wrap json');
+    expect(logBlock).toMatch(/request>uri regexp "\[\?\]\.\*\$" ""/);
+    expect(logBlock).toMatch(/request>headers>Referer regexp "\[\?\]\.\*\$" ""/);
+    expect(logBlock).not.toMatch(/^\s*format json\s*$/m);
+  });
+
+  it('the redaction pattern keeps the path and removes everything from "?"', () => {
+    // The same regular expression Caddy applies (Go RE2 and JavaScript agree on it).
+    const redact = (value: string) => value.replace(/[?].*$/, '');
+    expect(redact('/api/search?q=private+words')).toBe('/api/search');
+    expect(redact('/api/export/restore/file?sha256=abc&token=t')).toBe('/api/export/restore/file');
+    expect(redact('https://recall.example/search?q=secret')).toBe('https://recall.example/search');
+    expect(redact('/tasks')).toBe('/tasks');
+  });
+});
+
+describe('Docker base images are pinned (R3-04)', () => {
+  it('every external FROM image carries a sha256 index digest', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf8');
+    const stages = new Set([...dockerfile.matchAll(/^FROM\s+\S+\s+AS\s+(\S+)/gim)].map((m) => m[1]!.toLowerCase()));
+    const external = [...dockerfile.matchAll(/^FROM\s+(\S+)/gim)]
+      .map((m) => m[1]!)
+      .filter((image) => !stages.has(image.toLowerCase()));
+    expect(external.length).toBeGreaterThanOrEqual(3);
+    for (const image of external) expect(image).toMatch(/^[a-z0-9./-]+:[\w.-]+@sha256:[0-9a-f]{64}$/);
   });
 });

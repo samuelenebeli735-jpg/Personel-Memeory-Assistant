@@ -211,6 +211,40 @@ complete.
 
 ## Current results
 
+**Round 3, on `feat/round3-hardening` (PR #10, not merged), 2026-11-27.**
+
+**CI** (GitHub Actions, Linux) on `fdb81f3` (after the Docker drill and final
+audit), run `46014103837`: all four jobs passed. (Earlier run `45932147328` on
+`1101735`: the same, with 843 server tests.)
+
+- Browser (Edge, axe in light and dark, under the production CSP): **119/119**,
+  zero retries, none flaky.
+- Server: **844/844** with the test host at UTC+14 and at UTC (the file-symlink
+  seed test runs on Linux).
+- Typechecks, Prisma validation, migration drift check, web **131/131** and the
+  production builds: passed.
+
+The first CI run (`45928754103`, on `a645013`) had the browser job cancelled at
+its time limit; the cause and fix are under "Round 3 hardening" below.
+
+The Docker drill (R3-05) on real containers is recorded in OPERATIONS ("Round 3
+Docker drill").
+
+Local results (Windows, Node v24.17.0; each suite run alone unless stated):
+
+- Server: **843 passed, 1 skipped (844)** with the test host at UTC+14 and again at
+  UTC. The skipped test is the file-symlink refusal of `db:seed`: Windows does not
+  let the test process create file symlinks, so it runs on Linux CI only.
+- Dashboard (web): **131/131**.
+- N17: the web suite passed **20 out of 20 runs** (131/131 each) while the full
+  server suite ran alongside as load (that server run also passed, 842 + 1
+  skipped). Not reproduced; no test changed.
+- Typechecks (shared, server, web), the production builds, Prisma validation and
+  the migration drift check pass.
+- Browser: **not run locally** for Round 3. Ports 4000 and 5173 were held by the
+  owner's running development servers, which were left running. The CI figure
+  above is the browser result.
+
 **Round 2, merged into `main` as PR #7 (merge commit `5c8f9a4`, reviewed head
 `900af51`), 2026-11-26.**
 
@@ -244,8 +278,8 @@ alone):
 server 784/784 in both zones, web 124/124, browser 115/115 run alone with zero
 retries.
 
-The manual NVDA + Edge test is **not** part of these results. It remains
-outstanding and unperformed (see the Round 2 accessibility verification record).
+The manual NVDA + Edge test is separate from these automated results. It has been
+completed by the owner (see the Round 2 accessibility verification record).
 
 Run the server and browser suites one at a time on Windows. Running them together
 on this machine made SQLite writes and Playwright actions time out (those failures
@@ -631,15 +665,19 @@ click-throughs and accessibility audit.
 
 ### Round 2 accessibility verification record (2026-11-26)
 
-**Status: OUTSTANDING. The manual NVDA + Microsoft Edge test has not been done.** It
-remains open after the PR #7 merge and is the owner's to perform with the checklist
-below; record each item's result here.
+**Status: COMPLETED.** The manual NVDA + Microsoft Edge verification was performed
+by the owner using NVDA on Windows 10 with Microsoft Edge, against the merged
+Round 2 application, following the checklist below. The owner confirmed that every
+planned manual test was performed and that the results were satisfactory.
+Recorded 2026-11-27.
 
-**NVDA + Microsoft Edge: BLOCKED, not performed.** NVDA is not installed on the
-development PC, and installing it is a system install (about a 40 MB download).
-A screen-reader test also needs a person listening to speech while driving the
-keyboard at the operating-system level, which the automated session cannot do. No
-NVDA result is claimed. The owner's checklist is below.
+**What is not recorded:** individual per-item results, the NVDA version and any
+measurements. Only the owner's confirmation above is on record.
+
+*History:* in the automated final review (2026-11-26) this test was **blocked**.
+NVDA was not installed on the development PC, and a screen-reader test needs a
+person listening to speech, so that session claimed no NVDA result and handed the
+checklist to the owner.
 
 **What was verified instead (automated, Edge via Playwright):**
 
@@ -657,7 +695,7 @@ NVDA result is claimed. The owner's checklist is below.
 | Keyboard: Tab order, J/K, modifiers and fields ignored | **Passed** | `browser-workflows.spec.ts`, `inbox.spec.ts` |
 | Offline, 429, 5xx, 401 and loading states | **Passed** | `errors.spec.ts`, `today-ask.spec.ts`, `edit-delete.spec.ts`, `your-data.spec.ts` |
 | Reflow at 320 px and at 200% zoom (640 CSS px) without sideways scrolling | **Passed** | `errors.spec.ts`, `a11y-structure.spec.ts` |
-| What NVDA actually speaks, and whether toasts are announced once | **Not tested** | Needs NVDA (see below) |
+| What NVDA actually speaks, and whether toasts are announced once | **Not covered by automation** | Covered by the owner's manual NVDA + Edge pass (status above) |
 
 **Defects found by the review and fixed:**
 
@@ -669,10 +707,13 @@ NVDA result is claimed. The owner's checklist is below.
 3. **Ask, empty period:** a date question with nothing in the period said "No
    records matched … Try other words". It now says no records fall in that period.
 
-**Risk to check with NVDA:** each toast carries its own `status`/`alert` role
-inside an always-present live region, which some screen readers announce twice.
+**Risk the NVDA pass was asked to check:** each toast carries its own
+`status`/`alert` role inside an always-present live region, which some screen
+readers announce twice. This was a checklist item; the owner's pass reported no
+issue needing a fix.
 
-**Owner's NVDA + Edge checklist** (record each item as passed or failed, with notes):
+**Owner's NVDA + Edge checklist** (used for the completed manual pass; individual
+item results were not recorded separately):
 
 - Landmarks list (NVDA+F7) shows Main navigation, main and Notifications on every page.
 - Headings (H, 1) read in order on Today, Ask, Inbox, Tasks and Your data.
@@ -688,6 +729,62 @@ inside an always-present live region, which some screen readers announce twice.
   announced; the restore report table reads its headers.
 - Offline and "Can't reach Recall" banners are announced; "Check again" works.
 - 200% zoom in Edge (Ctrl and +): nothing is cut off and nothing scrolls sideways.
+
+### Round 3 hardening (R3-02 to R3-04, N14)
+
+All against real SQLite databases built from the real migrations. Where a test
+proves a fix, it was also run against the previous code and failed there.
+
+- `seed.test.ts` (12): `db:seed` creates only a new file. It refuses
+  production, a missing target, the configured `DATABASE_URL` (absolute,
+  relative to the Prisma folder, or not yet existing), any `dev.db` in any case,
+  an existing empty or non-empty file or a folder, a missing folder, and a symlink
+  or dangling symlink (Linux only). It resolves a junction to its real path and
+  never overwrites a file created between the checks and the write. A stand-in
+  owner database is hash-checked unchanged.
+- `reminder-atomicity.test.ts` (7): a real write failure injected part-way
+  through cancel (with its series), snooze or a schedule edit rolls the whole
+  operation back; a schedule edit also skips the old occurrences' armed attempts.
+- `reminder-scheduler-hardening.test.ts` (18):
+  - starvation: 60 deferred reminders plus one new one; 61 queued once each
+    during quiet hours and delivered once each when they end;
+  - recovery while running: a send that throws is re-queued once stale, without
+    a restart; a `PENDING` row without a time is processed;
+  - atomic outcome records: a failed "delivered" or "failed + retry" record
+    leaves the attempt `SENDING`, never a stuck `SCHEDULED` reminder;
+  - restart during quiet hours keeps every deferral and creates no second
+    attempt; two schedulers ticking at once send each occurrence once;
+  - the grace window on every tick: more than 12 hours late becomes MISSED, a
+    stale retry does not keep a reminder alive, a daily-cap deferral released
+    after the window is kept (by a tick and by a restart) and delivered, quiet
+    hours released long ago or recently, a "no channel" deferral, 60
+    offline-missed reminders at startup, and a missed series occurrence
+    advancing once.
+- `scheduler-liveness.test.ts` (4): `/api/health/scheduler` is 503 "stopped"
+  before start and after stop, stays "ok" while ticks finish, and becomes 503
+  "stalled" (with `/api/health` degraded and one logged error) when a tick hangs
+  past the limit, then recovers. The probe returns one field.
+- `session-revocation.test.ts` (10): a copied cookie or bearer token is refused
+  after sign-out; other sessions keep working; older tokens are revocable;
+  repeated or forged sign-outs are harmless; expired rows are pruned; a failed
+  revocation still clears the cookie and says so; a failed prune still reports
+  (and keeps) the revocation; an unreadable list fails closed
+  (503) except for the health report and session probe; the migration only
+  creates its table and index.
+- `http-hardening.test.ts` (+8): the API CSP and `nosniff` on every response; only
+  Caddy's compose address is trusted, and a spoofed `X-Forwarded-For` cannot dodge
+  the login limit; the Caddy log filter; every external `FROM` pinned by digest.
+- Web `src/csp.test.ts` (6): the Caddyfile and `vite preview` serve exactly
+  `DASHBOARD_CSP`; the policy stays strict, with one exception
+  (`style-src-attr`); the page has no inline script.
+- Browser `e2e/csp.spec.ts` (2): every page loads under the production CSP with
+  no violations, and an injected inline script does not run.
+- Browser sign-out tests (`auth.spec.ts`, `browser-workflows.spec.ts`) now sign in
+  with their own session (`signedInContext` in `e2e/helpers.ts`). The first CI
+  run of this branch showed why: signing out now revokes the session on the
+  server, so a test that signed out with the shared session from
+  `auth-setup.ts` left every later test with a revoked cookie. The `auth.spec.ts`
+  test also proves that a copy of the signed-out cookie gets `401`.
 
 ### Atomicity of derivation
 

@@ -58,15 +58,22 @@ user activity, monitoring of other applications.
 - A `Authorization: Bearer <token>` header is accepted for scripts and tests.
 - **Authorization is enforced in a Fastify `preHandler` hook on the whole `/api`
   scope**, not by hiding UI. `GET /api/health` and every personal-data route return
-  401 without a valid session. Only `/api/auth/*` and `/api/health/live` are public,
-  and they expose no stored data.
-- Logout clears the cookie.
+  401 without a valid session. Only `/api/auth/*`, `/api/health/live` and
+  `/api/health/scheduler` are public, and they expose no stored data.
+- Signing out clears the cookie **and revokes that session on the server**
+  (R3-03): the token's random nonce is recorded in `revoked_sessions`, and the
+  session guard refuses it from then on, so a copied cookie or bearer token stops
+  working too. Other sessions are unaffected. A row is pruned once its token
+  would have expired anyway. If the list cannot be read (the database is down or
+  busy) the guard fails closed with `503`; only the data-free health report and
+  session probe still answer.
 
 ### Not yet implemented (tracked in the roadmap)
 
 - Password hashing/rotation (a single shared secret is used; there is no user table).
 - Multi-factor authentication.
-- Per-device session revocation (changing `SESSION_SECRET` revokes everything).
+- "Sign out everywhere" (changing `SESSION_SECRET` still revokes every session at
+  once; signing out revokes only the current one).
 
 ## 3. Input validation
 
@@ -101,6 +108,17 @@ user activity, monitoring of other applications.
 - Proxy trust is opt-in. `TRUST_PROXY` defaults to `false`; enabling it without a
   trusted reverse proxy would let a client choose its own `X-Forwarded-For` and
   bypass the per-IP limiter. A configured value is passed to Fastify/proxy-addr.
+  Under the provided compose stack the app trusts **Caddy's fixed address only**
+  (`RECALL_PROXY_IP` on the fixed `RECALL_SUBNET`), not the Docker range (R3-03).
+- Content-Security-Policy (R3-03). The dashboard (Caddy, and `vite preview` for
+  the browser suite) allows scripts, style sheets and everything else from its
+  own origin only, blocks plugins, `<base>` and framing, and lets forms post
+  only to itself. The single exception is `style-src-attr 'unsafe-inline'`, for
+  inline `style` attributes; `<style>` elements stay `'self'`. The policy lives
+  in `apps/web/src/csp.ts` and a test keeps the Caddyfile identical. Every API
+  response sends `default-src 'none'; frame-ancestors 'none'; base-uri 'none';
+  form-action 'none'` and `X-Content-Type-Options: nosniff`.
+- The Docker base images are pinned to multi-architecture index digests (R3-04).
 - Provider base URLs must be `http(s)` and must not embed credentials or a
   fragment. Outside development, plain `http://` is accepted only for loopback
   hosts (`localhost`, `127.0.0.0/8`, `::1`) so a self-hosted model can run
@@ -139,6 +157,8 @@ user activity, monitoring of other applications.
   default. `LOG_MESSAGE_CONTENT=true` is for local development only.
 - HTTP request logs contain the method, the path *without* the query string, and
   the status code. Query strings can contain search terms, so they are excluded.
+  Caddy's access log follows the same rule (R3-03): the request URI and the
+  `Referer` header are logged without their query string.
 - `Error` objects are logged as `{name, message}` — never with captured payloads.
 - The owner's own text (capture text, voice transcripts, and records quoted as
   evidence for Ask) is sent to an AI provider only when **all three** hold: a
@@ -302,6 +322,18 @@ for the server or web dependency trees other than that chain).
       (`capture-api.test.ts`).
 - [x] `X-Forwarded-For` is ignored unless `TRUST_PROXY` is enabled; a trusted
       proxy's header is used for the client IP (`http-hardening.test.ts`).
+- [x] Under compose, only Caddy's address is trusted; a spoofed `X-Forwarded-For`
+      cannot dodge the login limit (`http-hardening.test.ts`).
+- [x] A signed-out session is refused even when replayed from a copy; other
+      sessions keep working; the guard fails closed if it cannot check
+      (`session-revocation.test.ts`).
+- [x] The dashboard CSP is identical in the Caddyfile and `vite preview` and stays
+      strict (`apps/web/src/csp.test.ts`); every API response sends its own CSP
+      (`http-hardening.test.ts`). The browser check that every page runs under it
+      is `apps/web/e2e/csp.spec.ts`.
+- [x] Caddy's access log strips query strings from the URI and `Referer`
+      (configuration test in `http-hardening.test.ts`; checked against a real
+      Caddy in the Docker drill).
 - [x] The public Telegram webhook is rate-limited and an exceeded limit returns
       `429`, not `500` (`http-hardening.test.ts`).
 - [x] Provider base URLs reject non-HTTP(S) schemes, embedded credentials and

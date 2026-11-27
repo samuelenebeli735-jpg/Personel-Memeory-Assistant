@@ -3,8 +3,16 @@
 # The build stage installs the full workspace, compiles every package and leaves
 # development dependencies available for the migration one-shot. A pruned copy
 # is used for the runtime stage.
+#
+# Base images are pinned to their multi-architecture index digests (R3-04), so a
+# rebuild uses exactly the images that were tested; the tag stays for reading.
+# Pinned 2026-11-27. To update: look up the new index digest of the same tag,
+# replace it in every FROM line below, rebuild and run the Docker drill in
+# docs/OPERATIONS.md.
+#   node:24-bookworm-slim  linux/amd64, linux/arm64 (and ppc64le)
+#   caddy:2-alpine         linux/amd64, linux/arm64, linux/arm (and others)
 
-FROM node:24-bookworm-slim AS deps
+FROM node:24-bookworm-slim@sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530 AS deps
 
 WORKDIR /app
 ENV CHECKPOINT_DISABLE=1 \
@@ -39,7 +47,7 @@ FROM build AS runtime-deps
 
 RUN npm prune --omit=dev
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530 AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
@@ -66,13 +74,14 @@ USER node
 WORKDIR /app/apps/server
 EXPOSE 4000
 
+# Healthy only while the reminder scheduler is running and not stalled (N14).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/api/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 4000) + '/api/health/scheduler').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "dist/index.js"]
 
 # Static dashboard + TLS-terminating reverse proxy.
-FROM caddy:2-alpine AS web
+FROM caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0 AS web
 
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/apps/web/dist /srv

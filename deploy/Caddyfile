@@ -16,6 +16,10 @@
 	}
 
 	handle {
+		# Dashboard Content-Security-Policy (R3-03). Must stay identical to
+		# DASHBOARD_CSP in apps/web/src/csp.ts; a unit test checks it. The API
+		# sends its own, stricter policy.
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 		root * /srv
 		try_files {path} /index.html
 		file_server
@@ -29,8 +33,18 @@
 		-Server
 	}
 
+	# Access log without query strings (R3-03): a query can hold search words,
+	# a restore file's hash or a token. The request URI and the Referer header
+	# are logged as path only, like the app's own log. Cookie and Authorization
+	# headers are already redacted by Caddy by default.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*$" ""
+				request>headers>Referer regexp "[?].*$" ""
+			}
+		}
 	}
 }
