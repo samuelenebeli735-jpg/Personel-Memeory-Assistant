@@ -116,6 +116,298 @@ describe('validateCitations', () => {
   });
 });
 
+describe('groundAnswer: reporting and framing words (R4-03 live finding)', () => {
+  const ink = evidence({
+    type: 'CAPTURE',
+    id: 'cap-1',
+    title: 'Buy blue printer ink from the stationery shop',
+    snippet: 'Buy blue printer ink from the stationery shop',
+  });
+
+  it('keeps the exact live Gemini answer that used to be dropped', () => {
+    const answer = 'You noted to buy blue printer ink from the stationery shop.';
+    const result = groundAnswer(answer, [ink]);
+    expect(result.dropped).toEqual([]);
+    expect(result.answer).toBe(answer);
+  });
+
+  it('keeps other ordinary framing of a supported fact', () => {
+    for (const answer of [
+      'You said to buy blue printer ink.',
+      'You mentioned blue printer ink from the stationery shop.',
+      'You wrote: buy blue printer ink from the stationery shop.',
+      'According to your records, you should buy blue printer ink.',
+      'Your records indicate you will buy printer ink.',
+      'You recorded that you should buy printer ink from the stationery shop.',
+    ]) {
+      const result = groundAnswer(answer, [ink]);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('still rejects unsupported details hidden behind a framing verb', () => {
+    for (const answer of [
+      'You noted to buy red printer ink.', // wrong colour
+      'You said to buy 3 cartridges of printer ink.', // number and item not in the record
+      'You mentioned buying printer ink on Friday.', // a day the record does not state
+      'You wrote that Ada will buy the printer ink.', // a person who is not in the record
+      'According to your records, the shop is closed.', // a claim the record does not make
+      'You noted not to buy printer ink.', // a negation the record does not contain
+    ]) {
+      const result = groundAnswer(answer, [ink]);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('still drops a statement made only of framing words', () => {
+    for (const answer of ['You noted it.', 'As you said.', 'According to your records.']) {
+      expect(groundAnswer(answer, [ink]).supported, answer).toEqual([]);
+    }
+  });
+
+  it('still requires citations: with nothing cited, a framed statement is dropped', () => {
+    expect(groundAnswer('You noted to buy blue printer ink.', []).supported).toEqual([]);
+  });
+});
+
+describe('groundAnswer: record-type words (R4-03 live finding, lvi1e5)', () => {
+  // None of these records contains its own type word in its text, so a type
+  // word can only be supported by the record's type.
+  const task = evidence({
+    type: 'TASK',
+    id: 'task-ink',
+    title: 'Buy blue printer ink',
+    snippet: 'Buy blue printer ink',
+    status: 'PENDING',
+  });
+  const note = evidence({
+    type: 'NOTE',
+    id: 'note-shop',
+    title: 'Stationery shop hours',
+    snippet: 'The stationery shop opens at 9am',
+    status: null,
+  });
+  const capture = evidence({
+    type: 'CAPTURE',
+    id: 'cap-ink',
+    title: 'Buy blue printer ink from the stationery shop',
+    snippet: 'Buy blue printer ink from the stationery shop',
+    status: null,
+  });
+
+  it('keeps a Gemini-style answer that calls a cited NOTE "a note" and a cited TASK "a task"', () => {
+    const answer = 'You have a note about the stationery shop and a pending task to buy blue printer ink.';
+    const result = groundAnswer(answer, [task, note]);
+    expect(result.dropped).toEqual([]);
+    expect(result.answer).toBe(answer);
+  });
+
+  it('keeps singular and plural type words of the cited record', () => {
+    for (const [answer, cited] of [
+      ['Your task is to buy blue printer ink.', [task]],
+      ['Your notes mention the stationery shop.', [note]],
+      ['Your capture says to buy blue printer ink from the stationery shop.', [capture]],
+    ] as const) {
+      const result = groundAnswer(answer, [...cited]);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('keeps the live sentence shape when the cited records really are a note and a task', () => {
+    const inkNote = { ...capture, type: 'NOTE', id: 'note-ink' };
+    const answer =
+      'You captured a note to "Buy blue printer ink from the stationery shop" and have a pending task to "Buy blue printer ink".';
+    expect(groundAnswer(answer, [inkNote, task]).dropped).toEqual([]);
+  });
+
+  it('still drops the exact live sentence, because the "note" Gemini named was really a CAPTURE', () => {
+    const answer =
+      'You captured a note to "Buy blue printer ink from the stationery shop" and have a pending task to "Buy blue printer ink".';
+    const result = groundAnswer(answer, [capture, task]);
+    expect(result.supported).toEqual([]);
+    expect(result.dropped).toEqual([answer]);
+  });
+
+  it('rejects a type word that the cited record does not have', () => {
+    for (const [answer, cited] of [
+      ['You have a note to buy blue printer ink.', [task]], // a TASK called a note
+      ['You have a task about the stationery shop.', [note]], // a NOTE called a task
+      ['Your reminder is to buy blue printer ink.', [task]],
+      ['You have an event at the stationery shop.', [note]],
+    ] as const) {
+      const result = groundAnswer(answer, [...cited]);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('ties each type word to one record: a NOTE and a TASK both cited, labels swapped, is rejected', () => {
+    const cited = [task, note];
+    for (const answer of [
+      'You have a note to buy blue printer ink.', // the ink is the TASK, not the cited NOTE
+      'You have a task about the stationery shop.', // the shop is the NOTE, not the cited TASK
+      'You have a task about the stationery shop and a note to buy blue printer ink.', // both swapped
+      'You have a note about the stationery shop and a note to buy blue printer ink.', // second label wrong
+      'The stationery shop opens at 9am is your task.', // type word after its phrase, wrong record
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('keeps correctly labelled claims for both records when a NOTE and a TASK are cited', () => {
+    const cited = [task, note];
+    for (const answer of [
+      'You have a note about the stationery shop and a pending task to buy blue printer ink.',
+      'You have a task to buy blue printer ink, and a note says the stationery shop opens at 9am.',
+      'Buy blue printer ink is your task.', // the phrase before the type word is used when none follows
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('drops a type word with nothing checkable on either side of it in its phrase', () => {
+    // "task" is cut off by the commas, so nothing ties it to one record.
+    const answer = 'Your task, to buy blue printer ink, is pending.';
+    expect(groundAnswer(answer, [task]).supported).toEqual([]);
+  });
+
+  it('never lets an uncited record support a type word', () => {
+    // The note exists but only the task is cited, so "note" is unsupported.
+    const answer = 'You have a note to buy blue printer ink.';
+    expect(groundAnswer(answer, [task]).supported).toEqual([]);
+    expect(groundAnswer(answer, []).supported).toEqual([]);
+  });
+
+  it('matches type words exactly: a type never supports a related word', () => {
+    const reminder = evidence({ type: 'REMINDER', id: 'rem-1', title: 'Buy blue printer ink', snippet: '' });
+    for (const answer of ['Remind yourself to buy blue printer ink.', 'You tasked yourself to buy blue printer ink.']) {
+      expect(groundAnswer(answer, [reminder, task]).supported, answer).toEqual([]);
+    }
+  });
+
+  it('still rejects wrong details, numbers, dates and negations next to a supported type word', () => {
+    for (const answer of [
+      'You have a task to buy red printer ink.', // wrong colour
+      'You have 3 tasks to buy printer ink.', // a number the record does not state
+      'You have a task to buy printer ink on Friday.', // a day the record does not state
+      'You have a task to buy printer ink at 10am.', // a time the record does not state
+      'You have no task to buy printer ink.', // a negation the record does not contain
+      'You have a task to call the electrician.', // a different substantive fact
+    ]) {
+      const result = groundAnswer(answer, [task]);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('drops a statement made only of type words and framing words', () => {
+    for (const answer of ['You have a task.', 'You noted a note.', 'Your tasks and notes.']) {
+      expect(groundAnswer(answer, [task, note]).supported, answer).toEqual([]);
+    }
+  });
+});
+
+describe('groundAnswer: leading topic introducers (R4-03 live finding, q6pyck)', () => {
+  const task = evidence({
+    type: 'TASK',
+    id: 'task-ink',
+    title: 'Buy blue printer ink',
+    snippet: 'Buy blue printer ink',
+    status: 'PENDING',
+  });
+  const note = evidence({
+    type: 'NOTE',
+    id: 'note-shop',
+    title: 'Stationery shop hours',
+    snippet: 'The stationery shop opens at 9am',
+    status: null,
+  });
+  const cited = [note, task];
+  const LIVE =
+    'Regarding the stationery shop, you noted that it opens at 9am. Regarding the printer ink, you have a pending task to buy blue printer ink.';
+
+  it('keeps the exact live Gemini answer, unchanged, when both records are cited', () => {
+    const result = groundAnswer(LIVE, cited);
+    expect(result.dropped).toEqual([]);
+    expect(result.answer).toBe(LIVE);
+  });
+
+  it('keeps "Regarding ..." and "As for ..." introductions of a supported fact', () => {
+    for (const answer of [
+      'As for the printer ink, you have a pending task to buy blue printer ink.',
+      'Regarding the printer ink, your task is to buy blue printer ink.',
+      '"Regarding the stationery shop, it opens at 9am."',
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('still checks the topic words of the introduction', () => {
+    for (const answer of [
+      'Regarding the bakery, it opens at 9am.', // a topic no record mentions
+      'As for the red printer ink, you have a task to buy it.', // wrong colour in the topic
+      'Concerning the post office, the stationery shop opens at 9am.',
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('ignores "Concerning" only as a leading introduction followed by a comma', () => {
+    const kept = 'Concerning the stationery shop, it opens at 9am.';
+    expect(groundAnswer(kept, cited).answer).toBe(kept);
+    for (const answer of [
+      'Concerning the stationery shop it opens at 9am.', // no comma: not the introductory form
+      'Concerning, the stationery shop opens at 9am.', // no topic
+      'Concerning that, the stationery shop opens at 9am.', // a topic with nothing checkable
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('keeps these words as checkable content anywhere else', () => {
+    for (const answer of [
+      'The stationery shop opens at a concerning 9am.', // adjective use
+      'The stationery shop opens at 9am regarding printer ink.', // mid-sentence
+      'You noted that, regarding the stationery shop, it opens at 9am.', // not at the start
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('still rejects wrong details after an introduction', () => {
+    for (const answer of [
+      'Regarding the stationery shop, it opens at 10am.', // time
+      'Regarding the stationery shop, it closes at 9am.', // fact
+      'Regarding the stationery shop, it opens on Friday.', // day
+      'Regarding the printer ink, you have 3 tasks to buy it.', // number
+      'Regarding the printer ink, you have a task to buy red printer ink.', // colour
+      'Regarding the printer ink, you have no task to buy it.', // negation
+      'Regarding the printer ink, you have a note to buy blue printer ink.', // wrong record type
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('keeps only the sentence whose record is cited', () => {
+    const result = groundAnswer(LIVE, [task]); // the note is not cited
+    expect(result.supported).toEqual([
+      'Regarding the printer ink, you have a pending task to buy blue printer ink.',
+    ]);
+    expect(groundAnswer(LIVE, []).supported).toEqual([]);
+  });
+});
+
 describe('groundAnswer', () => {
   it('keeps a statement the evidence supports', () => {
     const result = groundAnswer('The plumber is booked for tomorrow morning.', [evidence()]);

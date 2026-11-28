@@ -275,6 +275,103 @@ describe('POST /api/ask — citations', () => {
     expect(result.evidence.map((item) => item.id)).toEqual([task.id]);
   });
 
+  it('uses a correct, cited AI answer that frames the fact with "you noted" (R4-03)', async () => {
+    const task = await createPlumberTask();
+    ai.setAnswer({ answer: 'You noted to call the plumber.', citedIds: [task.id] });
+
+    const result = await askWithAi({ question: 'plumber' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe('You noted to call the plumber.');
+    expect(result.evidence.map((item) => item.id)).toEqual([task.id]);
+  });
+
+  it('still falls back when a framed answer adds an unsupported detail', async () => {
+    const task = await createPlumberTask();
+    ai.setAnswer({ answer: 'You noted to call the electrician.', citedIds: [task.id] });
+
+    const result = await askWithAi({ question: 'plumber' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.answer).not.toContain('electrician');
+  });
+
+  /** A task and a note that both mention the stationery shop; neither text names its own type. */
+  async function createShopRecords(): Promise<{ taskId: string; noteId: string }> {
+    const task = await createTask({ title: 'Buy blue printer ink', description: 'from the stationery shop' });
+    const note = await authed('/api/notes', {
+      method: 'POST',
+      payload: { title: 'Stationery shop hours', body: 'The stationery shop opens at 9am', tags: [] },
+    });
+    expect(note.statusCode, note.body).toBe(201);
+    return { taskId: task.id, noteId: (note.json() as { id: string }).id };
+  }
+
+  it('uses a cited answer that names each cited record by its own type (R4-03, lvi1e5)', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    ai.setAnswer({
+      answer: 'You have a note about the stationery shop and a task to buy blue printer ink.',
+      citedIds: [taskId, noteId],
+    });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe('You have a note about the stationery shop and a task to buy blue printer ink.');
+    expect(result.evidence.map((item) => item.id).sort()).toEqual([taskId, noteId].sort());
+  });
+
+  it('uses the live Gemini answer that opens each sentence with "Regarding ...," (R4-03, q6pyck)', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    const live =
+      'Regarding the stationery shop, you noted that it opens at 9am. Regarding the printer ink, you have a pending task to buy blue printer ink.';
+    ai.setAnswer({ answer: live, citedIds: [noteId, taskId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe(live);
+  });
+
+  it('falls back when the same "Regarding ...," answer cites only an invented record', async () => {
+    await createShopRecords();
+    ai.setAnswer({
+      answer: 'Regarding the stationery shop, you noted that it opens at 9am.',
+      citedIds: ['invented-id'],
+    });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+  });
+
+  it('falls back when both records are cited but the type word names the wrong one', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    // Both are cited, but the ink is the task: the cited note cannot back "a note to buy ink".
+    ai.setAnswer({ answer: 'You have a note to buy blue printer ink.', citedIds: [taskId, noteId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+  });
+
+  it('falls back when a type word is backed only by a record that was not cited', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    // The note is in the evidence but not cited, so "note" is unsupported.
+    ai.setAnswer({ answer: 'You have a note to buy blue printer ink.', citedIds: [taskId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+    expect(result.evidence.map((item) => item.id)).toContain(noteId);
+  });
+
   it('discards an answer that cites nothing at all', async () => {
     const task = await createPlumberTask();
     ai.setAnswer({ answer: 'The plumber is booked.', citedIds: [] });
