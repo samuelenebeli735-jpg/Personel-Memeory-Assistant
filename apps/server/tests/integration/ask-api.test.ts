@@ -323,6 +323,32 @@ describe('POST /api/ask — citations', () => {
     expect(result.evidence.map((item) => item.id).sort()).toEqual([taskId, noteId].sort());
   });
 
+  it('uses the live Gemini answer that opens each sentence with "Regarding ...," (R4-03, q6pyck)', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    const live =
+      'Regarding the stationery shop, you noted that it opens at 9am. Regarding the printer ink, you have a pending task to buy blue printer ink.';
+    ai.setAnswer({ answer: live, citedIds: [noteId, taskId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe(live);
+  });
+
+  it('falls back when the same "Regarding ...," answer cites only an invented record', async () => {
+    await createShopRecords();
+    ai.setAnswer({
+      answer: 'Regarding the stationery shop, you noted that it opens at 9am.',
+      citedIds: ['invented-id'],
+    });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+  });
+
   it('falls back when both records are cited but the type word names the wrong one', async () => {
     const { taskId, noteId } = await createShopRecords();
     // Both are cited, but the ink is the task: the cited note cannot back "a note to buy ink".

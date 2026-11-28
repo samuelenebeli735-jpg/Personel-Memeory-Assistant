@@ -314,6 +314,100 @@ describe('groundAnswer: record-type words (R4-03 live finding, lvi1e5)', () => {
   });
 });
 
+describe('groundAnswer: leading topic introducers (R4-03 live finding, q6pyck)', () => {
+  const task = evidence({
+    type: 'TASK',
+    id: 'task-ink',
+    title: 'Buy blue printer ink',
+    snippet: 'Buy blue printer ink',
+    status: 'PENDING',
+  });
+  const note = evidence({
+    type: 'NOTE',
+    id: 'note-shop',
+    title: 'Stationery shop hours',
+    snippet: 'The stationery shop opens at 9am',
+    status: null,
+  });
+  const cited = [note, task];
+  const LIVE =
+    'Regarding the stationery shop, you noted that it opens at 9am. Regarding the printer ink, you have a pending task to buy blue printer ink.';
+
+  it('keeps the exact live Gemini answer, unchanged, when both records are cited', () => {
+    const result = groundAnswer(LIVE, cited);
+    expect(result.dropped).toEqual([]);
+    expect(result.answer).toBe(LIVE);
+  });
+
+  it('keeps "Regarding ..." and "As for ..." introductions of a supported fact', () => {
+    for (const answer of [
+      'As for the printer ink, you have a pending task to buy blue printer ink.',
+      'Regarding the printer ink, your task is to buy blue printer ink.',
+      '"Regarding the stationery shop, it opens at 9am."',
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('still checks the topic words of the introduction', () => {
+    for (const answer of [
+      'Regarding the bakery, it opens at 9am.', // a topic no record mentions
+      'As for the red printer ink, you have a task to buy it.', // wrong colour in the topic
+      'Concerning the post office, the stationery shop opens at 9am.',
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('ignores "Concerning" only as a leading introduction followed by a comma', () => {
+    const kept = 'Concerning the stationery shop, it opens at 9am.';
+    expect(groundAnswer(kept, cited).answer).toBe(kept);
+    for (const answer of [
+      'Concerning the stationery shop it opens at 9am.', // no comma: not the introductory form
+      'Concerning, the stationery shop opens at 9am.', // no topic
+      'Concerning that, the stationery shop opens at 9am.', // a topic with nothing checkable
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('keeps these words as checkable content anywhere else', () => {
+    for (const answer of [
+      'The stationery shop opens at a concerning 9am.', // adjective use
+      'The stationery shop opens at 9am regarding printer ink.', // mid-sentence
+      'You noted that, regarding the stationery shop, it opens at 9am.', // not at the start
+    ]) {
+      expect(groundAnswer(answer, cited).supported, answer).toEqual([]);
+    }
+  });
+
+  it('still rejects wrong details after an introduction', () => {
+    for (const answer of [
+      'Regarding the stationery shop, it opens at 10am.', // time
+      'Regarding the stationery shop, it closes at 9am.', // fact
+      'Regarding the stationery shop, it opens on Friday.', // day
+      'Regarding the printer ink, you have 3 tasks to buy it.', // number
+      'Regarding the printer ink, you have a task to buy red printer ink.', // colour
+      'Regarding the printer ink, you have no task to buy it.', // negation
+      'Regarding the printer ink, you have a note to buy blue printer ink.', // wrong record type
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('keeps only the sentence whose record is cited', () => {
+    const result = groundAnswer(LIVE, [task]); // the note is not cited
+    expect(result.supported).toEqual([
+      'Regarding the printer ink, you have a pending task to buy blue printer ink.',
+    ]);
+    expect(groundAnswer(LIVE, []).supported).toEqual([]);
+  });
+});
+
 describe('groundAnswer', () => {
   it('keeps a statement the evidence supports', () => {
     const result = groundAnswer('The plumber is booked for tomorrow morning.', [evidence()]);

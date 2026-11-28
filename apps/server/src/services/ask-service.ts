@@ -341,6 +341,35 @@ function unsupportedNegation(claim: string, haystack: EvidenceHaystack): boolean
   return true;
 }
 
+/**
+ * A topic introducer at the very start of a statement, followed by its topic
+ * and a comma: "Regarding the stationery shop, it opens at 9am." Groups: 1 the
+ * leading space or opening quote, 2 the topic. The topic may not contain
+ * sentence punctuation and is at most 80 characters, and something must follow
+ * the comma.
+ */
+const TOPIC_INTRODUCER = /^(\s*["'“‘(]?\s*)(?:regarding|concerning|as\s+for)\s+([^,.;:!?]{1,80}?)\s*,\s*(?=\S)/i;
+
+/**
+ * The statement to check, without a leading topic-introducer word.
+ *
+ * R4-03 live finding: Gemini wrote "Regarding the stationery shop, you noted
+ * that it opens at 9am." and the whole statement was dropped because
+ * "regarding" is not in the record. Only the introducer WORD is removed, and
+ * only in that exact form: at the start of the statement, followed by a topic
+ * and a comma. The topic words stay and are checked like any other content.
+ * Anywhere else these words stay checkable content, so "a concerning pattern"
+ * or "something regarding the shop" must still be supported. If the topic has
+ * nothing checkable ("Concerning that, ..."), the statement is left unchanged.
+ */
+function withoutTopicIntroducer(claim: string): string {
+  const match = TOPIC_INTRODUCER.exec(claim);
+  if (!match) return claim;
+  const topic = match[2]!;
+  if (contentOf(tokenize(topic)).length === 0) return claim;
+  return `${match[1]}${topic}, ${claim.slice(match[0].length)}`;
+}
+
 /** Words and marks that end the phrase a type word describes ("a note about X and a task to Y"). */
 const TYPE_PHRASE_BREAK = /[,;:()]|\b(?:and|but|or|while)\b/i;
 
@@ -429,12 +458,14 @@ export function groundAnswer(
   const supported: string[] = [];
   const dropped: string[] = [];
 
-  for (const claim of claims) {
+  for (const original of claims) {
+    // Checked without a leading "Regarding X," introducer; the original is what is kept.
+    const claim = withoutTopicIntroducer(original);
     const content = contentTokens(claim);
     if (content.length === 0 || content.every((token) => ALL_RECORD_TYPE_WORDS.has(token))) {
       // Nothing checkable in this statement (an acknowledgement, a question,
       // or only a record type such as "You have a task.").
-      dropped.push(claim);
+      dropped.push(original);
       continue;
     }
     const isSupported = content.every((token) =>
@@ -450,10 +481,10 @@ export function groundAnswer(
       unsupportedNegation(claim, haystack) ||
       !typeWordsBound(claim, cited, options)
     ) {
-      dropped.push(claim);
+      dropped.push(original);
       continue;
     }
-    supported.push(claim);
+    supported.push(original);
   }
 
   return { supported, dropped, answer: supported.join(' ') };
