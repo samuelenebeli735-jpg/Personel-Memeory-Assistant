@@ -139,6 +139,56 @@ const NEGATION_MARKERS = new Set([
   'not', 'never', 'no', 'none', 'nothing', 'neither', 'nor', 'without', 'cannot',
 ]);
 
+/**
+ * Reporting and framing words a model wraps around a fact: "You noted to buy
+ * ink", "According to your records, the plumber is booked". They describe the
+ * act of recording, not the fact itself, so the grounding check does not
+ * require them to appear in the evidence (R4-03: live Gemini answers were
+ * correct and well cited, yet dropped because "noted" was not in the record).
+ *
+ * Deliberately narrow: only reporting verbs and their inflections, plus
+ * "according" and "record(s)". Words that can carry a fact ("note", "made",
+ * "show", "remember") are NOT listed. Every other content word, number, date,
+ * time and negation must still be supported, and a statement made only of
+ * framing words still has nothing checkable and is dropped.
+ */
+const GROUNDING_FRAMING_WORDS = new Set([
+  'noted', 'said', 'says', 'say', 'mentioned', 'mentions', 'mention',
+  'wrote', 'written', 'writes', 'recorded', 'logged', 'captured', 'saved',
+  'stated', 'states', 'indicate', 'indicates', 'indicated', 'according',
+  'record', 'records',
+]);
+
+/**
+ * The words that name a record's own type: "you have a task to buy ink", "a
+ * note about the bank". A type word is supported only by ONE cited record of
+ * that exact type that also contains the words the type word describes (see
+ * `typeWordsBound`), so calling a cited task "a note" is rejected even when an
+ * unrelated note is cited too, and a record that was not cited can never
+ * support it (R4-03: live Gemini answers named the record type and were dropped).
+ *
+ * Matching is exact (singular and plural only, no prefix match), so a type word
+ * never supports a related verb such as "remind" or "noted". Every supported
+ * record type is mapped; `satisfies` makes a new type a compile error here.
+ */
+const RECORD_TYPE_WORDS = {
+  TASK: ['task', 'tasks'],
+  NOTE: ['note', 'notes'],
+  IDEA: ['idea', 'ideas'],
+  EVENT: ['event', 'events'],
+  CAPTURE: ['capture', 'captures'],
+  PROJECT: ['project', 'projects'],
+  REMINDER: ['reminder', 'reminders'],
+} as const satisfies Record<SearchEntityType, readonly string[]>;
+
+/** Every type word, so a statement that only names record types can be told apart. */
+const ALL_RECORD_TYPE_WORDS = new Set<string>(Object.values(RECORD_TYPE_WORDS).flat());
+
+/** The type words of one record, or none for a type that is not mapped. */
+function recordTypeWords(type: string): readonly string[] {
+  return Object.hasOwn(RECORD_TYPE_WORDS, type) ? RECORD_TYPE_WORDS[type as SearchEntityType] : [];
+}
+
 /** Contractions are expanded so "isn't" is recognised as a negation. */
 function expandContractions(text: string): string {
   return text
@@ -164,11 +214,16 @@ function tokenize(text: string): string[] {
  * a quantity, a date or a time, and it must appear in the evidence.
  */
 function contentTokens(claim: string): string[] {
-  const tokens = tokenize(claim);
+  return contentOf(tokenize(claim));
+}
+
+/** The content tokens of an already tokenised piece of text (see `contentTokens`). */
+function contentOf(tokens: string[]): string[] {
   const content: string[] = [];
   for (const token of tokens) {
     if (NEGATION_MARKERS.has(token)) continue;
     if (STOPWORDS.has(token)) continue;
+    if (GROUNDING_FRAMING_WORDS.has(token)) continue;
     if (/\d/.test(token)) {
       content.push(token);
       continue;
@@ -193,6 +248,8 @@ interface EvidenceHaystack {
   text: string;
   /** Every clock time in the evidence, normalised to 24-hour "HH:MM". */
   clocks: Set<string>;
+  /** Type words of the cited records only ("task" for a cited TASK), matched exactly. */
+  typeWords: Set<string>;
 }
 
 const CLOCK_PATTERN = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b/gi;
@@ -229,7 +286,9 @@ export interface GroundingOptions {
 
 function buildHaystack(evidence: EvidenceRecord[], options: GroundingOptions = {}): EvidenceHaystack {
   const parts: string[] = [];
+  const typeWords = new Set<string>();
   for (const item of evidence) {
+    for (const word of recordTypeWords(item.type)) typeWords.add(word);
     parts.push(item.title ?? '');
     parts.push(item.snippet ?? '');
     parts.push(item.status ?? '');
@@ -241,7 +300,7 @@ function buildHaystack(evidence: EvidenceRecord[], options: GroundingOptions = {
   }
   const raw = parts.join(' \n ');
   const text = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
-  return { words: new Set(tokenize(raw)), text, clocks: new Set(clocksIn(raw)) };
+  return { words: new Set(tokenize(raw)), text, clocks: new Set(clocksIn(raw)), typeWords };
 }
 
 /**
@@ -282,6 +341,67 @@ function unsupportedNegation(claim: string, haystack: EvidenceHaystack): boolean
   return true;
 }
 
+/** Words and marks that end the phrase a type word describes ("a note about X and a task to Y"). */
+const TYPE_PHRASE_BREAK = /[,;:()]|\b(?:and|but|or|while)\b/i;
+
+/** True when one record's own text (and date) supports a content token. */
+function recordSupports(haystack: EvidenceHaystack, token: string): boolean {
+  return /\d/.test(token) ? containsNumber(haystack, token) : containsWord(haystack, token);
+}
+
+/**
+ * True when every record-type word in a claim is backed by ONE cited record of
+ * that type which, on its own, contains the words the type word describes.
+ *
+ * The claim-level check accepts a type word when any cited record has that
+ * type. That is not enough when several records are cited: with a NOTE about
+ * the shop and a TASK about ink both cited, "You have a note to buy ink" would
+ * pass because some note was cited. Here each type word is tied to its phrase:
+ * the content words after it, up to the next type word, "and"/"but"/"or"/
+ * "while" or , ; : ( ). When nothing checkable follows ("Buy ink is your
+ * task."), the content words before it in the same phrase are used. A type word
+ * with no checkable words on either side is not backed, so the claim is dropped
+ * (conservative). A cited record of that type must contain every word of the
+ * phrase by itself; uncited records are never consulted.
+ */
+function typeWordsBound(claim: string, cited: EvidenceRecord[], options: GroundingOptions): boolean {
+  const perRecord = new Map<EvidenceRecord, EvidenceHaystack>();
+  const haystackOf = (record: EvidenceRecord): EvidenceHaystack => {
+    let haystack = perRecord.get(record);
+    if (!haystack) {
+      haystack = buildHaystack([record], options);
+      perRecord.set(record, haystack);
+    }
+    return haystack;
+  };
+
+  for (const segment of expandContractions(claim).split(TYPE_PHRASE_BREAK)) {
+    const tokens = tokenize(segment);
+    for (let i = 0; i < tokens.length; i += 1) {
+      const word = tokens[i]!;
+      if (!ALL_RECORD_TYPE_WORDS.has(word)) continue;
+
+      let end = i + 1;
+      while (end < tokens.length && !ALL_RECORD_TYPE_WORDS.has(tokens[end]!)) end += 1;
+      let phrase = contentOf(tokens.slice(i + 1, end));
+      if (phrase.length === 0) {
+        let start = i;
+        while (start > 0 && !ALL_RECORD_TYPE_WORDS.has(tokens[start - 1]!)) start -= 1;
+        phrase = contentOf(tokens.slice(start, i));
+      }
+      if (phrase.length === 0) return false;
+
+      const backed = cited.some(
+        (record) =>
+          recordTypeWords(record.type).includes(word) &&
+          phrase.every((token) => recordSupports(haystackOf(record), token)),
+      );
+      if (!backed) return false;
+    }
+  }
+  return true;
+}
+
 export interface GroundingResult {
   /** Statements that are supported by the cited evidence. */
   supported: string[];
@@ -311,17 +431,25 @@ export function groundAnswer(
 
   for (const claim of claims) {
     const content = contentTokens(claim);
-    if (content.length === 0) {
-      // Nothing checkable in this statement (an acknowledgement, a question).
+    if (content.length === 0 || content.every((token) => ALL_RECORD_TYPE_WORDS.has(token))) {
+      // Nothing checkable in this statement (an acknowledgement, a question,
+      // or only a record type such as "You have a task.").
       dropped.push(claim);
       continue;
     }
     const isSupported = content.every((token) =>
-      /\d/.test(token) ? containsNumber(haystack, token) : containsWord(haystack, token),
+      /\d/.test(token)
+        ? containsNumber(haystack, token)
+        : containsWord(haystack, token) || haystack.typeWords.has(token),
     );
     // A clock time must match a time the evidence actually states, as a whole.
     const timesSupported = clocksIn(claim).every((clock) => haystack.clocks.has(clock));
-    if (!isSupported || !timesSupported || unsupportedNegation(claim, haystack)) {
+    if (
+      !isSupported ||
+      !timesSupported ||
+      unsupportedNegation(claim, haystack) ||
+      !typeWordsBound(claim, cited, options)
+    ) {
       dropped.push(claim);
       continue;
     }
