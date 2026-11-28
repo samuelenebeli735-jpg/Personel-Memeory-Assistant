@@ -159,6 +159,35 @@ const GROUNDING_FRAMING_WORDS = new Set([
   'record', 'records',
 ]);
 
+/**
+ * The words that name a record's own type: "you have a task to buy ink", "a
+ * note about the bank". A type word is supported only by a CITED record of that
+ * exact type, so calling a cited task "a note" is still rejected, and a record
+ * that was not cited can never support it (R4-03: live Gemini answers named the
+ * record type and were dropped).
+ *
+ * Matching is exact (singular and plural only, no prefix match), so a type word
+ * never supports a related verb such as "remind" or "noted". Every supported
+ * record type is mapped; `satisfies` makes a new type a compile error here.
+ */
+const RECORD_TYPE_WORDS = {
+  TASK: ['task', 'tasks'],
+  NOTE: ['note', 'notes'],
+  IDEA: ['idea', 'ideas'],
+  EVENT: ['event', 'events'],
+  CAPTURE: ['capture', 'captures'],
+  PROJECT: ['project', 'projects'],
+  REMINDER: ['reminder', 'reminders'],
+} as const satisfies Record<SearchEntityType, readonly string[]>;
+
+/** Every type word, so a statement that only names record types can be told apart. */
+const ALL_RECORD_TYPE_WORDS = new Set<string>(Object.values(RECORD_TYPE_WORDS).flat());
+
+/** The type words of one record, or none for a type that is not mapped. */
+function recordTypeWords(type: string): readonly string[] {
+  return Object.hasOwn(RECORD_TYPE_WORDS, type) ? RECORD_TYPE_WORDS[type as SearchEntityType] : [];
+}
+
 /** Contractions are expanded so "isn't" is recognised as a negation. */
 function expandContractions(text: string): string {
   return text
@@ -214,6 +243,8 @@ interface EvidenceHaystack {
   text: string;
   /** Every clock time in the evidence, normalised to 24-hour "HH:MM". */
   clocks: Set<string>;
+  /** Type words of the cited records only ("task" for a cited TASK), matched exactly. */
+  typeWords: Set<string>;
 }
 
 const CLOCK_PATTERN = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b/gi;
@@ -250,7 +281,9 @@ export interface GroundingOptions {
 
 function buildHaystack(evidence: EvidenceRecord[], options: GroundingOptions = {}): EvidenceHaystack {
   const parts: string[] = [];
+  const typeWords = new Set<string>();
   for (const item of evidence) {
+    for (const word of recordTypeWords(item.type)) typeWords.add(word);
     parts.push(item.title ?? '');
     parts.push(item.snippet ?? '');
     parts.push(item.status ?? '');
@@ -262,7 +295,7 @@ function buildHaystack(evidence: EvidenceRecord[], options: GroundingOptions = {
   }
   const raw = parts.join(' \n ');
   const text = raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
-  return { words: new Set(tokenize(raw)), text, clocks: new Set(clocksIn(raw)) };
+  return { words: new Set(tokenize(raw)), text, clocks: new Set(clocksIn(raw)), typeWords };
 }
 
 /**
@@ -332,13 +365,16 @@ export function groundAnswer(
 
   for (const claim of claims) {
     const content = contentTokens(claim);
-    if (content.length === 0) {
-      // Nothing checkable in this statement (an acknowledgement, a question).
+    if (content.length === 0 || content.every((token) => ALL_RECORD_TYPE_WORDS.has(token))) {
+      // Nothing checkable in this statement (an acknowledgement, a question,
+      // or only a record type such as "You have a task.").
       dropped.push(claim);
       continue;
     }
     const isSupported = content.every((token) =>
-      /\d/.test(token) ? containsNumber(haystack, token) : containsWord(haystack, token),
+      /\d/.test(token)
+        ? containsNumber(haystack, token)
+        : containsWord(haystack, token) || haystack.typeWords.has(token),
     );
     // A clock time must match a time the evidence actually states, as a whole.
     const timesSupported = clocksIn(claim).every((clock) => haystack.clocks.has(clock));

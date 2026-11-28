@@ -297,6 +297,44 @@ describe('POST /api/ask — citations', () => {
     expect(result.answer).not.toContain('electrician');
   });
 
+  /** A task and a note that both mention the stationery shop; neither text names its own type. */
+  async function createShopRecords(): Promise<{ taskId: string; noteId: string }> {
+    const task = await createTask({ title: 'Buy blue printer ink', description: 'from the stationery shop' });
+    const note = await authed('/api/notes', {
+      method: 'POST',
+      payload: { title: 'Stationery shop hours', body: 'The stationery shop opens at 9am', tags: [] },
+    });
+    expect(note.statusCode, note.body).toBe(201);
+    return { taskId: task.id, noteId: (note.json() as { id: string }).id };
+  }
+
+  it('uses a cited answer that names each cited record by its own type (R4-03, lvi1e5)', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    ai.setAnswer({
+      answer: 'You have a note about the stationery shop and a task to buy blue printer ink.',
+      citedIds: [taskId, noteId],
+    });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(false);
+    expect(result.provider).toBe('fake-ai');
+    expect(result.answer).toBe('You have a note about the stationery shop and a task to buy blue printer ink.');
+    expect(result.evidence.map((item) => item.id).sort()).toEqual([taskId, noteId].sort());
+  });
+
+  it('falls back when a type word is backed only by a record that was not cited', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    // The note is in the evidence but not cited, so "note" is unsupported.
+    ai.setAnswer({ answer: 'You have a note to buy blue printer ink.', citedIds: [taskId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+    expect(result.evidence.map((item) => item.id)).toContain(noteId);
+  });
+
   it('discards an answer that cites nothing at all', async () => {
     const task = await createPlumberTask();
     ai.setAnswer({ answer: 'The plumber is booked.', citedIds: [] });
