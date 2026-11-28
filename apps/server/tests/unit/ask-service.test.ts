@@ -244,6 +244,40 @@ describe('groundAnswer: record-type words (R4-03 live finding, lvi1e5)', () => {
     }
   });
 
+  it('ties each type word to one record: a NOTE and a TASK both cited, labels swapped, is rejected', () => {
+    const cited = [task, note];
+    for (const answer of [
+      'You have a note to buy blue printer ink.', // the ink is the TASK, not the cited NOTE
+      'You have a task about the stationery shop.', // the shop is the NOTE, not the cited TASK
+      'You have a task about the stationery shop and a note to buy blue printer ink.', // both swapped
+      'You have a note about the stationery shop and a note to buy blue printer ink.', // second label wrong
+      'The stationery shop opens at 9am is your task.', // type word after its phrase, wrong record
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.supported, answer).toEqual([]);
+      expect(result.dropped, answer).toEqual([answer]);
+    }
+  });
+
+  it('keeps correctly labelled claims for both records when a NOTE and a TASK are cited', () => {
+    const cited = [task, note];
+    for (const answer of [
+      'You have a note about the stationery shop and a pending task to buy blue printer ink.',
+      'You have a task to buy blue printer ink, and a note says the stationery shop opens at 9am.',
+      'Buy blue printer ink is your task.', // the phrase before the type word is used when none follows
+    ]) {
+      const result = groundAnswer(answer, cited);
+      expect(result.dropped, answer).toEqual([]);
+      expect(result.answer, answer).toBe(answer);
+    }
+  });
+
+  it('drops a type word with nothing checkable on either side of it in its phrase', () => {
+    // "task" is cut off by the commas, so nothing ties it to one record.
+    const answer = 'Your task, to buy blue printer ink, is pending.';
+    expect(groundAnswer(answer, [task]).supported).toEqual([]);
+  });
+
   it('never lets an uncited record support a type word', () => {
     // The note exists but only the task is cited, so "note" is unsupported.
     const answer = 'You have a note to buy blue printer ink.';

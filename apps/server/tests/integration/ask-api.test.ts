@@ -323,6 +323,17 @@ describe('POST /api/ask — citations', () => {
     expect(result.evidence.map((item) => item.id).sort()).toEqual([taskId, noteId].sort());
   });
 
+  it('falls back when both records are cited but the type word names the wrong one', async () => {
+    const { taskId, noteId } = await createShopRecords();
+    // Both are cited, but the ink is the task: the cited note cannot back "a note to buy ink".
+    ai.setAnswer({ answer: 'You have a note to buy blue printer ink.', citedIds: [taskId, noteId] });
+
+    const result = await askWithAi({ question: 'stationery' });
+
+    expect(result.deterministic).toBe(true);
+    expect(result.provider).toBe('deterministic');
+  });
+
   it('falls back when a type word is backed only by a record that was not cited', async () => {
     const { taskId, noteId } = await createShopRecords();
     // The note is in the evidence but not cited, so "note" is unsupported.
